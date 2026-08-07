@@ -2,7 +2,12 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { normalizeTaskRoute, routePolicy, chooseReasoningEffort } = require('../src/orchestrator/routing');
+const {
+  normalizeTaskRoute,
+  routePolicy,
+  chooseReasoningEffort,
+  isClearlyTrivialChange,
+} = require('../src/orchestrator/routing');
 
 test('high-risk modifying tasks cannot use a lighter route', () => {
   const routing = normalizeTaskRoute({ route: 'trivial', risk: 'high', routingReason: 'small diff' });
@@ -15,7 +20,13 @@ test('medium-risk trivial tasks are upgraded to standard', () => {
 });
 
 test('full routing mode forces modifying trivial tasks through full review', () => {
-  assert.equal(normalizeTaskRoute({ route: 'trivial', risk: 'low' }, 'full').route, 'standard');
+  assert.equal(normalizeTaskRoute({
+    route: 'trivial',
+    risk: 'low',
+    title: 'README wording',
+    description: 'Change README documentation wording.',
+    acceptanceCriteria: ['README text is updated'],
+  }, 'full').route, 'standard');
 });
 
 test('read-only tasks remain coordinator-only even in full mode', () => {
@@ -23,10 +34,44 @@ test('read-only tasks remain coordinator-only even in full mode', () => {
   assert.equal(routePolicy('read_only').workerMode, 'none');
 });
 
-test('trivial route is the two-agent fast path', () => {
+test('trivial route remains available for clearly documentation-only edits', () => {
+  const task = {
+    route: 'trivial',
+    risk: 'low',
+    title: 'README Purpose wording',
+    description: 'Add a short Markdown Purpose section to README.md.',
+    acceptanceCriteria: ['README documentation contains the requested text'],
+  };
+  assert.equal(isClearlyTrivialChange(task), true);
+  assert.equal(normalizeTaskRoute(task).route, 'trivial');
   const policy = routePolicy('trivial');
   assert.equal(policy.workerMode, 'single_peer_review');
   assert.equal(policy.strongReview, false);
+});
+
+test('creating executable source and unit tests is standard even if coordinator says trivial', () => {
+  const routing = normalizeTaskRoute({
+    route: 'trivial',
+    risk: 'low',
+    title: 'Add Python hello-world script and test',
+    description: 'Create hello_world.py, a unit test, and README instructions.',
+    acceptanceCriteria: ['Python script runs', 'Unit test passes', 'README is updated'],
+  });
+  assert.equal(routing.route, 'standard');
+  assert.equal(routing.overridden, true);
+  assert.match(routing.reason, /trivial fast path is reserved/);
+});
+
+test('security semantics force high-risk treatment even if coordinator underrates risk', () => {
+  const routing = normalizeTaskRoute({
+    route: 'standard',
+    risk: 'low',
+    title: 'Change authentication token handling',
+    description: 'Modify credential validation.',
+    acceptanceCriteria: ['Authentication works'],
+  });
+  assert.equal(routing.risk, 'high');
+  assert.equal(routing.route, 'high_risk');
 });
 
 test('reasoning effort is selected only from model-supported values', () => {
