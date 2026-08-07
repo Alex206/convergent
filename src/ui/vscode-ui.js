@@ -62,7 +62,7 @@ function detailedUsageMarkdown(summary) {
     const credits = entry.hasCreditData ? `≈${entry.aiCredits.toFixed(entry.aiCredits < 0.01 ? 5 : 3)}` : 'pending';
     lines.push(`| ${entry.label} | ${entry.model} | ${credits} | ${formatTokenCount(entry.inputTokens)}/${formatTokenCount(entry.outputTokens)} | ${entry.turns} | ${formatDuration(entry.durationMs)} |`);
   }
-  lines.push('', '_AI credits are derived from Copilot nano-AIU usage (nano-AIU ÷ 1e9); GitHub billing remains the source of truth._');
+  lines.push('', '_AI credits are derived from Copilot nano-AIU usage (nano-AIU ÷ 1e9). Credit checkpoints can lag live token growth; GitHub billing remains the source of truth._');
   return lines.join('\n');
 }
 
@@ -71,7 +71,7 @@ function diagnosticsMarkdown(snapshots = []) {
   if (!snapshots.length) return `${lines.join('\n')}No agent diagnostics are available.`;
   for (const snapshot of snapshots) {
     const current = snapshot.currentTool
-      ? `${snapshot.currentTool.name} (${formatDuration(snapshot.currentTool.elapsedMs)}, quiet ${formatDuration(snapshot.currentTool.quietMs)})`
+      ? `${snapshot.currentTool.name}${snapshot.currentTool.detail ? ` — ${snapshot.currentTool.detail}` : ''} (${formatDuration(snapshot.currentTool.elapsedMs)}, quiet ${formatDuration(snapshot.currentTool.quietMs)})`
       : 'none';
     lines.push(`- **${snapshot.agent}**: current tool ${current}; last activity ${formatDuration(snapshot.lastActivityAgoMs)} ago; stalls ${snapshot.stalls?.length ?? 0}`);
     for (const tool of (snapshot.tools ?? []).slice(0, 5)) {
@@ -87,6 +87,7 @@ class VscodeWorkflowUi {
     this.stream = stream;
     this.output = output;
     this.lastUsageLogAt = 0;
+    this.lastLongToolChatStatusAt = new Map();
     this.agentInactivityTimeoutMs = undefined;
     this.toolStallTimeoutMs = undefined;
     this.stallGraceMs = undefined;
@@ -152,6 +153,15 @@ class VscodeWorkflowUi {
     this.log(`Task ${task.id} completed via ${route}.`);
   }
 
+  taskCommitted(task, sha) {
+    this.stream.markdown(`  ↳ checkpoint commit \`${String(sha).slice(0, 12)}\` for **${task.id}**\n`);
+    this.log(`Task ${task.id} checkpoint committed at ${sha}.`);
+  }
+
+  taskCommitSkipped(task, reason) {
+    this.log(`Task ${task.id} checkpoint commit skipped: ${reason}`);
+  }
+
   passResult(worker, report, changed, revision, meta = {}) {
     const mark = report.verdict === 'clean' ? '✓' : report.verdict === 'blocked' ? '⛔' : '↻';
     const state = changed ? 'changed workspace' : report.verdict;
@@ -187,7 +197,7 @@ class VscodeWorkflowUi {
   }
 
   usageProgress(summary) {
-    this.stream.progress(`Usage so far: ${compactUsage(summary)}`);
+    this.stream.progress(`Usage: ${compactUsage(summary)}`);
     this.log(`Usage: ${compactUsage(summary)}`);
   }
 
@@ -212,8 +222,8 @@ class VscodeWorkflowUi {
     this.log(`${agent} intent: ${intent ?? ''}`);
   }
 
-  agentTool(agent, tool) {
-    this.log(`${agent} tool: ${tool}`);
+  agentTool(agent, tool, detail = '') {
+    this.log(`${agent} tool: ${tool}${detail ? ` — ${detail}` : ''}`);
   }
 
   agentToolComplete(agent, tool, durationMs, success) {
@@ -223,36 +233,119 @@ class VscodeWorkflowUi {
   agentHeartbeat(agent, snapshot) {
     const tool = snapshot?.currentTool;
     const detail = tool
-      ? `${tool.name} running ${formatDuration(tool.elapsedMs)} · no progress ${formatDuration(tool.quietMs)}`
+      ? `${tool.name}${tool.detail ? ` — ${tool.detail}` : ''} running ${formatDuration(tool.elapsedMs)} · no progress ${formatDuration(tool.quietMs)}`
       : `working · last activity ${formatDuration(snapshot?.lastActivityAgoMs ?? 0)} ago`;
-    this.stream.progress(`${agent}: ${detail}`);
+
+    // Heartbeats remain fully available in the Output channel, but normal
+    // no-tool heartbeats are intentionally not appended to Chat because
+    // ChatResponseStream progress entries are immutable and otherwise pile up.
     this.log(`${agent} heartbeat: ${detail}`);
+
+    if (!tool || tool.elapsedMs < 60_000) return;
+    const now = Date.now();
+    const last = this.lastLongToolChatStatusAt.get(agent) ?? 0;
+    if (now - last < 120_000) return;
+    this.lastLongToolChatStatusAt.set(agent, now);
+    this.stream.progress(`${agent}: ${tool.name}${tool.detail ? ` — ${tool.detail}` : ''} still running · ${formatDuration(tool.elapsedMs)} elapsed · ${formatDuration(tool.quietMs)} since progress`);
   }
 
-  agentToolStallWarning(agent, tool, quietMs, timeoutMs) {
-    const detail = `${tool} has produced no progress for ${formatDuration(quietMs)} (watchdog ${formatDuration(timeoutMs)}); steering agent to stop waiting.`;
-    this.stream.progress(`${agent}: ${detail}`);
+  agentToolStallWarning(agent, tool, quietMs, timeoutMs, diagnostic = null) {
+    const current = diagnostic?.currentTool;
+    const command = current?.detail ? ` — ${current.detail}` : '';
+    const detail = `${tool}${command} has produced no progress for ${formatDuration(quietMs)} (soft watchdog ${formatDuration(timeoutMs)}). Waiting for your decision.`;
+    this.stream.markdown(`\n⚠ **${agent}: possible stalled tool** — ${detail}\n`);
     this.log(`${agent} STALL WARNING: ${detail}`);
   }
 
+  async agentToolStallDecision(agent, snapshot) {
+    const tool = snapshot?.currentTool;
+    if (!tool) return { action: 'continue', waitMs: 5 * 60_000 };
+    const command = tool.detail ? `\n\n${tool.detail}` : '';
+    const choice = await this.vscode.window.showWarningMessage(
+      `${agent}: ${tool.name} has produced no progress for ${formatDuration(tool.quietMs)} after ${formatDuration(tool.elapsedMs)} total.${command}\n\nThe built-in Copilot tool cannot currently be killed independently; aborting stops this agent turn.`,
+      { modal: true },
+      'Continue 5 min',
+      'Continue 15 min',
+      'Abort agent turn',
+    );
+    if (choice === 'Abort agent turn') return { action: 'abort' };
+    if (choice === 'Continue 15 min') return { action: 'continue', waitMs: 15 * 60_000 };
+    return { action: 'continue', waitMs: 5 * 60_000 };
+  }
+
+  agentToolWaitExtended(agent, tool, waitMs) {
+    const detail = `${tool} will continue running; Convergent will not ask again for ${formatDuration(waitMs)} unless the tool completes first.`;
+    this.stream.progress(`${agent}: ${detail}`);
+    this.log(`${agent}: ${detail}`);
+  }
+
   agentToolStalled(agent, tool, elapsedMs, diagnostic) {
-    const detail = `${tool} remained stalled after steering (${formatDuration(elapsedMs)} total); cancelling this agent turn.`;
+    const detail = `${tool} was aborted by user/watchdog decision after ${formatDuration(elapsedMs)} total; cancelling this agent turn.`;
     this.stream.markdown(`\n⚠ **${agent} stalled:** ${detail}\n`);
     this.log(`${agent} STALLED: ${detail}`);
     this.log(`${agent} stall diagnostic: ${JSON.stringify(diagnostic)}`);
   }
 
   agentInactivityWarning(agent, inactiveMs, timeoutMs) {
-    const detail = `no agent/tool activity for ${formatDuration(inactiveMs)} (inactivity watchdog ${formatDuration(timeoutMs)}); steering agent to respond or report blockage.`;
-    this.stream.progress(`${agent}: ${detail}`);
+    const detail = `no agent/tool activity for ${formatDuration(inactiveMs)} (soft inactivity watchdog ${formatDuration(timeoutMs)}). Waiting for your decision.`;
+    this.stream.markdown(`\n⚠ **${agent}: no activity** — ${detail}\n`);
     this.log(`${agent} INACTIVITY WARNING: ${detail}`);
   }
 
+  async agentInactivityDecision(agent, snapshot) {
+    const choice = await this.vscode.window.showWarningMessage(
+      `${agent} has produced no agent or tool activity for ${formatDuration(snapshot?.lastActivityAgoMs ?? 0)}. Continue waiting or abort this agent turn?`,
+      { modal: true },
+      'Continue 5 min',
+      'Abort agent turn',
+    );
+    if (choice === 'Abort agent turn') return { action: 'abort' };
+    return { action: 'continue', waitMs: 5 * 60_000 };
+  }
+
+  agentInactivityWaitExtended(agent, waitMs) {
+    const detail = `continuing to wait for ${agent}; next inactivity decision is deferred by ${formatDuration(waitMs)}.`;
+    this.stream.progress(detail);
+    this.log(detail);
+  }
+
   agentInactivityStalled(agent, inactiveMs, diagnostic) {
-    const detail = `no agent/tool activity resumed after steering (${formatDuration(inactiveMs)} quiet); cancelling this agent turn.`;
+    const detail = `no agent/tool activity resumed (${formatDuration(inactiveMs)} quiet); cancelling this agent turn.`;
     this.stream.markdown(`\n⚠ **${agent} inactive:** ${detail}\n`);
     this.log(`${agent} INACTIVE: ${detail}`);
     this.log(`${agent} inactivity diagnostic: ${JSON.stringify(diagnostic)}`);
+  }
+
+  async limitDecision(kind, details = {}) {
+    const current = Number(details.current) || 0;
+    const limit = Number(details.limit) || 0;
+    let message;
+    let choices;
+
+    if (kind === 'ai_credits') {
+      const increment = Math.max(1, Number(details.increment) || limit || 100);
+      message = `Convergent has reached the configured soft AI-credit budget (${limit.toFixed(3)}); reported usage is ≈${current.toFixed(3)} AI credits. The current agent turn has finished at a safe boundary.`;
+      choices = [`Continue +${increment} credits`, 'Continue without budget', 'Pause & resume later'];
+      const choice = await this.vscode.window.showWarningMessage(message, { modal: true }, ...choices);
+      this.log(`AI-credit limit decision: ${choice ?? 'dismissed'}; usage=${current}; ceiling=${limit}`);
+      if (choice === 'Continue without budget') return { action: 'unlimited' };
+      if (choice === choices[0]) return { action: 'continue', additional: increment };
+      return { action: 'pause' };
+    }
+
+    const noun = kind === 'worker_passes' ? 'A/B review/fix passes' : 'strong-review cycles';
+    message = `Convergent reached the configured soft limit of ${limit} ${noun}. The workflow is at a safe decision boundary rather than failed.`;
+    choices = ['Continue 1 more', 'Continue 3 more', 'Pause & resume later'];
+    const choice = await this.vscode.window.showWarningMessage(message, { modal: true }, ...choices);
+    this.log(`${kind} limit decision: ${choice ?? 'dismissed'}; current=${current}; limit=${limit}`);
+    if (choice === choices[0]) return { action: 'continue', additional: 1 };
+    if (choice === choices[1]) return { action: 'continue', additional: 3 };
+    return { action: 'pause' };
+  }
+
+  workflowPaused(reason) {
+    this.stream.markdown(`\n⏸ **Convergent paused at a safe boundary.** ${reason}\n\nUse \`@convergent /resume\` when you want to continue.\n`);
+    this.log(`Workflow paused: ${reason}`);
   }
 
   agentControlTimeout(agent, operation, timeoutMs) {
