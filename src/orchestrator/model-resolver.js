@@ -21,9 +21,10 @@ const PRESETS = {
   'cheap-b': [
     /gemini.*\b3(?:\.0)?\b(?!\.\d).*flash/i,
     /gpt[- ]?5\.4.*nano/i,
-    /claude.*haiku.*4\.5/i,
     /gpt[- ]?5\.4.*mini/i,
     /gpt[- ]?5.*mini/i,
+    /raptor.*mini/i,
+    /claude.*haiku.*4\.5/i,
   ],
 };
 
@@ -31,7 +32,10 @@ function modelText(model) {
   return `${model?.id ?? ''} ${model?.name ?? ''}`.trim();
 }
 
-function resolveModel(selector, models = []) {
+function resolveModel(selector, models = [], options = {}) {
+  const excludedIds = new Set((options.excludeIds ?? []).filter(Boolean).map((id) => String(id).toLowerCase()));
+  const eligible = models.filter((model) => !excludedIds.has(String(model?.id ?? '').toLowerCase()));
+
   if (!selector || selector.toLowerCase() === 'auto') {
     return { id: 'auto', reason: 'automatic model selection' };
   }
@@ -47,9 +51,10 @@ function resolveModel(selector, models = []) {
   const patterns = PRESETS[normalized];
   if (patterns) {
     for (const pattern of patterns) {
-      const match = models.find((model) => pattern.test(modelText(model)));
+      const match = eligible.find((model) => pattern.test(modelText(model)));
       if (match) {
-        return { id: match.id, name: match.name, reason: `${normalized} preset` };
+        const diversified = excludedIds.size > 0 ? '; diversified from peer worker' : '';
+        return { id: match.id, name: match.name, reason: `${normalized} preset${diversified}` };
       }
     }
     return { id: 'auto', reason: `${normalized} preset had no available match; falling back to auto` };
