@@ -6,6 +6,7 @@ const PRESETS = {
     /gpt[- ]?5\.6/i,
     /gpt[- ]?5\.5/i,
     /gpt[- ]?5\.4(?!.*mini|.*nano)/i,
+    /claude.*sonnet.*5/i,
     /claude.*sonnet.*4\.6/i,
     /gemini.*3\.1.*pro/i,
     /claude.*sonnet/i,
@@ -32,6 +33,47 @@ const PRESETS = {
     /gpt[- ]?5\.4.*mini/i,
     /gpt[- ]?5.*mini/i,
     /raptor.*mini/i,
+    /claude.*haiku.*4\.5/i,
+  ],
+  'balanced-a': [
+    /gpt[- ]?5\.6.*luna/i,
+    /gpt[- ]?5\.4.*mini/i,
+    /gpt[- ]?5.*mini/i,
+    /gpt[- ]?5\.6.*terra/i,
+    /claude.*sonnet.*5/i,
+    /claude.*haiku.*4\.5/i,
+    /gemini.*\b3(?:\.0)?\b(?!\.\d).*flash/i,
+  ],
+  'balanced-b': [
+    /gpt[- ]?5\.4.*mini/i,
+    /gpt[- ]?5.*mini/i,
+    /gpt[- ]?5\.6.*luna/i,
+    /gemini.*\b3(?:\.0)?\b(?!\.\d).*flash/i,
+    /gpt[- ]?5\.6.*terra/i,
+    /claude.*sonnet.*5/i,
+    /claude.*haiku.*4\.5/i,
+  ],
+  'high-risk-a': [
+    /gpt[- ]?5\.6.*terra/i,
+    /claude.*sonnet.*5/i,
+    /gpt[- ]?5\.6.*sol/i,
+    /gpt[- ]?5\.5/i,
+    /gpt[- ]?5\.4(?!.*mini|.*nano)/i,
+    /claude.*sonnet.*4\.6/i,
+    /claude.*sonnet/i,
+    /gpt[- ]?5\.4.*mini/i,
+    /gpt[- ]?5.*mini/i,
+  ],
+  'high-risk-b': [
+    /gpt[- ]?5\.4.*mini/i,
+    /gpt[- ]?5.*mini/i,
+    /gpt[- ]?5\.6.*terra/i,
+    /claude.*sonnet.*5/i,
+    /gpt[- ]?5\.6.*sol/i,
+    /gpt[- ]?5\.5/i,
+    /gpt[- ]?5\.4(?!.*mini|.*nano)/i,
+    /gpt[- ]?5\.6.*luna/i,
+    /claude.*sonnet/i,
     /claude.*haiku.*4\.5/i,
   ],
 };
@@ -86,9 +128,9 @@ function resolveModel(selector, models = [], options = {}) {
     }
 
     if (excludedIds.size > 0) {
-      const sameCheapModel = firstPresetMatch(patterns, models);
-      if (sameCheapModel) {
-        return resolvedModel(sameCheapModel, `${normalized} preset; no different cheap model available`);
+      const sameModel = firstPresetMatch(patterns, models);
+      if (sameModel) {
+        return resolvedModel(sameModel, `${normalized} preset; no different matching model available`);
       }
     }
 
@@ -101,4 +143,38 @@ function resolveModel(selector, models = [], options = {}) {
   return { id: 'auto', reason: `configured selector "${selector}" was unavailable; falling back to auto` };
 }
 
-module.exports = { resolveModel, PRESETS, resolvedModel };
+function adaptivePreset(worker, route = 'standard', risk = 'medium') {
+  const role = String(worker ?? 'A').toUpperCase() === 'B' ? 'b' : 'a';
+  if (route === 'high_risk' || risk === 'high') return `high-risk-${role}`;
+  if (route === 'trivial' && risk === 'low') return `cheap-${role}`;
+  return `balanced-${role}`;
+}
+
+function isAdaptiveWorkerSelector(selector) {
+  const normalized = String(selector ?? '').trim().toLowerCase();
+  return normalized === 'adaptive' || normalized === 'adaptive-diverse';
+}
+
+function resolveWorkerModel(selector, models = [], options = {}) {
+  const worker = String(options.worker ?? 'A').toUpperCase() === 'B' ? 'B' : 'A';
+  const normalized = String(selector ?? '').trim().toLowerCase();
+  if (!isAdaptiveWorkerSelector(normalized)) {
+    return resolveModel(selector, models, { excludeIds: options.excludeIds });
+  }
+
+  const preset = adaptivePreset(worker, options.route, options.risk);
+  const result = resolveModel(preset, models, { excludeIds: options.excludeIds });
+  return {
+    ...result,
+    reason: `adaptive Worker ${worker}: route=${options.route ?? 'standard'}, risk=${options.risk ?? 'medium'} -> ${preset}; ${result.reason}`,
+  };
+}
+
+module.exports = {
+  resolveModel,
+  resolveWorkerModel,
+  adaptivePreset,
+  isAdaptiveWorkerSelector,
+  PRESETS,
+  resolvedModel,
+};
