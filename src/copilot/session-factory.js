@@ -9,12 +9,27 @@ const {
 const { routePolicy, chooseReasoningEffort } = require('../orchestrator/routing');
 const { createPlanTool, createPassTool, createReviewTool } = require('./tools');
 
+function readonlyShellMutation(input) {
+  const name = String(input?.toolName ?? '').toLowerCase();
+  if (!/(bash|shell|powershell|terminal|cmd)/.test(name)) return false;
+  const args = input?.toolArgs ?? {};
+  const text = [
+    args.command,
+    args.fullCommandText,
+    args.script,
+    args.input,
+    JSON.stringify(args),
+  ].filter(Boolean).join(' ');
+
+  return /\bgit\s+(?:add|commit|push|pull|checkout|switch|reset|clean|restore|merge|rebase|cherry-pick|apply|am|rm|mv|stash)\b|\b(?:Set-Content|Add-Content|Out-File|Remove-Item|Move-Item|Copy-Item|New-Item|Rename-Item)\b|(?:^|[;&|]\s*)\b(?:rm|mv|cp|mkdir|touch|truncate)\b|\bsed\s+-i\b|\bperl\s+-pi\b|\btee\b|(^|[^>])>\s*[^>&]|\bnpm\s+(?:install|update|uninstall)\b|\b(?:pip|uv\s+pip)\s+install\b/i.test(text);
+}
+
 function readonlyHook(input) {
   const name = String(input.toolName ?? '').toLowerCase();
-  if (/(^|[_-])(edit|write|delete|create|apply.?patch)($|[_-])/.test(name)) {
+  if (/(^|[_-])(edit|write|delete|create|apply.?patch)($|[_-])/.test(name) || readonlyShellMutation(input)) {
     return {
       permissionDecision: 'deny',
-      permissionDecisionReason: 'This Convergent role is read-only.',
+      permissionDecisionReason: 'This Convergent role is read-only; use inspection/diagnostic commands only.',
     };
   }
   return { permissionDecision: 'allow' };
@@ -139,4 +154,4 @@ class SessionFactory {
   }
 }
 
-module.exports = { SessionFactory, readonlyHook, safeSessionPart, withReasoning };
+module.exports = { SessionFactory, readonlyHook, readonlyShellMutation, safeSessionPart, withReasoning };
