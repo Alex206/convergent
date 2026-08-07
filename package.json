@@ -159,7 +159,7 @@
           "enum": ["auto", "inprocess", "stdio"],
           "default": "auto",
           "enumDescriptions": [
-            "Use stdio under a real Node process and the SDK in-process transport inside a VS Code/Electron extension host.",
+            "Use stdio under a real Node process and the SDK in-process FFI transport inside a VS Code/Electron extension host.",
             "Always use the Copilot SDK in-process FFI transport.",
             "Always use the Copilot SDK stdio child-process transport. With Copilot SDK 1.0.8 this is not suitable inside a VS Code Extension Host because the SDK launches JS CLI files through process.execPath (Code.exe)."
           ],
@@ -178,12 +178,12 @@
     "@github/copilot-sdk": "1.0.8"
   },
   "devDependencies": {
-    "@vscode/vsce": "3.6.0"
+    "@vscode/vsce": "3.9.2"
   },
   "allowScripts": {
-    "@vscode/vsce-sign@2.0.9": true,
-    "keytar@7.9.0": true,
-    "koffi@3.1.4": true
+    "@vscode/vsce-sign": true,
+    "keytar": true,
+    "koffi": true
   },
   "repository": { "type": "git", "url": "https://github.com/Alex206/convergent.git" },
   "bugs": { "url": "https://github.com/Alex206/convergent/issues" },
