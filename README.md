@@ -68,7 +68,7 @@ Or run **Convergent: Start Workflow** from the command palette.
 
 ## Adaptive routing
 
-The coordinator classifies every task, but the TypeScript engine validates the result. The default `convergent.routingMode` is `adaptive`.
+The coordinator classifies every task, but the JavaScript engine validates the result. The default `convergent.routingMode` is `adaptive`.
 
 | Route | Intended use | Enforced workflow |
 | --- | --- | --- |
