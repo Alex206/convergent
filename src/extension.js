@@ -3,6 +3,7 @@
 const vscode = require('vscode');
 const { ConvergentEngine } = require('./orchestrator/engine');
 const { resolveModel } = require('./orchestrator/model-resolver');
+const { ensureConcreteUserRequest } = require('./orchestrator/request-preflight');
 const { createPermissionHandler, createUserInputHandler } = require('./copilot/permissions');
 const { createClientOptions } = require('./copilot/runtime');
 const { VscodeWorkflowUi, compactUsage, detailedUsageMarkdown, diagnosticsMarkdown } = require('./ui/vscode-ui');
@@ -67,7 +68,7 @@ function readConfig() {
     reasoningMode: config.get('reasoningMode', 'adaptive'),
     maxWorkerPasses: config.get('maxWorkerPasses', 8),
     maxReviewerCycles: config.get('maxReviewerCycles', 3),
-    agentTurnTimeoutMs: config.get('agentTurnTimeoutSeconds', 180) * 1000,
+    agentInactivityTimeoutMs: config.get('agentInactivityTimeoutSeconds', config.get('agentTurnTimeoutSeconds', 180)) * 1000,
     toolStallTimeoutMs: config.get('toolStallTimeoutSeconds', 120) * 1000,
     stallGraceMs: config.get('toolStallGraceSeconds', 10) * 1000,
     heartbeatMs: config.get('heartbeatSeconds', 30) * 1000,
@@ -128,6 +129,7 @@ async function executeWorkflow(prompt, stream, token) {
   const models = await resolveConfiguredModels(runtime.client, config.selectors);
   const controller = new AbortController();
   const ui = new VscodeWorkflowUi(vscode, stream, output);
+  ui.agentInactivityTimeoutMs = config.agentInactivityTimeoutMs;
   ui.toolStallTimeoutMs = config.toolStallTimeoutMs;
   ui.stallGraceMs = config.stallGraceMs;
   ui.heartbeatMs = config.heartbeatMs;
@@ -142,7 +144,6 @@ async function executeWorkflow(prompt, stream, token) {
     ui,
     maxWorkerPasses: config.maxWorkerPasses,
     maxReviewerCycles: config.maxReviewerCycles,
-    agentTurnTimeoutMs: config.agentTurnTimeoutMs,
     routingMode: config.routingMode,
     reasoningMode: config.reasoningMode,
     signal: controller.signal,
@@ -185,13 +186,21 @@ async function activate(context) {
       return;
     }
     try {
-      await executeWorkflow(prompt, stream, token);
+      const preflight = await ensureConcreteUserRequest(
+        prompt,
+        createUserInputHandler(vscode),
+        (message) => {
+          output.appendLine(`[${new Date().toISOString()}] Request preflight: ${message}`);
+          stream.progress('The referenced request is missing; waiting for you to paste it.');
+        },
+      );
+      await executeWorkflow(preflight.request, stream, token);
     } catch (error) {
       output.error(error?.stack ?? String(error));
       if (error?.convergentDiagnostic) output.appendLine(`Control diagnostic: ${JSON.stringify(error.convergentDiagnostic)}`);
       stream.markdown(`\n**Convergent stopped:** ${error.message ?? String(error)}`);
-      if (error?.code === 'CONVERGENT_TOOL_STALL') {
-        stream.markdown('\nThe watchdog detected a stalled tool call and cancelled the agent turn. Use **Show diagnostics** for the captured tool/runtime state.');
+      if (error?.code === 'CONVERGENT_TOOL_STALL' || error?.code === 'CONVERGENT_AGENT_INACTIVITY') {
+        stream.markdown('\nThe watchdog cancelled a stalled agent turn. Use **Show diagnostics** for the captured tool/runtime state.');
       }
     }
   });
