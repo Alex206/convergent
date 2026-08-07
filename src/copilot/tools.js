@@ -2,7 +2,7 @@
 
 function createPlanTool(defineTool, sink) {
   return defineTool('report_plan', {
-    description: 'Submit the final structured implementation plan to the Convergent orchestrator. Call exactly once.',
+    description: 'Submit the final structured plan and per-task workflow classification to the Convergent orchestrator. Call exactly once.',
     parameters: {
       type: 'object',
       properties: {
@@ -17,8 +17,15 @@ function createPlanTool(defineTool, sink) {
               title: { type: 'string' },
               description: { type: 'string' },
               acceptanceCriteria: { type: 'array', items: { type: 'string' }, minItems: 1 },
+              route: { type: 'string', enum: ['read_only', 'trivial', 'standard', 'high_risk'] },
+              risk: { type: 'string', enum: ['low', 'medium', 'high'] },
+              routingReason: { type: 'string' },
+              result: {
+                type: 'string',
+                description: 'Required for read_only tasks: the coordinator answer/result after performing the necessary inspection.',
+              },
             },
-            required: ['id', 'title', 'description', 'acceptanceCriteria'],
+            required: ['id', 'title', 'description', 'acceptanceCriteria', 'route', 'risk', 'routingReason'],
             additionalProperties: false,
           },
         },
