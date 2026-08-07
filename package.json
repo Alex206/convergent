@@ -1,0 +1,136 @@
+{
+  "name": "convergent",
+  "displayName": "Convergent",
+  "description": "Deterministic multi-agent implementation and adversarial review loops powered by GitHub Copilot.",
+  "version": "0.1.0",
+  "publisher": "alex206",
+  "license": "SEE LICENSE IN LICENSE",
+  "engines": {
+    "vscode": "^1.102.0",
+    "node": "^20.19.0 || >=22.12.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "copilot",
+    "agents",
+    "review",
+    "orchestration",
+    "workflow"
+  ],
+  "main": "./src/extension.js",
+  "activationEvents": [
+    "onChatParticipant:convergent.workflow",
+    "onCommand:convergent.start",
+    "onCommand:convergent.stop",
+    "onCommand:convergent.showModels",
+    "onCommand:convergent.showOutput"
+  ],
+  "contributes": {
+    "chatParticipants": [
+      {
+        "id": "convergent.workflow",
+        "name": "convergent",
+        "fullName": "Convergent",
+        "description": "Implement a task through convergent multi-agent review",
+        "isSticky": true,
+        "commands": [
+          {
+            "name": "implement",
+            "description": "Plan and implement a task using the convergent review workflow"
+          }
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "command": "convergent.start",
+        "title": "Convergent: Start Workflow"
+      },
+      {
+        "command": "convergent.stop",
+        "title": "Convergent: Stop Active Workflow"
+      },
+      {
+        "command": "convergent.showModels",
+        "title": "Convergent: Show Available Copilot Models"
+      },
+      {
+        "command": "convergent.showOutput",
+        "title": "Convergent: Show Agent Log"
+      }
+    ],
+    "configuration": {
+      "title": "Convergent",
+      "properties": {
+        "convergent.models.coordinator": {
+          "type": "string",
+          "default": "strong",
+          "description": "Coordinator model selector. Use an exact Copilot model id/name, or one of: strong, cheap-a, cheap-b, auto."
+        },
+        "convergent.models.workerA": {
+          "type": "string",
+          "default": "cheap-a",
+          "description": "Persistent worker A model selector. cheap-a prefers a low-cost Anthropic model when available."
+        },
+        "convergent.models.workerB": {
+          "type": "string",
+          "default": "cheap-b",
+          "description": "Persistent worker B model selector. cheap-b prefers a low-cost non-A worker model when available."
+        },
+        "convergent.models.reviewer": {
+          "type": "string",
+          "default": "strong",
+          "description": "Strong reviewer model selector. The reviewer context is retained for the lifetime of one implementation task."
+        },
+        "convergent.maxWorkerPasses": {
+          "type": "number",
+          "default": 8,
+          "minimum": 2,
+          "maximum": 30,
+          "description": "Maximum A/B review/fix passes per convergence cycle, excluding the initial implementation pass."
+        },
+        "convergent.maxReviewerCycles": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 10,
+          "description": "Maximum strong-review remediation cycles per implementation task."
+        },
+        "convergent.permissionMode": {
+          "type": "string",
+          "enum": [
+            "workspace",
+            "ask"
+          ],
+          "default": "workspace",
+          "enumDescriptions": [
+            "Automatically approve normal workspace reads, writes, and commands; still ask for risky operations.",
+            "Ask before shell commands and writes."
+          ],
+          "description": "How Copilot SDK tool permission requests are handled."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check src/extension.js && node --check src/orchestrator/engine.js && node --check src/copilot/session-factory.js",
+    "package": "npx @vscode/vsce package"
+  },
+  "dependencies": {
+    "@github/copilot-sdk": "1.0.8"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^3.6.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Alex206/convergent.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Alex206/convergent/issues"
+  },
+  "homepage": "https://github.com/Alex206/convergent#readme"
+}
