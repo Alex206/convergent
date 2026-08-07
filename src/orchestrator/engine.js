@@ -23,6 +23,28 @@ function formatFindings(findings) {
     .join('\n');
 }
 
+function formatPeerPass(peerPass) {
+  if (!peerPass?.report) return '';
+  const findings = peerPass.report.findings?.length
+    ? `\nPeer findings:\n${peerPass.report.findings.map((finding) => `- ${finding}`).join('\n')}`
+    : '\nPeer findings: none reported.';
+  const checks = peerPass.report.checks?.length
+    ? `\nPeer checks:\n${peerPass.report.checks.map((check) => `- ${check}`).join('\n')}`
+    : '';
+
+  return [
+    `Previous peer pass from Worker ${peerPass.worker}:`,
+    `- verdict: ${peerPass.report.verdict}`,
+    `- workspace changed: ${peerPass.changed ? 'yes' : 'no'}`,
+    `- resulting revision: ${peerPass.revision}`,
+    `- summary: ${peerPass.report.summary ?? ''}`,
+    findings,
+    checks,
+    '',
+    'Treat this as the peer worker\'s explicit technical position. Challenge it where warranted rather than simply agreeing with it. Verify claims against the current repository state, but do not repeat inspection that your retained context already makes unnecessary.',
+  ].join('\n');
+}
+
 async function sendAndCaptureReport(session, sink, prompt, timeoutMs) {
   try {
     await session.sendAndWait({ prompt }, timeoutMs);
@@ -135,7 +157,7 @@ class ConvergentEngine {
       this.sessions.push(workerB.session);
       reviewer = await factory.createReviewer(taskSessionKey);
       this.sessions.push(reviewer.session);
-      const initial = await this.runWorkerPass(workerA, task, 'IMPLEMENT', null);
+      const initial = await this.runWorkerPass(workerA, task, 'IMPLEMENT', null, null);
       this.ui.passResult('A', initial.report, initial.changed, initial.revision);
       if (initial.report.verdict === 'blocked') {
         throw new Error(`Worker A is blocked: ${initial.report.summary}`);
@@ -179,7 +201,7 @@ class ConvergentEngine {
         }
 
         this.ui.phase('Remediation', `Strong reviewer returned ${review.findings.length} finding(s); Worker A starts remediation, then A/B convergence repeats.`);
-        const remediation = await this.runWorkerPass(workerA, task, 'FIX_STRONG_REVIEW_FINDINGS', review.findings);
+        const remediation = await this.runWorkerPass(workerA, task, 'FIX_STRONG_REVIEW_FINDINGS', review.findings, null);
         this.ui.passResult('A', remediation.report, remediation.changed, remediation.revision);
         if (remediation.report.verdict === 'blocked') {
           throw new Error(`Worker A is blocked during strong-review remediation: ${remediation.report.summary}`);
@@ -201,10 +223,11 @@ class ConvergentEngine {
 
     let currentRevision = previousPass.revision;
     let worker = nextWorker;
+    let peerPass = previousPass;
 
     for (let pass = 1; pass <= this.maxWorkerPasses; pass += 1) {
       this.checkCancelled();
-      const result = await this.runWorkerPass(worker, task, 'REVIEW_AND_FIX', null);
+      const result = await this.runWorkerPass(worker, task, 'REVIEW_AND_FIX', null, peerPass);
       this.ui.passResult(worker.name, result.report, result.changed, result.revision);
 
       if (result.report.verdict === 'blocked') {
@@ -225,24 +248,27 @@ class ConvergentEngine {
         return currentRevision;
       }
 
+      peerPass = result;
       worker = worker === workerA ? workerB : workerA;
     }
 
     throw new Error(`Workers did not converge within ${this.maxWorkerPasses} review/fix passes.`);
   }
 
-  async runWorkerPass(worker, task, mode, findings) {
+  async runWorkerPass(worker, task, mode, findings, peerPass = null) {
     const before = await this.revisionProvider(this.workspace);
+    const peerContext = peerPass ? formatPeerPass(peerPass) : '';
     const prompt = [
       `MODE: ${mode}`,
       taskPrompt(task),
       '',
       `Current workspace revision fingerprint: ${before}`,
       findings?.length ? `\nStrong reviewer findings to verify and address:\n${formatFindings(findings)}` : '',
+      peerContext ? `\n${peerContext}` : '',
       '',
       mode === 'IMPLEMENT'
         ? 'Implement this task completely. Inspect only the repository context needed for the change and follow existing patterns.'
-        : 'Review the CURRENT repository state independently. Fix every valid actionable issue you find; do not merely comment on it. Avoid redundant exploration of unchanged context.',
+        : 'Review the CURRENT repository state independently. Fix every valid actionable issue you find; do not merely comment on it. Use your retained task context plus the peer report above, and avoid redundant exploration of unchanged context.',
       'Run only relevant checks, then call report_pass exactly once as soon as the pass is complete.',
     ].join('\n');
 
@@ -273,4 +299,11 @@ class ConvergentEngine {
   }
 }
 
-module.exports = { ConvergentEngine, taskPrompt, requireReport, formatFindings, sendAndCaptureReport };
+module.exports = {
+  ConvergentEngine,
+  taskPrompt,
+  requireReport,
+  formatFindings,
+  formatPeerPass,
+  sendAndCaptureReport,
+};
