@@ -7,7 +7,9 @@ const {
   createPassTool,
   createReviewTool,
   normalizePassReport,
+  validatePassReport,
   normalizeReviewReport,
+  validateReviewReport,
 } = require('../src/copilot/tools');
 
 function captureDefinition(name, definition) {
@@ -34,13 +36,50 @@ test('plan schema requires workflow route, risk, and rationale for every task', 
 
 test('pass reports normalize non-array findings and checks instead of crashing peer exchange', () => {
   const report = normalizePassReport({
-    verdict: 'changed',
-    summary: 'fixed issue',
+    verdict: 'blocked',
+    summary: 'cannot resolve issue safely',
     findings: { title: 'Race', description: 'Shutdown can race.' },
     checks: 'tests passed',
   });
   assert.deepEqual(report.findings, ['Race: Shutdown can race.']);
   assert.deepEqual(report.checks, ['tests passed']);
+});
+
+test('clean and changed worker reports reject unresolved findings', async () => {
+  for (const verdict of ['clean', 'changed']) {
+    const sink = { value: null };
+    const tool = createPassTool(captureDefinition, sink);
+    const result = await tool.handler({
+      verdict,
+      summary: 'Peer claim was incorrect; current repository is valid.',
+      findings: ['Peer was wrong about the file layout.'],
+      checks: ['tests passed'],
+    });
+    assert.equal(result.accepted, false);
+    assert.equal(result.retry, true);
+    assert.match(result.error, /findings=\[\]/);
+    assert.equal(sink.value, null);
+  }
+});
+
+test('worker disagreements belong in summary and allow a clean report with no findings', async () => {
+  const sink = { value: null };
+  const tool = createPassTool(captureDefinition, sink);
+  const result = await tool.handler({
+    verdict: 'clean',
+    summary: 'Worker B claimed the files were reversed, but inspection and tests show the current layout is correct.',
+    findings: [],
+    checks: ['script runs', 'unit test passes'],
+  });
+  assert.equal(result.accepted, true);
+  assert.equal(sink.value.verdict, 'clean');
+  assert.deepEqual(sink.value.findings, []);
+});
+
+test('pass semantic validator keeps the convergence invariant explicit', () => {
+  assert.match(validatePassReport({ verdict: 'clean', findings: ['x'] }), /CLEAN/);
+  assert.match(validatePassReport({ verdict: 'changed', findings: ['x'] }), /CHANGED/);
+  assert.equal(validatePassReport({ verdict: 'clean', findings: [] }), null);
 });
 
 test('review reports normalize a single string finding into the strong-review shape', () => {
@@ -54,4 +93,10 @@ test('review reports normalize a single string finding into the strong-review sh
   assert.equal(report.findings[0].severity, 'medium');
   assert.equal(report.findings[0].description, 'Missing negative-path test');
   assert.deepEqual(report.checks, []);
+});
+
+test('strong-review semantic validator rejects contradictory verdict/findings combinations', () => {
+  assert.match(validateReviewReport({ verdict: 'clean', findings: [{ description: 'x' }] }), /CLEAN/);
+  assert.match(validateReviewReport({ verdict: 'findings', findings: [] }), /FINDINGS/);
+  assert.equal(validateReviewReport({ verdict: 'clean', findings: [] }), null);
 });
