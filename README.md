@@ -30,7 +30,9 @@ Every run has a plan, but planning is proportionate: a simple request can be a o
 - Lightweight fast path: A implements, B reviews once, and any B modification automatically escalates to the full standard workflow
 - Fresh persistent Worker A, Worker B, and strong-reviewer sessions for each implementation task
 - Structured coordinator plan and structured worker/reviewer verdicts via application-owned Copilot SDK tools, with defensive normalization and semantic validation at the tool boundary
+- Serialized `<report_pass>` / `<report_review>` assistant output is narrowly recovered when a model emits the structured report as text instead of invoking the custom tool
 - Worker reports reserve `findings` for unresolved actionable issues; CLEAN/CHANGED reports with findings are rejected and retried instead of crashing convergence
+- Worker verdicts are reconciled against authoritative workspace fingerprints: attributable worker writes can correct a mistaken CLEAN to CHANGED, while unexplained workspace changes still fail closed
 - A/B adversarial review/fix loop with explicit peer-report exchange
 - Full-workflow convergence requires A and B to approve the exact same workspace revision; a valid `CHANGED` pass approves the revision that worker just produced, while `CLEAN` approves the unchanged current revision
 - Persistent strong reviewer remembers its earlier findings during remediation cycles
@@ -44,9 +46,11 @@ Every run has a plan, but planning is proportionate: a simple request can be a o
 - Validation guidance avoids transient working-tree pollution, optional unrequested extras, and redundant re-reading/re-running after a successful validation
 - Event-driven tool and agent inactivity watchdogs with live heartbeats and bounded cancellation
 - Long healthy agent turns are not killed by a fixed wall-clock `sendAndWait` deadline; watchdogs react to lack of progress instead
+- Safe workflow checkpoints support `@convergent /resume` and **Convergent: Resume Last Workflow** after interruption or stop
+- Interrupted planning retains the original request; completed tasks are skipped; an interrupted task restarts only that task against the current workspace with fresh task-local sessions
 - Live chat status for route/risk, selected models/effort, pass duration, escalation, and usage
 - AI usage tracking from Copilot token/usage events and durable nano-AIU checkpoints
-- **Show usage**, **Show diagnostics**, **Show agent log**, **Stop workflow**, and **Source Control** chat buttons
+- **Show usage**, **Show diagnostics**, **Show agent log**, **Stop workflow**, **Resume workflow**, and **Source Control** chat/command actions
 - Native VS Code clarification UI for coordinator `ask_user` requests
 - Workspace-aware permission handling and explicit prompts for risky commands
 - Detailed agent/tool/usage trace in the **Convergent** output channel, including each role's configured tool allow-list
@@ -66,6 +70,7 @@ The Node.js Copilot SDK bundles the compatible Copilot CLI runtime. Authenticati
 npm install
 npm test
 npm run check
+npm run package
 ```
 
 Press `F5` in VS Code to launch an Extension Development Host, open a Git repository, then use:
@@ -75,6 +80,24 @@ Press `F5` in VS Code to launch an Extension Development Host, open a Git reposi
 ```
 
 Or run **Convergent: Start Workflow** from the command palette.
+
+## Resume after interruption
+
+Convergent persists safe workflow checkpoints in VS Code workspace state. Resume with:
+
+```text
+@convergent /resume
+```
+
+or **Convergent: Resume Last Workflow**.
+
+Resume is deliberately boundary-based rather than pretending to restore an opaque in-flight model/tool call:
+
+- interrupted during coordinator planning: keep the original request and re-run planning;
+- interrupted between tasks: continue with the next pending task and skip completed tasks;
+- interrupted inside a task: restart only that task with fresh task-local sessions against the current partially modified workspace.
+
+If the workspace changed after a completed-task checkpoint, Convergent asks before continuing with the saved next task. Finer pass/reviewer-level checkpoints are a future refinement.
 
 ## Adaptive routing
 
@@ -149,13 +172,15 @@ The displayed AI-credit figure is an approximate presentation derived as `totalN
 
 For the `standard` and `high_risk` routes, convergence means both workers approve the exact same workspace revision fingerprint.
 
-A valid worker pass approves its final revision in either of two ways:
+A worker's final workspace fingerprint is authoritative for whether the pass changed the workspace. The normal report contract remains:
 
 ```text
 CLEAN   → worker changed nothing and approves the current revision
 CHANGED → worker made a substantive change, left no unresolved findings,
           and approves the resulting revision it just produced
 ```
+
+If a worker mistakenly reports `CLEAN` after successful Convergent-observed `edit`, `apply_patch`, or `create` calls changed the fingerprint, Convergent reconciles that verdict to `CHANGED` instead of discarding the whole run. If the fingerprint changed without attributable worker write-tool activity, Convergent still fails closed because the change could have come from the user, another process, or validation pollution. Conversely, a `CHANGED` report whose final fingerprint is identical is normalized to `CLEAN`.
 
 A worker therefore does not need a second pass merely to approve its own unchanged result. For example:
 
@@ -184,6 +209,12 @@ The revision fingerprint covers `HEAD`, staged changes, unstaged changes, and un
 
 The `trivial` route intentionally uses a lighter guarantee: Worker B is the independent approval after A's implementation. If B changes anything, that lightweight approval is invalid and the task escalates to standard convergence plus strong review.
 
+## Packaging
+
+`npm run package` uses the project's pinned `@vscode/vsce`. A `.vscodeignore` excludes development/test/editor/CI metadata and old VSIX files, and npm install-script permissions for the reviewed native/packaging dependencies are explicit.
+
+The VSIX remains large because the Copilot SDK carries its compatible runtime/platform payload; current CI measures roughly 176 MB compressed. That runtime is intentionally not excluded blindly. VSCE's remaining file-count/bundle warning is tracked as a packaging optimization problem rather than suppressed as if solved.
+
 ## Safety
 
 The coordinator and strong reviewer are read-only. They can inspect repository state and run diagnostic commands, but Convergent blocks obvious shell mutations and also checks the workspace revision before/after their turns as a second line of defense.
@@ -194,4 +225,4 @@ Set `convergent.permissionMode` to `ask` to require approval for shell commands 
 
 ## Status
 
-This is still an MVP. Useful next increments include resumable workflow state after VS Code reload, a dedicated mutable agent/task dashboard, richer diff/finding navigation, empirical model-quality/cost scoring from Convergent runs, and a CLI frontend over the same orchestrator core. Optional use of the VS Code-selected chat model for coordination and explicit user routing hints are tracked separately as future improvements.
+This is still an MVP. Useful next increments include pass/reviewer-level resume checkpoints, interactive long-running-command control, a dedicated mutable agent/task dashboard, richer diff/finding navigation, empirical model-quality/cost scoring and task-complexity-aware worker selection, profile-based specialized teams, and a CLI frontend over the same orchestrator core. Optional use of the VS Code-selected chat model for coordination and explicit user routing hints are tracked separately as future improvements.
