@@ -33,16 +33,19 @@ Every run has a plan, but planning is proportionate: a simple request can be a o
 - Full-workflow convergence only when A and B both return `CLEAN` against the exact same workspace revision fingerprint
 - Persistent strong reviewer remembers its earlier findings during remediation cycles
 - Strong-review findings feed back into A/B and must converge again before re-review
+- Revision-scoped validation evidence is carried from A/B to the strong reviewer so checks are not rerun mechanically
 - Adaptive reasoning effort (`low`, `medium`, `high`) when the selected Copilot model advertises support
 - Runtime model discovery with `strong`, `planner`, `cheap-a`, and `cheap-b` presets plus exact model selection
 - Worker A prefers GPT-5.6 Luna when available for low-cost tool-heavy implementation passes; Worker B prefers a different cheap model
 - Role-specific Copilot tool allow-lists so coordinator/reviewer do not inherit editing tools and workers do not inherit the full Copilot CLI toolbox
+- Workers use purpose-built `apply_patch`, `edit`, and `create` tools for file-content changes; shell-based content editing is blocked
+- Validation guidance avoids transient working-tree pollution and redundant reruns
 - Live chat status for route/risk, selected models/effort, pass duration, escalation, and usage
 - AI usage tracking from Copilot token/usage events and durable nano-AIU checkpoints
 - **Show usage**, **Show agent log**, **Stop workflow**, and **Source Control** chat buttons
-- Native VS Code clarification UI for Copilot `ask_user` requests
+- Native VS Code clarification UI for coordinator `ask_user` requests
 - Workspace-aware permission handling and explicit prompts for risky commands
-- Detailed agent/tool/usage trace in the **Convergent** output channel
+- Detailed agent/tool/usage trace in the **Convergent** output channel, including each role's configured tool allow-list
 
 ## Requirements
 
@@ -91,19 +94,37 @@ Convergent resolves models from `client.listModels()` at runtime. This is import
 | Coordinator | `strong` | Strong model; medium reasoning when supported. Persistent for the complete user request. |
 | Worker A | `cheap-a` | Prefer GPT-5.6 Luna when available, then another low-cost worker model |
 | Worker B | `cheap-b` | Prefer a different low-cost model from A |
-| Strong reviewer | `strong` | Strong model; medium/high reasoning according to route when supported |
+| Strong reviewer | `strong` | Strong model; low effort for low-risk standard tasks, medium for normal standard tasks, high for high-risk tasks when supported |
 
 The lower-cost `planner` selector remains available as an explicit configuration option, but it is not the default: planning and task slicing are treated as high-leverage decisions where an underpowered model can incorrectly simplify a complex request.
 
 `convergent.reasoningMode=adaptive` applies role/route-driven effort only when the selected model advertises the requested reasoning-effort capability. Set it to `model-default` to leave reasoning effort untouched.
+
+## Tool policy
+
+Convergent deliberately does not expose every Copilot CLI tool to every role. This both limits authority and reduces the tool-definition context paid on each model roundtrip.
+
+- Coordinator: `view`, `glob`, `rg`/`grep`, the platform shell for read-only diagnostics, `ask_user`, and `report_plan`.
+- Worker A/B: the same repository inspection/search primitives, the platform shell for validation/cleanup, `apply_patch`, `edit`, `create`, and `report_pass`.
+- Strong reviewer: read/search/diagnostic shell plus `report_review`; no file editing and no `ask_user`.
+
+`apply_patch` is the Copilot CLI patch-oriented editing primitive and is preferred when a coherent change can be applied efficiently as a patch, including related edits across files. `edit` remains useful for precise replacements and `create` for new files. Workers are prevented from falling back to PowerShell/bash file-content editing such as `Set-Content`, redirection, `sed -i`, or shell-level patch commands.
+
+Convergent intentionally does not expose Copilot subagent/delegation tools to A/B/reviewer because agent scheduling belongs to the deterministic Convergent engine. The configured tool list for each live session is written to the **Convergent** output channel for troubleshooting.
+
+## Validation evidence
+
+Each worker report can include concise checks actually performed against its final revision. Convergent keeps this evidence only while the exact workspace revision remains current; any repository change discards evidence from the previous revision.
+
+When A/B converge, the strong reviewer receives the accumulated evidence for that exact revision. Evidence is not treated as proof, but low-risk reviewers are instructed not to rerun already-passed checks mechanically unless a concrete concern justifies independent verification. Medium/high-risk review can still rerun critical checks as needed.
+
+Validation should avoid polluting the working tree. For example, Python validation should use `-B` or `PYTHONDONTWRITEBYTECODE=1` where practical so `__pycache__` is not created merely by Convergent's own checks.
 
 ## Usage and AI credits
 
 Convergent records per-session model calls, input/output tokens, turn count, active duration, context usage, and Copilot durable `totalNanoAiu` checkpoints. The chat shows a running compact usage line after meaningful turns and a per-agent table at the end. **Convergent: Show AI Usage** shows the latest snapshot while a run is active or after it finishes.
 
 The displayed AI-credit figure is an approximate presentation derived as `totalNanoAiu / 1e9`, following the Copilot SDK usage documentation's nano-unit example. GitHub Copilot billing remains the source of truth for actual billable credits/cost.
-
-To reduce the fixed context paid on every model/tool roundtrip, Convergent supplies each session with a role-specific `availableTools` allow-list instead of inheriting the complete Copilot CLI tool catalog. Coordinator/reviewer receive inspection, search, shell, ask-user, and their structured report tool; workers additionally receive edit/create and `report_pass`.
 
 ## Convergence invariant
 
@@ -116,7 +137,7 @@ B reviews revision R → CLEAN
 worker convergence
 ```
 
-If B changes `R` to `R2`, A's earlier approval of `R` is discarded and both agents must approve `R2`.
+If B changes `R` to `R2`, A's earlier approval of `R` is discarded and both agents must approve `R2`. Validation evidence associated with `R` is discarded as well.
 
 Worker `findings` means unresolved actionable issues only. Issues found and fixed, disagreements with the peer, and other non-actionable observations belong in the structured summary. This keeps `CLEAN` unambiguous while still preserving the peer's technical position.
 
