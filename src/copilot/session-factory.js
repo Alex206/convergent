@@ -6,6 +6,7 @@ const {
   WORKER_B_PROMPT,
   REVIEWER_PROMPT,
 } = require('../orchestrator/prompts');
+const { routePolicy, chooseReasoningEffort } = require('../orchestrator/routing');
 const { createPlanTool, createPassTool, createReviewTool } = require('./tools');
 
 function readonlyHook(input) {
@@ -16,13 +17,6 @@ function readonlyHook(input) {
       permissionDecisionReason: 'This Convergent role is read-only.',
     };
   }
-
-  // Do not return `ask` for shell tools here. In the Copilot SDK that becomes a
-  // separate hook-permission request, which produces a modal for every harmless
-  // git/view command. The normal Convergent permission handler still evaluates
-  // shell permissions, and the orchestrator fingerprints the workspace before and
-  // after coordinator/reviewer turns so a shell-based source mutation cannot pass
-  // silently.
   return { permissionDecision: 'allow' };
 }
 
@@ -31,19 +25,33 @@ function safeSessionPart(value) {
   return (part || 'task').slice(0, 80);
 }
 
-function attachEventLogging(session, agentName, ui) {
+function attachEventLogging(session, agentName, ui, usage, model) {
+  usage?.register(agentName, session, model);
   const disposers = [];
   disposers.push(
     session.on('assistant.intent', (event) => ui.agentIntent(agentName, event.data.intent)),
     session.on('tool.execution_start', (event) => ui.agentTool(agentName, event.data.toolName)),
     session.on('assistant.message', (event) => ui.agentMessage(agentName, event.data.content)),
+    session.on('assistant.usage', (event) => {
+      usage?.recordAssistantUsage(agentName, event.data);
+      ui.agentUsageEvent?.(agentName, usage?.summary());
+    }),
+    session.on('session.usage_checkpoint', (event) => {
+      usage?.recordCheckpoint(agentName, event.data);
+      ui.agentUsageEvent?.(agentName, usage?.summary());
+    }),
+    session.on('session.usage_info', (event) => usage?.recordContext(agentName, event.data)),
     session.on('session.error', (event) => ui.agentError(agentName, event.data.message)),
   );
   return () => disposers.forEach((dispose) => dispose?.());
 }
 
+function withReasoning(options, effort) {
+  return effort ? { ...options, reasoningEffort: effort } : options;
+}
+
 class SessionFactory {
-  constructor({ client, sdk, workspace, models, permissionHandler, userInputHandler, ui, runId }) {
+  constructor({ client, sdk, workspace, models, permissionHandler, userInputHandler, ui, usage, runId, reasoningMode = 'adaptive' }) {
     this.client = client;
     this.sdk = sdk;
     this.workspace = workspace;
@@ -51,16 +59,20 @@ class SessionFactory {
     this.permissionHandler = permissionHandler;
     this.userInputHandler = userInputHandler;
     this.ui = ui;
+    this.usage = usage;
     this.runId = runId;
+    this.reasoningMode = reasoningMode;
   }
 
   async createCoordinator() {
     const sink = { value: null };
     const tool = createPlanTool(this.sdk.defineTool, sink);
-    const session = await this.client.createSession({
+    const model = this.models.coordinator;
+    const effort = chooseReasoningEffort(model, 'medium', this.reasoningMode);
+    const session = await this.client.createSession(withReasoning({
       sessionId: `${this.runId}-coordinator`,
       clientName: 'convergent-vscode',
-      model: this.models.coordinator.id,
+      model: model.id,
       workingDirectory: this.workspace,
       streaming: true,
       tools: [tool],
@@ -69,39 +81,47 @@ class SessionFactory {
       hooks: { onPreToolUse: readonlyHook },
       onPermissionRequest: this.permissionHandler,
       onUserInputRequest: this.userInputHandler,
-    });
-    attachEventLogging(session, 'Coordinator', this.ui);
-    return { session, sink };
+    }, effort));
+    attachEventLogging(session, 'Coordinator', this.ui, this.usage, model);
+    return { session, sink, name: 'Coordinator', model, reasoningEffort: effort };
   }
 
-  async createWorker(taskId, worker) {
+  async createWorker(taskId, worker, route = 'standard') {
     const safeTaskId = safeSessionPart(taskId);
     const sink = { value: null };
     const tool = createPassTool(this.sdk.defineTool, sink);
     const isA = worker === 'A';
-    const session = await this.client.createSession({
+    const role = isA ? 'workerA' : 'workerB';
+    const model = isA ? this.models.workerA : this.models.workerB;
+    const desiredEffort = routePolicy(route).efforts[role];
+    const effort = chooseReasoningEffort(model, desiredEffort, this.reasoningMode);
+    const session = await this.client.createSession(withReasoning({
       sessionId: `${this.runId}-${safeTaskId}-worker-${worker.toLowerCase()}`,
       clientName: 'convergent-vscode',
-      model: isA ? this.models.workerA.id : this.models.workerB.id,
+      model: model.id,
       workingDirectory: this.workspace,
       streaming: true,
       tools: [tool],
       systemMessage: { mode: 'append', content: isA ? WORKER_A_PROMPT : WORKER_B_PROMPT },
       onPermissionRequest: this.permissionHandler,
       onUserInputRequest: this.userInputHandler,
-    });
-    attachEventLogging(session, `Worker ${worker}`, this.ui);
-    return { session, sink, name: worker };
+    }, effort));
+    const name = `Worker ${worker}`;
+    attachEventLogging(session, name, this.ui, this.usage, model);
+    return { session, sink, name: worker, usageName: name, model, reasoningEffort: effort };
   }
 
-  async createReviewer(taskId) {
+  async createReviewer(taskId, route = 'standard') {
     const safeTaskId = safeSessionPart(taskId);
     const sink = { value: null };
     const tool = createReviewTool(this.sdk.defineTool, sink);
-    const session = await this.client.createSession({
+    const model = this.models.reviewer;
+    const desiredEffort = routePolicy(route).efforts.reviewer;
+    const effort = chooseReasoningEffort(model, desiredEffort, this.reasoningMode);
+    const session = await this.client.createSession(withReasoning({
       sessionId: `${this.runId}-${safeTaskId}-reviewer`,
       clientName: 'convergent-vscode',
-      model: this.models.reviewer.id,
+      model: model.id,
       workingDirectory: this.workspace,
       streaming: true,
       tools: [tool],
@@ -110,10 +130,10 @@ class SessionFactory {
       hooks: { onPreToolUse: readonlyHook },
       onPermissionRequest: this.permissionHandler,
       onUserInputRequest: this.userInputHandler,
-    });
-    attachEventLogging(session, 'Strong reviewer', this.ui);
-    return { session, sink };
+    }, effort));
+    attachEventLogging(session, 'Strong reviewer', this.ui, this.usage, model);
+    return { session, sink, name: 'Strong reviewer', model, reasoningEffort: effort };
   }
 }
 
-module.exports = { SessionFactory, readonlyHook, safeSessionPart };
+module.exports = { SessionFactory, readonlyHook, safeSessionPart, withReasoning };
