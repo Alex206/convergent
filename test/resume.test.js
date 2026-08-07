@@ -30,6 +30,28 @@ test('resume state restarts an interrupted current task instead of completed tas
   assert.match(resumeSummary(state), /restart interrupted task 2/i);
 });
 
+test('resume state preserves a strong-review finding checkpoint', () => {
+  const state = normalizeResumeState({
+    version: RESUME_STATE_VERSION,
+    workspace: '/repo',
+    request: 'implement both tasks',
+    plan,
+    status: 'interrupted',
+    nextTaskIndex: 1,
+    currentTaskIndex: 1,
+    stage: 'strong_review_findings',
+    revision: 'R3',
+    taskState: {
+      stage: 'strong_review_findings',
+      reviewCycle: 3,
+      findings: [{ severity: 'high', title: 'Authentication gap', description: 'fix it' }],
+    },
+  }, '/repo');
+
+  assert.equal(state.taskState.reviewCycle, 3);
+  assert.match(resumeSummary(state), /strong-review remediation cycle 3/i);
+});
+
 test('resume state continues with next pending task from a task boundary', () => {
   const state = normalizeResumeState({
     version: RESUME_STATE_VERSION,
