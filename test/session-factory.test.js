@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { readonlyHook, safeSessionPart } = require('../src/copilot/session-factory');
+const { readonlyHook, readonlyShellMutation, safeSessionPart } = require('../src/copilot/session-factory');
 
 test('strong reviewer hook blocks write tools', () => {
   assert.equal(readonlyHook({ toolName: 'edit' }).permissionDecision, 'deny');
@@ -10,10 +10,16 @@ test('strong reviewer hook blocks write tools', () => {
   assert.equal(readonlyHook({ toolName: 'apply_patch' }).permissionDecision, 'deny');
 });
 
-test('strong reviewer hook does not create separate shell permission prompts', () => {
-  assert.equal(readonlyHook({ toolName: 'bash' }).permissionDecision, 'allow');
-  assert.equal(readonlyHook({ toolName: 'powershell' }).permissionDecision, 'allow');
-  assert.equal(readonlyHook({ toolName: 'grep' }).permissionDecision, 'allow');
+test('read-only roles allow diagnostic shell commands without separate permission prompts', () => {
+  assert.equal(readonlyHook({ toolName: 'powershell', toolArgs: { command: 'git status --short' } }).permissionDecision, 'allow');
+  assert.equal(readonlyHook({ toolName: 'bash', toolArgs: { command: 'git diff -- README.md' } }).permissionDecision, 'allow');
+  assert.equal(readonlyHook({ toolName: 'grep', toolArgs: { pattern: 'foo' } }).permissionDecision, 'allow');
+});
+
+test('read-only roles deny obvious shell mutations before execution', () => {
+  assert.equal(readonlyShellMutation({ toolName: 'powershell', toolArgs: { command: 'Set-Content README.md changed' } }), true);
+  assert.equal(readonlyHook({ toolName: 'powershell', toolArgs: { command: 'git reset --hard HEAD~1' } }).permissionDecision, 'deny');
+  assert.equal(readonlyHook({ toolName: 'bash', toolArgs: { command: 'rm -rf src' } }).permissionDecision, 'deny');
 });
 
 test('session ids sanitize coordinator-provided task ids', () => {
