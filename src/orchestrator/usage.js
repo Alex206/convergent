@@ -16,23 +16,23 @@ class UsageTracker {
     this.turns = 0;
   }
 
-  register(agent, session, model) {
-    const existing = this.agents.get(agent) ?? {};
+  register(agent, session, model, label = agent) {
     this.agents.set(agent, {
       agent,
-      sessionId: session?.sessionId ?? existing.sessionId,
-      model: model?.name ?? model?.id ?? existing.model ?? 'auto',
-      modelId: model?.id ?? existing.modelId ?? 'auto',
-      calls: existing.calls ?? 0,
-      turns: existing.turns ?? 0,
-      inputTokens: existing.inputTokens ?? 0,
-      outputTokens: existing.outputTokens ?? 0,
-      premiumRequestCost: existing.premiumRequestCost ?? 0,
-      totalNanoAiu: existing.totalNanoAiu ?? 0,
-      hasCreditData: existing.hasCreditData ?? false,
-      contextTokens: existing.contextTokens,
-      contextLimit: existing.contextLimit,
-      durationMs: existing.durationMs ?? 0,
+      label,
+      sessionId: session?.sessionId,
+      model: model?.name ?? model?.id ?? 'auto',
+      modelId: model?.id ?? 'auto',
+      calls: 0,
+      turns: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      premiumRequestCost: 0,
+      totalNanoAiu: 0,
+      hasCreditData: false,
+      contextTokens: undefined,
+      contextLimit: undefined,
+      durationMs: 0,
     });
   }
 
