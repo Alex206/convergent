@@ -87,6 +87,7 @@ class VscodeWorkflowUi {
     this.stream = stream;
     this.output = output;
     this.lastUsageLogAt = 0;
+    this.agentInactivityTimeoutMs = undefined;
     this.toolStallTimeoutMs = undefined;
     this.stallGraceMs = undefined;
     this.heartbeatMs = undefined;
@@ -239,6 +240,19 @@ class VscodeWorkflowUi {
     this.stream.markdown(`\n⚠ **${agent} stalled:** ${detail}\n`);
     this.log(`${agent} STALLED: ${detail}`);
     this.log(`${agent} stall diagnostic: ${JSON.stringify(diagnostic)}`);
+  }
+
+  agentInactivityWarning(agent, inactiveMs, timeoutMs) {
+    const detail = `no agent/tool activity for ${formatDuration(inactiveMs)} (inactivity watchdog ${formatDuration(timeoutMs)}); steering agent to respond or report blockage.`;
+    this.stream.progress(`${agent}: ${detail}`);
+    this.log(`${agent} INACTIVITY WARNING: ${detail}`);
+  }
+
+  agentInactivityStalled(agent, inactiveMs, diagnostic) {
+    const detail = `no agent/tool activity resumed after steering (${formatDuration(inactiveMs)} quiet); cancelling this agent turn.`;
+    this.stream.markdown(`\n⚠ **${agent} inactive:** ${detail}\n`);
+    this.log(`${agent} INACTIVE: ${detail}`);
+    this.log(`${agent} inactivity diagnostic: ${JSON.stringify(diagnostic)}`);
   }
 
   agentControlTimeout(agent, operation, timeoutMs) {
