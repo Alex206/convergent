@@ -177,3 +177,102 @@ test('resume from strong-review findings starts with remediation rather than imp
   assert.equal(resumedAt.options.startReviewCycle, 4);
   assert.deepEqual(resumedAt.evidence, [{ agent: 'Worker A', check: 'focused test passed' }]);
 });
+
+test('blocked worker can hand the preserved revision to its peer instead of failing convergence', async () => {
+  const checkpoints = [];
+  const a = sessionAgent('A');
+  const b = sessionAgent('B');
+  const sequence = [
+    {
+      worker: 'B',
+      report: { verdict: 'blocked', summary: 'required validation dependency unavailable', findings: [], checks: ['partial validation passed'] },
+      changed: false,
+      revision: 'R1',
+    },
+    {
+      worker: 'A',
+      report: { verdict: 'clean', summary: 'current revision remains acceptable', findings: [], checks: [] },
+      changed: false,
+      revision: 'R1',
+    },
+    {
+      worker: 'B',
+      report: { verdict: 'clean', summary: 'peer independently validated the revision', findings: [], checks: ['alternative validation passed'] },
+      changed: false,
+      revision: 'R1',
+    },
+  ];
+  const engine = new ResumableConvergentEngine({
+    client: {}, sdk: {}, workspace: '/repo', models: {}, ui: fakeUi(),
+    revisionProvider: async () => 'R1',
+    userInputHandler: async (request) => ({ answer: request.choices[0], wasFreeform: false }),
+    onCheckpoint: async (state) => checkpoints.push(state),
+  });
+  engine.activeTaskCheckpointContext = { request: 'do work', plan: { tasks: [task] }, index: 0 };
+  engine.runWorkerPass = async () => sequence.shift();
+
+  const initial = {
+    worker: 'A',
+    report: { verdict: 'changed', summary: 'implemented', findings: [], checks: [] },
+    changed: true,
+    revision: 'R1',
+  };
+  const result = await engine.convergeWorkers(task, a, b, b, initial, { nextReviewCycle: 1, routing });
+
+  assert.equal(result.revision, 'R1');
+  assert.equal(sequence.length, 0);
+  assert.ok(checkpoints.some((state) => state.taskState?.stage === 'worker_blocked'));
+});
+
+test('blocked worker can pause with its blocker and revision checkpointed', async () => {
+  const checkpoints = [];
+  const a = sessionAgent('A');
+  const b = sessionAgent('B');
+  const blocked = {
+    worker: 'A',
+    report: { verdict: 'blocked', summary: 'toolchain path is not configured', findings: [], checks: ['available checks passed'] },
+    changed: true,
+    revision: 'R2',
+  };
+  const engine = new ResumableConvergentEngine({
+    client: {}, sdk: {}, workspace: '/repo', models: {}, ui: fakeUi(),
+    revisionProvider: async () => 'R2',
+    userInputHandler: async (request) => ({ answer: request.choices[2], wasFreeform: false }),
+    onCheckpoint: async (state) => checkpoints.push(state),
+  });
+  engine.activeTaskCheckpointContext = { request: 'do work', plan: { tasks: [task] }, index: 0 };
+
+  await assert.rejects(
+    engine.convergeFromPass(task, a, b, blocked, routing, { nextReviewCycle: 1 }),
+    (error) => error?.code === 'CONVERGENT_PAUSED',
+  );
+
+  const saved = checkpoints.find((state) => state.taskState?.stage === 'worker_blocked');
+  assert.equal(saved.taskState.blockedPass.revision, 'R2');
+  assert.equal(saved.taskState.blockedPass.report.summary, 'toolchain path is not configured');
+});
+
+test('blocked strong reviewer can retry the same review cycle instead of failing the task', async () => {
+  const checkpoints = [];
+  const reports = [
+    { verdict: 'blocked', summary: 'validation environment unavailable', findings: [] },
+    { verdict: 'clean', summary: 'review completed after retry', findings: [] },
+  ];
+  const reviewer = sessionAgent('Strong reviewer');
+  reviewer.session.sendAndWait = async () => {
+    reviewer.sink.value = reports.shift();
+  };
+  const engine = new ResumableConvergentEngine({
+    client: {}, sdk: {}, workspace: '/repo', models: {}, ui: fakeUi(),
+    revisionProvider: async () => 'R3',
+    userInputHandler: async (request) => ({ answer: request.choices[0], wasFreeform: false }),
+    onCheckpoint: async (state) => checkpoints.push(state),
+  });
+  engine.activeTaskCheckpointContext = { request: 'do work', plan: { tasks: [task] }, index: 0 };
+  engine.finishTurn = async () => ({});
+
+  await engine.runStrongReview(task, sessionAgent('A'), sessionAgent('B'), reviewer, [], routing);
+
+  assert.equal(reports.length, 0);
+  assert.ok(checkpoints.some((state) => state.taskState?.stage === 'strong_review_blocked' && state.taskState.reviewCycle === 1));
+});
