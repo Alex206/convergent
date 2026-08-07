@@ -66,12 +66,30 @@ function detailedUsageMarkdown(summary) {
   return lines.join('\n');
 }
 
+function diagnosticsMarkdown(snapshots = []) {
+  const lines = ['**Convergent diagnostics**', ''];
+  if (!snapshots.length) return `${lines.join('\n')}No agent diagnostics are available.`;
+  for (const snapshot of snapshots) {
+    const current = snapshot.currentTool
+      ? `${snapshot.currentTool.name} (${formatDuration(snapshot.currentTool.elapsedMs)}, quiet ${formatDuration(snapshot.currentTool.quietMs)})`
+      : 'none';
+    lines.push(`- **${snapshot.agent}**: current tool ${current}; last activity ${formatDuration(snapshot.lastActivityAgoMs)} ago; stalls ${snapshot.stalls?.length ?? 0}`);
+    for (const tool of (snapshot.tools ?? []).slice(0, 5)) {
+      lines.push(`  - ${tool.name}: ${tool.calls} call(s), max ${formatDuration(tool.maxMs)}, failures ${tool.failures}`);
+    }
+  }
+  return lines.join('\n');
+}
+
 class VscodeWorkflowUi {
   constructor(vscode, stream, output) {
     this.vscode = vscode;
     this.stream = stream;
     this.output = output;
     this.lastUsageLogAt = 0;
+    this.toolStallTimeoutMs = undefined;
+    this.stallGraceMs = undefined;
+    this.heartbeatMs = undefined;
   }
 
   log(message) {
@@ -197,6 +215,36 @@ class VscodeWorkflowUi {
     this.log(`${agent} tool: ${tool}`);
   }
 
+  agentToolComplete(agent, tool, durationMs, success) {
+    this.log(`${agent} tool complete: ${tool} · ${formatDuration(durationMs)} · ${success ? 'success' : 'failure'}`);
+  }
+
+  agentHeartbeat(agent, snapshot) {
+    const tool = snapshot?.currentTool;
+    const detail = tool
+      ? `${tool.name} running ${formatDuration(tool.elapsedMs)} · no progress ${formatDuration(tool.quietMs)}`
+      : `working · last activity ${formatDuration(snapshot?.lastActivityAgoMs ?? 0)} ago`;
+    this.stream.progress(`${agent}: ${detail}`);
+    this.log(`${agent} heartbeat: ${detail}`);
+  }
+
+  agentToolStallWarning(agent, tool, quietMs, timeoutMs) {
+    const detail = `${tool} has produced no progress for ${formatDuration(quietMs)} (watchdog ${formatDuration(timeoutMs)}); steering agent to stop waiting.`;
+    this.stream.progress(`${agent}: ${detail}`);
+    this.log(`${agent} STALL WARNING: ${detail}`);
+  }
+
+  agentToolStalled(agent, tool, elapsedMs, diagnostic) {
+    const detail = `${tool} remained stalled after steering (${formatDuration(elapsedMs)} total); cancelling this agent turn.`;
+    this.stream.markdown(`\n⚠ **${agent} stalled:** ${detail}\n`);
+    this.log(`${agent} STALLED: ${detail}`);
+    this.log(`${agent} stall diagnostic: ${JSON.stringify(diagnostic)}`);
+  }
+
+  agentControlTimeout(agent, operation, timeoutMs) {
+    this.log(`${agent} CONTROL TIMEOUT: ${operation} did not settle within ${formatDuration(timeoutMs)}; Convergent detached instead of blocking the UI.`);
+  }
+
   agentMessage(agent, content) {
     if (content) this.log(`${agent}: ${content}`);
   }
@@ -219,4 +267,5 @@ module.exports = {
   formatDuration,
   compactUsage,
   detailedUsageMarkdown,
+  diagnosticsMarkdown,
 };
