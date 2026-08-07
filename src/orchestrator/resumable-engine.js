@@ -227,11 +227,11 @@ class ResumableConvergentEngine extends ConvergentEngine {
       workerB,
       peer,
       current,
-      { nextReviewCycle },
+      { nextReviewCycle, routing },
     );
   }
 
-  async convergeWorkers(task, workerA, workerB, nextWorker, previousPass, { nextReviewCycle = 1 } = {}) {
+  async convergeWorkers(task, workerA, workerB, nextWorker, previousPass, { nextReviewCycle = 1, routing = { route: 'standard', risk: 'medium' } } = {}) {
     const approvals = new Map();
     if (passApprovesRevision(previousPass)) approvals.set(previousPass.worker, previousPass.revision);
 
@@ -262,7 +262,7 @@ class ResumableConvergentEngine extends ConvergentEngine {
           worker,
           peer,
           result,
-          { route: routing?.route ?? 'standard', risk: routing?.risk ?? 'medium' },
+          routing,
           { nextReviewCycle },
         );
         peerPass = result;
