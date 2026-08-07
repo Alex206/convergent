@@ -19,6 +19,7 @@ const PRESETS = {
     /gemini.*\b3(?:\.0)?\b(?!\.\d).*flash/i,
   ],
   'cheap-a': [
+    /gpt[- ]?5\.6.*luna/i,
     /claude.*haiku.*4\.5/i,
     /gpt[- ]?5\.4.*nano/i,
     /gpt[- ]?5\.4.*mini/i,
