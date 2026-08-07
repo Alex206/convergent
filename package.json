@@ -48,8 +48,8 @@
       "properties": {
         "convergent.models.coordinator": {
           "type": "string",
-          "default": "planner",
-          "description": "Coordinator model selector. Use an exact Copilot model id/name, or one of: planner, strong, cheap-a, cheap-b, auto. planner prefers a capable lower-cost model; set strong to restore the strongest-model coordinator."
+          "default": "strong",
+          "description": "Persistent coordinator model selector. Defaults to strong because this role owns requirements understanding, clarification, task decomposition, acceptance criteria, and workflow classification. Use an exact Copilot model id/name, or one of: strong, planner, cheap-a, cheap-b, auto."
         },
         "convergent.models.workerA": {
           "type": "string",
@@ -71,7 +71,7 @@
           "enum": ["adaptive", "full"],
           "default": "adaptive",
           "enumDescriptions": [
-            "Let the coordinator classify read-only, trivial, standard, and high-risk tasks; the engine enforces minimum review levels and escalation.",
+            "Let the strong coordinator classify read-only, trivial, standard, and high-risk tasks; the engine enforces minimum review levels and escalation.",
             "Force every modifying task through at least the full A/B convergence + strong-review workflow. Read-only tasks remain coordinator-only."
           ],
           "description": "How Convergent chooses the workflow depth for each task."
@@ -81,7 +81,7 @@
           "enum": ["adaptive", "model-default"],
           "default": "adaptive",
           "enumDescriptions": [
-            "Use low/medium/high reasoning effort according to route when the selected model advertises support. The planner preset uses low coordinator effort; an explicitly strong coordinator uses medium.",
+            "Use low/medium/high reasoning effort according to role and route when the selected model advertises support. The coordinator uses medium effort by default.",
             "Do not override model reasoning effort."
           ],
           "description": "Whether Convergent adapts supported models' reasoning effort to task risk/workflow depth."
