@@ -102,12 +102,20 @@
           "maximum": 10,
           "description": "Maximum strong-review remediation cycles per implementation task."
         },
+        "convergent.agentInactivityTimeoutSeconds": {
+          "type": "number",
+          "default": 180,
+          "minimum": 30,
+          "maximum": 3600,
+          "description": "Seconds with no observed agent, usage, or tool activity before Convergent treats the turn as inactive. This is an inactivity watchdog, not a maximum total turn duration; healthy long-running turns may exceed it indefinitely while making progress."
+        },
         "convergent.agentTurnTimeoutSeconds": {
           "type": "number",
           "default": 180,
           "minimum": 30,
-          "maximum": 900,
-          "description": "Maximum time passed to the Copilot SDK for one agent turn. The separate tool-stall watchdog handles built-in tools that stop making progress."
+          "maximum": 3600,
+          "deprecationMessage": "Use convergent.agentInactivityTimeoutSeconds. Copilot SDK sendAndWait timeout is a wall-clock limit and is no longer used as the Convergent stall detector.",
+          "description": "Deprecated compatibility setting. It is used only as a fallback inactivity timeout when the new setting is not explicitly configured."
         },
         "convergent.toolStallTimeoutSeconds": {
           "type": "number",
@@ -121,7 +129,7 @@
           "default": 10,
           "minimum": 1,
           "maximum": 120,
-          "description": "Grace period after a tool-stall warning and immediate steering before Convergent cancels the agent turn."
+          "description": "Grace period after a tool/agent inactivity warning and immediate steering before Convergent cancels the agent turn."
         },
         "convergent.heartbeatSeconds": {
           "type": "number",
@@ -156,7 +164,7 @@
   },
   "scripts": {
     "test": "node --test",
-    "check": "node --check src/extension.js && node --check src/orchestrator/engine.js && node --check src/orchestrator/routing.js && node --check src/orchestrator/usage.js && node --check src/ui/vscode-ui.js && node --check src/copilot/session-factory.js && node --check src/copilot/session-guard.js && node --check src/copilot/runtime.js",
+    "check": "node --check src/extension.js && node --check src/orchestrator/engine.js && node --check src/orchestrator/request-preflight.js && node --check src/orchestrator/routing.js && node --check src/orchestrator/usage.js && node --check src/ui/vscode-ui.js && node --check src/copilot/session-factory.js && node --check src/copilot/session-guard.js && node --check src/copilot/runtime.js",
     "package": "npx @vscode/vsce package"
   },
   "dependencies": {
