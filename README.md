@@ -44,10 +44,13 @@ Every run has a plan, but planning is proportionate: a simple request can be a o
 - Role-specific Copilot tool allow-lists so coordinator/reviewer do not inherit editing tools and workers do not inherit the full Copilot CLI toolbox
 - Workers use purpose-built `apply_patch`, `edit`, and `create` tools for file-content changes; shell-based content editing is blocked
 - Validation guidance avoids transient working-tree pollution, optional unrequested extras, and redundant re-reading/re-running after a successful validation
-- Event-driven tool and agent inactivity watchdogs with live heartbeats and bounded cancellation
+- Event-driven tool and agent inactivity watchdogs; routine heartbeats stay in the Output channel while Chat surfaces meaningful long-running-tool status and user decisions
 - Long healthy agent turns are not killed by a fixed wall-clock `sendAndWait` deadline; watchdogs react to lack of progress instead
-- Safe workflow checkpoints support `@convergent /resume` and **Convergent: Resume Last Workflow** after interruption or stop
-- Interrupted planning retains the original request; completed tasks are skipped; an interrupted task restarts only that task against the current workspace with fresh task-local sessions
+- Safe workflow checkpoints support `@convergent /resume` and **Convergent: Resume Last Workflow** after interruption, pause, or stop
+- Interrupted planning retains the original request; completed tasks are skipped; strong-review findings/pending-review states can resume directly when the workspace fingerprint still matches
+- Review/pass limits are soft decision points: continue for more iterations or pause with the resume checkpoint preserved
+- Optional `convergent.maxAiCredits` budget prompts at safe workflow boundaries instead of terminating the run automatically
+- Optional `convergent.taskCommits=safe` creates accepted task-boundary commits only for tasks that started from a clean worktree
 - Live chat status for route/risk, selected models/effort, pass duration, escalation, and usage
 - AI usage tracking from Copilot token/usage events and durable nano-AIU checkpoints
 - **Show usage**, **Show diagnostics**, **Show agent log**, **Stop workflow**, **Resume workflow**, and **Source Control** chat/command actions
@@ -81,7 +84,7 @@ Press `F5` in VS Code to launch an Extension Development Host, open a Git reposi
 
 Or run **Convergent: Start Workflow** from the command palette.
 
-## Resume after interruption
+## Resume after interruption or pause
 
 Convergent persists safe workflow checkpoints in VS Code workspace state. Resume with:
 
@@ -95,9 +98,11 @@ Resume is deliberately boundary-based rather than pretending to restore an opaqu
 
 - interrupted during coordinator planning: keep the original request and re-run planning;
 - interrupted between tasks: continue with the next pending task and skip completed tasks;
-- interrupted inside a task: restart only that task with fresh task-local sessions against the current partially modified workspace.
+- generic interruption inside a task: restart only that task with fresh task-local sessions against the current workspace;
+- `strong_review_pending`: continue directly with the saved next strong-review cycle when the workspace fingerprint still matches;
+- `strong_review_findings`: continue directly with remediation of the saved findings when the workspace fingerprint still matches.
 
-If the workspace changed after a completed-task checkpoint, Convergent asks before continuing with the saved next task. Finer pass/reviewer-level checkpoints are a future refinement.
+If a fine-grained checkpoint no longer matches the workspace, Convergent does not trust stale review state and falls back to restarting only that task.
 
 ## Adaptive routing
 
@@ -131,6 +136,22 @@ The lower-cost `planner` selector remains available as an explicit configuration
 
 `convergent.reasoningMode=adaptive` applies role/route-driven effort only when the selected model advertises the requested reasoning-effort capability. Set it to `model-default` to leave reasoning effort untouched.
 
+## Soft limits and task checkpoint commits
+
+`convergent.maxWorkerPasses` (default `8`) and `convergent.maxReviewerCycles` (default `3`) are soft iteration tranches. Reaching one no longer makes the workflow fail solely because the counter was exhausted. At a safe decision boundary Convergent asks whether to continue for one or three more passes/cycles, or pause and resume later.
+
+`convergent.maxAiCredits` is an optional soft run budget; `0` (the default) disables it. When the latest durable Copilot usage reaches the configured budget at a safe workflow boundary, Convergent asks whether to add another budget tranche, continue without a budget, or pause. Durable credit checkpoints can lag live token growth, so this is not an exact real-time hard cap.
+
+Optional task checkpoint commits can be enabled with:
+
+```json
+{
+  "convergent.taskCommits": "safe"
+}
+```
+
+In `safe` mode, Convergent creates a checkpoint commit after an accepted modifying task only when that task began with a clean worktree. The next task therefore sees the previous accepted task as `HEAD`, making normal Git diffs task-local. If the task starts dirty, automatic commit is skipped rather than sweeping pre-existing changes into history. The default is `off`.
+
 ## Tool policy
 
 Convergent deliberately does not expose every Copilot CLI tool to every role. This both limits authority and reduces the tool-definition context paid on each model roundtrip.
@@ -149,14 +170,16 @@ Copilot SDK `sendAndWait(..., timeout)` treats `timeout` as a wall-clock deadlin
 
 Instead, Convergent uses two event-driven watchdogs:
 
-- `convergent.toolStallTimeoutSeconds` (default 120s): while a tool is running, this measures time since the latest tool progress/partial-result event.
+- `convergent.toolStallTimeoutSeconds` (default 120s): while a tool is running, this measures time since the latest tool progress/partial-result event;
 - `convergent.agentInactivityTimeoutSeconds` (default 180s): when no tool is running, this measures time since any observed agent/tool/usage activity.
 
-On a watchdog threshold Convergent first sends immediate steering and allows `convergent.toolStallGraceSeconds` (default 10s) for activity to resume. Only if the operation remains quiet does Convergent reject the local turn and attempt a bounded SDK abort. `convergent.heartbeatSeconds` controls live progress messages.
+Routine heartbeat diagnostics remain in the **Convergent** Output channel instead of accumulating immutable `working · last activity ...` rows in Chat. Long-running tools can still surface periodic meaningful status.
+
+When an interactive tool-stall threshold is reached, Convergent shows the tool and, where the SDK event provides it, a useful command/path detail, then asks whether to **Continue 5 min**, **Continue 15 min**, or **Abort agent turn**. Agent inactivity similarly asks whether to continue waiting or abort. Non-interactive/test frontends retain a bounded steering/cancellation fallback.
 
 The older `convergent.agentTurnTimeoutSeconds` setting is deprecated because its name suggested a total turn limit. If it was explicitly configured and the new inactivity setting is not, Convergent uses the legacy value as the inactivity threshold during migration.
 
-The SDK currently does not expose a documented `kill(toolCallId)` for built-in PowerShell/bash calls, so Convergent guarantees that its own UI/orchestrator stops waiting but cannot yet guarantee termination of an already-spawned subprocess if the Copilot runtime itself fails to cancel it.
+The SDK currently does not expose a documented `kill(toolCallId)` for built-in PowerShell/bash calls, so `Abort agent turn` cannot yet guarantee independent subprocess termination. A Convergent-owned command runner with process-tree ownership is the planned path to command-only stop/retry.
 
 ## Validation evidence
 
@@ -170,7 +193,7 @@ Validation should avoid polluting the working tree. For example, Python validati
 
 Convergent records per-session model calls, input/output tokens, turn count, active duration, context usage, and Copilot durable `totalNanoAiu` checkpoints. The chat shows a running compact usage line after meaningful turns and a per-agent table at the end. **Convergent: Show AI Usage** shows the latest snapshot while a run is active or after it finishes.
 
-The displayed AI-credit figure is an approximate presentation derived as `totalNanoAiu / 1e9`, following the Copilot SDK usage documentation's nano-unit example. GitHub Copilot billing remains the source of truth for actual billable credits/cost.
+The displayed AI-credit figure is an approximate presentation derived as `totalNanoAiu / 1e9`, following the Copilot SDK usage documentation's nano-unit example. Durable credit checkpoints can lag live token growth during a turn; GitHub Copilot billing remains the source of truth for actual billable credits/cost.
 
 ## Convergence invariant
 
@@ -229,4 +252,4 @@ Set `convergent.permissionMode` to `ask` to require approval for shell commands 
 
 ## Status
 
-This is still an MVP. Useful next increments include pass/reviewer-level resume checkpoints, interactive long-running-command control, a dedicated mutable agent/task dashboard, richer diff/finding navigation, empirical model-quality/cost scoring to refine the adaptive tiers, profile-based specialized teams, and a CLI frontend over the same orchestrator core. Optional use of the VS Code-selected chat model for coordination and explicit user routing hints are tracked separately as future improvements.
+This is still an MVP. Useful next increments include a Convergent-owned cancellable command runner, a dedicated mutable agent/task dashboard, richer diff/finding navigation, empirical model-quality/cost scoring to refine the adaptive tiers, profile-based specialized teams, and a CLI frontend over the same orchestrator core. Optional use of the VS Code-selected chat model for coordination and explicit user routing hints are tracked separately as future improvements.
