@@ -114,6 +114,10 @@ class VscodeWorkflowUi {
     }
   }
 
+  agentTools(agent, tools) {
+    this.log(`${agent} available tools: ${(tools ?? []).join(', ')}`);
+  }
+
   readOnlyResult(task) {
     this.stream.markdown(`\n${task.result}\n`);
     this.log(`Read-only task ${task.id} answered by coordinator.`);
