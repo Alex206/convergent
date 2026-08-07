@@ -56,7 +56,7 @@ function readConfig() {
   const config = vscode.workspace.getConfiguration('convergent');
   return {
     selectors: {
-      coordinator: config.get('models.coordinator', 'planner'),
+      coordinator: config.get('models.coordinator', 'strong'),
       workerA: config.get('models.workerA', 'cheap-a'),
       workerB: config.get('models.workerB', 'cheap-b'),
       reviewer: config.get('models.reviewer', 'strong'),
@@ -154,7 +154,7 @@ async function activate(context) {
   const participant = vscode.chat.createChatParticipant('convergent.workflow', async (request, _chatContext, stream, token) => {
     const prompt = request.prompt?.trim();
     if (!prompt) {
-      stream.markdown('Describe what you want Convergent to inspect or implement. It will classify the task and choose a proportionate workflow.');
+      stream.markdown('Describe what you want Convergent to inspect or implement. The persistent strong coordinator will understand, clarify, plan, and classify the request before execution.');
       return;
     }
     try {
