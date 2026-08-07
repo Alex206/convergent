@@ -5,17 +5,26 @@ const {
   requireReport,
   taskPrompt,
   formatValidationEvidence,
+  passApprovesRevision,
+  evidenceFromPass,
+  mergeEvidence,
 } = require('./engine');
 const { assertGitRepository } = require('./revision');
 const { normalizeTaskRoute, routePolicy } = require('./routing');
 const { SessionFactory } = require('../copilot/session-factory');
 const { RESUME_STATE_VERSION, defaultStats } = require('./resume');
+const { pauseWorkflow } = require('./control');
+const { isWorkingTreeClean, createTaskCommit } = require('./task-commit');
 
 class ResumableConvergentEngine extends ConvergentEngine {
   constructor(options) {
     super(options);
     this.onCheckpoint = typeof options.onCheckpoint === 'function' ? options.onCheckpoint : async () => {};
     this.activeTaskCheckpointContext = null;
+    this.maxAiCredits = Math.max(0, Number(options.maxAiCredits) || 0);
+    this.aiCreditIncrement = this.maxAiCredits;
+    this.aiCreditCeiling = this.maxAiCredits > 0 ? this.maxAiCredits : Number.POSITIVE_INFINITY;
+    this.taskCommitMode = options.taskCommitMode === 'safe' ? 'safe' : 'off';
   }
 
   async saveCheckpoint({
@@ -69,6 +78,93 @@ class ResumableConvergentEngine extends ConvergentEngine {
     });
   }
 
+  async requestLimitExtension(kind, current, limit) {
+    const decision = await this.ui?.limitDecision?.(kind, { current, limit });
+    if (decision?.action === 'continue') {
+      return Math.max(1, Math.floor(Number(decision.additional) || 1));
+    }
+    pauseWorkflow(
+      kind === 'worker_passes'
+        ? `Paused after ${current} A/B review/fix passes without convergence. The current task checkpoint was kept.`
+        : `Paused after strong-review cycle ${current} with unresolved findings checkpointed.`,
+      { kind, current, limit },
+    );
+  }
+
+  async checkAiCreditBudget(context) {
+    if (!Number.isFinite(this.aiCreditCeiling)) return;
+    const usage = this.getUsageSummary();
+    if (!usage?.hasCreditData || usage.aiCredits < this.aiCreditCeiling) return;
+
+    const decision = await this.ui?.limitDecision?.('ai_credits', {
+      current: usage.aiCredits,
+      limit: this.aiCreditCeiling,
+      increment: this.aiCreditIncrement,
+      context,
+    });
+    if (decision?.action === 'unlimited') {
+      this.aiCreditCeiling = Number.POSITIVE_INFINITY;
+      this.ui?.phase?.('Budget extended', 'AI-credit soft limit disabled for the remainder of this run.');
+      return;
+    }
+    if (decision?.action === 'continue') {
+      const additional = Math.max(1, Number(decision.additional) || this.aiCreditIncrement || 100);
+      this.aiCreditCeiling = usage.aiCredits + additional;
+      this.ui?.phase?.('Budget extended', `Continuing with another ${additional} AI-credit tranche; next decision at approximately ${this.aiCreditCeiling.toFixed(3)} reported credits.`);
+      return;
+    }
+
+    pauseWorkflow(
+      `Paused after reaching the configured AI-credit budget at a safe workflow boundary (${usage.aiCredits.toFixed(3)} reported credits).`,
+      { kind: 'ai_credits', current: usage.aiCredits, limit: this.aiCreditCeiling, context },
+    );
+  }
+
+  async convergeWorkers(task, workerA, workerB, nextWorker, previousPass) {
+    const approvals = new Map();
+    if (passApprovesRevision(previousPass)) approvals.set(previousPass.worker, previousPass.revision);
+
+    let currentRevision = previousPass.revision;
+    let evidence = evidenceFromPass(previousPass);
+    let worker = nextWorker;
+    let peerPass = previousPass;
+    let pass = 1;
+    let passCeiling = Math.max(1, Number(this.maxWorkerPasses) || 8);
+
+    while (true) {
+      this.checkCancelled();
+      const result = await this.runWorkerPass(worker, task, 'REVIEW_AND_FIX', null, peerPass);
+      this.ui.passResult(worker.name, result.report, result.changed, result.revision, result);
+
+      if (result.report.verdict === 'blocked') throw new Error(`Worker ${worker.name} is blocked: ${result.report.summary}`);
+
+      if (result.changed) {
+        approvals.clear();
+        currentRevision = result.revision;
+        evidence = evidenceFromPass(result);
+      } else {
+        evidence = mergeEvidence(evidence, result, currentRevision);
+      }
+
+      if (passApprovesRevision(result)) approvals.set(worker.name, result.revision);
+
+      if (approvals.get('A') === currentRevision && approvals.get('B') === currentRevision) {
+        this.ui.converged(currentRevision, pass);
+        return { revision: currentRevision, evidence };
+      }
+
+      if (pass >= passCeiling) {
+        const additional = await this.requestLimitExtension('worker_passes', pass, passCeiling);
+        passCeiling = pass + additional;
+        this.ui.phase('A/B limit extended', `Continuing convergence for up to ${additional} additional review/fix pass(es).`);
+      }
+
+      peerPass = result;
+      worker = worker === workerA ? workerB : workerA;
+      pass += 1;
+    }
+  }
+
   async runTask(factory, task, taskSessionKey, routing, taskResumeState = null) {
     if (routing.route === 'trivial') return super.runTrivialTask(factory, task, taskSessionKey, routing);
     return this.runFullTask(factory, task, taskSessionKey, routing, taskResumeState);
@@ -108,6 +204,7 @@ class ResumableConvergentEngine extends ConvergentEngine {
           evidence: convergence.evidence,
           routing,
         });
+        await this.checkAiCreditBudget(`before strong-review cycle ${nextReviewCycle} for ${task.id}`);
         await this.runStrongReview(task, workerA, workerB, reviewer, convergence.evidence, routing, { startReviewCycle: nextReviewCycle });
         return { route, escalated: false };
       }
@@ -118,6 +215,7 @@ class ResumableConvergentEngine extends ConvergentEngine {
           'Resuming strong review',
           `Continuing task ${task.id} at strong-review cycle ${nextReviewCycle} on the saved converged workspace revision. Fresh task-local sessions will inspect the current revision rather than rerunning implementation.`,
         );
+        await this.checkAiCreditBudget(`before resumed strong-review cycle ${nextReviewCycle} for ${task.id}`);
         await this.runStrongReview(
           task,
           workerA,
@@ -141,6 +239,7 @@ class ResumableConvergentEngine extends ConvergentEngine {
         evidence: convergence.evidence,
         routing,
       });
+      await this.checkAiCreditBudget(`before strong review for ${task.id}`);
       await this.runStrongReview(task, workerA, workerB, reviewer, convergence.evidence, routing, { startReviewCycle: 1 });
       return { route, escalated: false };
     } finally {
@@ -158,9 +257,10 @@ class ResumableConvergentEngine extends ConvergentEngine {
     { startReviewCycle = 1 } = {},
   ) {
     let evidence = [...initialEvidence];
-    const firstCycle = Math.max(1, Number(startReviewCycle) || 1);
+    let reviewCycle = Math.max(1, Number(startReviewCycle) || 1);
+    let reviewCeiling = reviewCycle + Math.max(1, Number(this.maxReviewerCycles) || 3) - 1;
 
-    for (let reviewCycle = firstCycle; reviewCycle <= this.maxReviewerCycles; reviewCycle += 1) {
+    while (true) {
       this.checkCancelled();
       const beforeReview = await this.revisionProvider(this.workspace);
       const startedAt = Date.now();
@@ -199,14 +299,17 @@ class ResumableConvergentEngine extends ConvergentEngine {
         evidence,
         routing,
       });
+      await this.checkAiCreditBudget(`after strong-review cycle ${reviewCycle} for ${task.id}`);
 
-      if (reviewCycle === this.maxReviewerCycles) {
-        throw new Error(`Strong review still has findings after reaching the configured safety ceiling of ${this.maxReviewerCycles} cycles. The remaining findings were checkpointed and can be resumed.`);
+      if (reviewCycle >= reviewCeiling) {
+        const additional = await this.requestLimitExtension('reviewer_cycles', reviewCycle, reviewCeiling);
+        reviewCeiling = reviewCycle + additional;
+        this.ui.phase('Review limit extended', `Continuing strong review for up to ${additional} additional remediation cycle(s).`);
       }
 
       this.ui.phase(
         'Remediation',
-        `Strong reviewer returned ${review.findings.length} finding(s) in cycle ${reviewCycle}/${this.maxReviewerCycles}; Worker A remediates, then A/B convergence repeats.`,
+        `Strong reviewer returned ${review.findings.length} finding(s) in cycle ${reviewCycle}; Worker A remediates, then A/B convergence repeats.`,
       );
       const remediation = await this.runWorkerPass(workerA, task, 'FIX_STRONG_REVIEW_FINDINGS', review.findings, null);
       this.ui.passResult('A', remediation.report, remediation.changed, remediation.revision, remediation);
@@ -221,6 +324,8 @@ class ResumableConvergentEngine extends ConvergentEngine {
         evidence,
         routing,
       });
+      await this.checkAiCreditBudget(`before strong-review cycle ${reviewCycle + 1} for ${task.id}`);
+      reviewCycle += 1;
     }
   }
 
@@ -314,6 +419,7 @@ class ResumableConvergentEngine extends ConvergentEngine {
       stage: canReusePlan ? 'resume_ready' : 'plan_complete',
       taskState: canReusePlan ? resumeState.taskState ?? null : null,
     });
+    await this.checkAiCreditBudget('after planning');
 
     for (let index = startTaskIndex; index < plan.tasks.length; index += 1) {
       this.checkCancelled();
@@ -350,22 +456,44 @@ class ResumableConvergentEngine extends ConvergentEngine {
       });
       this.ui.taskStarted(task, index + 1, plan.tasks.length, routing, policy);
 
+      let taskStartedClean = false;
+      if (this.taskCommitMode === 'safe' && routing.route !== 'read_only') {
+        try {
+          taskStartedClean = await isWorkingTreeClean(this.workspace);
+          if (!taskStartedClean) {
+            this.ui.taskCommitSkipped(task, 'safe mode requires a clean worktree at task start; existing changes will not be swept into an automatic commit');
+          }
+        } catch (error) {
+          this.ui.taskCommitSkipped(task, `could not inspect worktree state: ${error.message ?? String(error)}`);
+        }
+      }
+
       this.activeTaskCheckpointContext = { request: userRequest, plan, index };
+      let outcome = null;
       try {
         if (routing.route === 'read_only') {
           this.stats.readOnly += 1;
           this.ui.readOnlyResult(task);
-          this.ui.taskCompleted(task, 'read_only');
         } else {
-          const outcome = await this.runTask(factory, task, `${index + 1}-${task.id}`, routing, taskResumeState);
+          outcome = await this.runTask(factory, task, `${index + 1}-${task.id}`, routing, taskResumeState);
           if (outcome.route === 'trivial') this.stats.trivial += 1;
           else this.stats.full += 1;
           if (outcome.escalated) this.stats.escalations += 1;
-          this.ui.taskCompleted(task, outcome.route);
         }
       } finally {
         this.activeTaskCheckpointContext = null;
       }
+
+      if (routing.route !== 'read_only' && this.taskCommitMode === 'safe' && taskStartedClean) {
+        try {
+          const sha = await createTaskCommit(this.workspace, task);
+          if (sha) this.ui.taskCommitted(task, sha);
+        } catch (error) {
+          this.ui.taskCommitSkipped(task, `git commit failed; accepted task changes remain in the worktree: ${error.message ?? String(error)}`);
+        }
+      }
+
+      this.ui.taskCompleted(task, routing.route === 'read_only' ? 'read_only' : outcome.route);
 
       await this.saveCheckpoint({
         request: userRequest,
@@ -376,6 +504,7 @@ class ResumableConvergentEngine extends ConvergentEngine {
         stage: 'task_complete',
         taskState: null,
       });
+      await this.checkAiCreditBudget(`after task ${task.id}`);
     }
 
     if (coordinator) await this.usage.refresh(coordinator.usageName, coordinator.session);
