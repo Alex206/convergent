@@ -8,10 +8,8 @@ const {
 } = require('../orchestrator/prompts');
 const { routePolicy, chooseReasoningEffort } = require('../orchestrator/routing');
 const { createPlanTool, createPassTool, createReviewTool } = require('./tools');
+const { guardSession } = require('./session-guard');
 
-// Keep each role's built-in tool surface deliberately small. Copilot CLI's
-// documented file tools are view/create/edit/apply_patch; apply_patch is the
-// patch-oriented option that can avoid repeated string-replacement turns.
 const SHELL_BUILTINS = process.platform === 'win32'
   ? ['builtin:powershell']
   : ['builtin:bash'];
@@ -63,9 +61,6 @@ function shellFileContentMutation(input) {
   if (!/(bash|shell|powershell|terminal|cmd)/.test(name)) return false;
   const text = shellText(input);
 
-  // Cleanup/removal commands are intentionally not included here: workers may
-  // need to delete generated artifacts. This hook is specifically about
-  // editing file CONTENT through a shell when purpose-built file tools exist.
   return /\b(?:Set-Content|Add-Content|Out-File)\b|\bsed\s+-i\b|\bperl\s+-pi\b|\btee\b|(^|[^>])>\s*[^>&]|\bapply_patch\b/i.test(text);
 }
 
@@ -134,6 +129,14 @@ class SessionFactory {
     this.reasoningMode = reasoningMode;
   }
 
+  guard(session, agentName) {
+    return guardSession(session, agentName, this.ui, {
+      toolStallTimeoutMs: this.ui?.toolStallTimeoutMs,
+      stallGraceMs: this.ui?.stallGraceMs,
+      heartbeatMs: this.ui?.heartbeatMs,
+    });
+  }
+
   async createCoordinator() {
     const sink = { value: null };
     const tool = createPlanTool(this.sdk.defineTool, sink);
@@ -152,10 +155,11 @@ class SessionFactory {
       onPermissionRequest: this.permissionHandler,
       onUserInputRequest: this.userInputHandler,
     }, effort));
+    const guard = this.guard(session, 'Coordinator');
     const usageKey = 'coordinator';
     attachEventLogging(session, 'Coordinator', this.ui, this.usage, model, usageKey);
     this.ui.agentTools?.('Coordinator', COORDINATOR_TOOLS);
-    return { session, sink, name: 'Coordinator', usageName: usageKey, model, reasoningEffort: effort };
+    return { session, guard, sink, name: 'Coordinator', usageName: usageKey, model, reasoningEffort: effort };
   }
 
   async createWorker(taskId, worker, route = 'standard') {
@@ -181,10 +185,11 @@ class SessionFactory {
       onUserInputRequest: this.userInputHandler,
     }, effort));
     const name = `Worker ${worker}`;
+    const guard = this.guard(session, name);
     const usageKey = `${safeTaskId}:worker-${worker.toLowerCase()}`;
     attachEventLogging(session, name, this.ui, this.usage, model, usageKey);
     this.ui.agentTools?.(name, WORKER_TOOLS);
-    return { session, sink, name: worker, usageName: usageKey, model, reasoningEffort: effort };
+    return { session, guard, sink, name: worker, usageName: usageKey, model, reasoningEffort: effort };
   }
 
   async createReviewer(taskId, route = 'standard', risk = 'medium') {
@@ -207,10 +212,11 @@ class SessionFactory {
       onPermissionRequest: this.permissionHandler,
       onUserInputRequest: this.userInputHandler,
     }, effort));
+    const guard = this.guard(session, 'Strong reviewer');
     const usageKey = `${safeTaskId}:reviewer`;
     attachEventLogging(session, 'Strong reviewer', this.ui, this.usage, model, usageKey);
     this.ui.agentTools?.('Strong reviewer', REVIEWER_TOOLS);
-    return { session, sink, name: 'Strong reviewer', usageName: usageKey, model, reasoningEffort: effort };
+    return { session, guard, sink, name: 'Strong reviewer', usageName: usageKey, model, reasoningEffort: effort };
   }
 }
 
