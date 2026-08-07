@@ -23,8 +23,13 @@ function fakeSession({ sendAndWait, abort, disconnect, send } = {}) {
   };
 }
 
-function fakeUi() {
-  return new Proxy({}, { get: () => () => {} });
+function fakeUi(overrides = {}) {
+  return new Proxy(overrides, {
+    get(target, property) {
+      if (property in target) return target[property];
+      return () => {};
+    },
+  });
 }
 
 async function waitFor(predicate, timeoutMs = 3_000) {
@@ -140,11 +145,12 @@ test('interactive stall decision can extend a quiet long-running tool instead of
     },
     abort: async () => { aborted += 1; },
   });
-  const ui = fakeUi();
-  ui.agentToolStallDecision = async () => {
-    asked += 1;
-    return { action: 'continue', waitMs: 30_000 };
-  };
+  const ui = fakeUi({
+    async agentToolStallDecision() {
+      asked += 1;
+      return { action: 'continue', waitMs: 30_000 };
+    },
+  });
   const guard = new SessionGuard(session, 'Worker A', ui, {
     toolStallTimeoutMs: 1_000,
     heartbeatMs: 1_000,
