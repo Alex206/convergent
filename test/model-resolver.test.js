@@ -7,12 +7,24 @@ const { resolveModel } = require('../src/orchestrator/model-resolver');
 const models = [
   { id: 'claude-haiku-4.5', name: 'Claude Haiku 4.5' },
   { id: 'gemini-3-flash', name: 'Gemini 3 Flash' },
-  { id: 'gpt-5.4-mini', name: 'GPT-5.4 mini' },
+  { id: 'gpt-5.4-mini', name: 'GPT-5.4 mini', supportedReasoningEfforts: ['low', 'medium'] },
   { id: 'gpt-5.4', name: 'GPT-5.4' },
 ];
 
 test('strong preset chooses strong model', () => {
   assert.equal(resolveModel('strong', models).id, 'gpt-5.4');
+});
+
+test('planner preset prefers capable lightweight model over strong model', () => {
+  const result = resolveModel('planner', models);
+  assert.equal(result.id, 'gpt-5.4-mini');
+  assert.match(result.reason, /planner preset/);
+  assert.deepEqual(result.supportedReasoningEfforts, ['low', 'medium']);
+});
+
+test('planner preset prefers GPT-5.6 Luna when available', () => {
+  const withLuna = [{ id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna' }, ...models];
+  assert.equal(resolveModel('planner', withLuna).id, 'gpt-5.6-luna');
 });
 
 test('cheap presets diversify workers', () => {
