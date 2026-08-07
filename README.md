@@ -23,6 +23,8 @@ Every run has a plan, but planning is proportionate: a simple request can be a o
 - Native VS Code Copilot Chat entry point: `@convergent`
 - Persistent, strong, read-only coordinator that owns requirements understanding, clarification, task decomposition, acceptance criteria, and route/risk classification
 - Coordinator can inspect files and run non-mutating repository/shell commands such as `git status` and `git diff`
+- Deterministic request preflight catches obvious references to a missing prompt/task and asks the user for the actual objective before spending a coordinator turn
+- Coordinator instructions explicitly treat repository instructions/profiles/manifests as constraints, never as a substitute user objective
 - Per-task adaptive routes: `read_only`, `trivial`, `standard`, and `high_risk`
 - Engine-enforced minimums: `trivial` is reserved for clearly documentation/comment/text-only changes; executable code/tests/scripts are at least `standard`; high-risk semantics force `high_risk`
 - Lightweight fast path: A implements, B reviews once, and any B modification automatically escalates to the full standard workflow
@@ -40,9 +42,11 @@ Every run has a plan, but planning is proportionate: a simple request can be a o
 - Role-specific Copilot tool allow-lists so coordinator/reviewer do not inherit editing tools and workers do not inherit the full Copilot CLI toolbox
 - Workers use purpose-built `apply_patch`, `edit`, and `create` tools for file-content changes; shell-based content editing is blocked
 - Validation guidance avoids transient working-tree pollution, optional unrequested extras, and redundant re-reading/re-running after a successful validation
+- Event-driven tool and agent inactivity watchdogs with live heartbeats and bounded cancellation
+- Long healthy agent turns are not killed by a fixed wall-clock `sendAndWait` deadline; watchdogs react to lack of progress instead
 - Live chat status for route/risk, selected models/effort, pass duration, escalation, and usage
 - AI usage tracking from Copilot token/usage events and durable nano-AIU checkpoints
-- **Show usage**, **Show agent log**, **Stop workflow**, and **Source Control** chat buttons
+- **Show usage**, **Show diagnostics**, **Show agent log**, **Stop workflow**, and **Source Control** chat buttons
 - Native VS Code clarification UI for coordinator `ask_user` requests
 - Workspace-aware permission handling and explicit prompts for risky commands
 - Detailed agent/tool/usage trace in the **Convergent** output channel, including each role's configured tool allow-list
@@ -111,6 +115,21 @@ Convergent deliberately does not expose every Copilot CLI tool to every role. Th
 `apply_patch` is the Copilot CLI patch-oriented editing primitive and is preferred when a coherent change can be applied efficiently as a patch, including related edits across files. `edit` remains useful for precise replacements and `create` for new files. Workers are prevented from falling back to PowerShell/bash file-content editing such as `Set-Content`, redirection, `sed -i`, or shell-level patch commands.
 
 Convergent intentionally does not expose Copilot subagent/delegation tools to A/B/reviewer because agent scheduling belongs to the deterministic Convergent engine. The configured tool list for each live session is written to the **Convergent** output channel for troubleshooting.
+
+## Stall detection and cancellation
+
+Copilot SDK `sendAndWait(..., timeout)` treats `timeout` as a wall-clock deadline for waiting until `session.idle`. It does not mean “cancel only after this much inactivity.” Convergent therefore does not use that SDK timeout as its stall detector: a healthy agentic turn may run for many minutes while continuously producing tool/usage/message events.
+
+Instead, Convergent uses two event-driven watchdogs:
+
+- `convergent.toolStallTimeoutSeconds` (default 120s): while a tool is running, this measures time since the latest tool progress/partial-result event.
+- `convergent.agentInactivityTimeoutSeconds` (default 180s): when no tool is running, this measures time since any observed agent/tool/usage activity.
+
+On a watchdog threshold Convergent first sends immediate steering and allows `convergent.toolStallGraceSeconds` (default 10s) for activity to resume. Only if the operation remains quiet does Convergent reject the local turn and attempt a bounded SDK abort. `convergent.heartbeatSeconds` controls live progress messages.
+
+The older `convergent.agentTurnTimeoutSeconds` setting is deprecated because its name suggested a total turn limit. It remains only as a compatibility fallback.
+
+The SDK currently does not expose a documented `kill(toolCallId)` for built-in PowerShell/bash calls, so Convergent guarantees that its own UI/orchestrator stops waiting but cannot yet guarantee termination of an already-spawned subprocess if the Copilot runtime itself fails to cancel it.
 
 ## Validation evidence
 
