@@ -32,6 +32,14 @@ function modelText(model) {
   return `${model?.id ?? ''} ${model?.name ?? ''}`.trim();
 }
 
+function firstPresetMatch(patterns, models) {
+  for (const pattern of patterns) {
+    const match = models.find((model) => pattern.test(modelText(model)));
+    if (match) return match;
+  }
+  return undefined;
+}
+
 function resolveModel(selector, models = [], options = {}) {
   const excludedIds = new Set((options.excludeIds ?? []).filter(Boolean).map((id) => String(id).toLowerCase()));
   const eligible = models.filter((model) => !excludedIds.has(String(model?.id ?? '').toLowerCase()));
@@ -50,13 +58,26 @@ function resolveModel(selector, models = [], options = {}) {
 
   const patterns = PRESETS[normalized];
   if (patterns) {
-    for (const pattern of patterns) {
-      const match = eligible.find((model) => pattern.test(modelText(model)));
-      if (match) {
-        const diversified = excludedIds.size > 0 ? '; diversified from peer worker' : '';
-        return { id: match.id, name: match.name, reason: `${normalized} preset${diversified}` };
+    const diversified = firstPresetMatch(patterns, eligible);
+    if (diversified) {
+      const suffix = excludedIds.size > 0 ? '; diversified from peer worker' : '';
+      return { id: diversified.id, name: diversified.name, reason: `${normalized} preset${suffix}` };
+    }
+
+    // Diversity is desirable, but cost predictability is more important. If the
+    // only available preset match is the peer worker's model, reuse it rather than
+    // falling through to Copilot auto (which may choose a more expensive model).
+    if (excludedIds.size > 0) {
+      const sameCheapModel = firstPresetMatch(patterns, models);
+      if (sameCheapModel) {
+        return {
+          id: sameCheapModel.id,
+          name: sameCheapModel.name,
+          reason: `${normalized} preset; no different cheap model available`,
+        };
       }
     }
+
     return { id: 'auto', reason: `${normalized} preset had no available match; falling back to auto` };
   }
 
