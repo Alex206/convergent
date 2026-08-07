@@ -31,6 +31,13 @@ test('cheap-b can exclude worker A model and pick another cheap model', () => {
   );
 });
 
+test('cheap-b reuses the same cheap model instead of auto when no diverse cheap model exists', () => {
+  const onlyHaiku = [{ id: 'claude-haiku-4.5', name: 'Claude Haiku 4.5' }];
+  const result = resolveModel('cheap-b', onlyHaiku, { excludeIds: ['claude-haiku-4.5'] });
+  assert.equal(result.id, 'claude-haiku-4.5');
+  assert.match(result.reason, /no different cheap model available/);
+});
+
 test('exact model id wins even when it matches an excluded peer model', () => {
   assert.equal(
     resolveModel('claude-haiku-4.5', models, { excludeIds: ['claude-haiku-4.5'] }).id,
