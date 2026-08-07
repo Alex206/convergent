@@ -134,7 +134,7 @@ test('validation evidence helpers deduplicate checks and format reviewer context
   assert.match(text, /evidence, not proof/i);
 });
 
-test('worker cannot claim clean while changing revision', async () => {
+test('worker clean claim with unexplained workspace change still fails closed', async () => {
   const revision = { value: 'R1' };
   const engine = new ConvergentEngine({
     client: {}, sdk: {}, workspace: '/repo', models: {}, ui: fakeUi(),
@@ -143,7 +143,55 @@ test('worker cannot claim clean while changing revision', async () => {
   const a = fakeWorker('A', [
     { nextRevision: 'R2', report: { verdict: 'clean', summary: 'incorrect', findings: [], checks: [] } },
   ], revision);
-  await assert.rejects(() => engine.runWorkerPass(a, task, 'REVIEW_AND_FIX', null), /reported CLEAN but changed/);
+  await assert.rejects(
+    () => engine.runWorkerPass(a, task, 'REVIEW_AND_FIX', null),
+    /reported CLEAN but the workspace changed without attributable worker/i,
+  );
+});
+
+test('worker clean claim is reconciled to changed when guard proves worker writes', async () => {
+  const revision = { value: 'R1' };
+  const sink = { value: null };
+  let editCalls = 0;
+  const session = {
+    __convergentGuard: {
+      snapshot() {
+        return { tools: [{ name: 'edit', calls: editCalls, failures: 0 }] };
+      },
+    },
+    async sendAndWait() {
+      editCalls += 1;
+      revision.value = 'R2';
+      sink.value = { verdict: 'clean', summary: 'approved final result', findings: [], checks: ['tests pass'] };
+    },
+    async disconnect() {},
+  };
+  const worker = { name: 'A', sink, session, model: { id: 'a', name: 'A' } };
+  const engine = new ConvergentEngine({
+    client: {}, sdk: {}, workspace: '/repo', models: {}, ui: fakeUi(),
+    revisionProvider: async () => revision.value,
+  });
+
+  const result = await engine.runWorkerPass(worker, task, 'REVIEW_AND_FIX', null);
+  assert.equal(result.changed, true);
+  assert.equal(result.report.verdict, 'changed');
+  assert.match(result.verdictCorrection, /CLEAN -> CHANGED/);
+});
+
+test('worker changed claim is reconciled to clean when final revision is identical', async () => {
+  const revision = { value: 'R1' };
+  const worker = fakeWorker('A', [
+    { report: { verdict: 'changed', summary: 'net result approved', findings: [], checks: [] } },
+  ], revision);
+  const engine = new ConvergentEngine({
+    client: {}, sdk: {}, workspace: '/repo', models: {}, ui: fakeUi(),
+    revisionProvider: async () => revision.value,
+  });
+
+  const result = await engine.runWorkerPass(worker, task, 'REVIEW_AND_FIX', null);
+  assert.equal(result.changed, false);
+  assert.equal(result.report.verdict, 'clean');
+  assert.match(result.verdictCorrection, /CHANGED -> CLEAN/);
 });
 
 test('structured report survives a late session idle timeout', async () => {
