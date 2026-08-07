@@ -52,7 +52,6 @@ class SessionGuard {
     this.activeRejectors = new Set();
     this.disposers = [];
 
-    this.rawSendAndWait = session.sendAndWait.bind(session);
     this.rawSend = typeof session.send === 'function' ? session.send.bind(session) : null;
     this.rawAbort = typeof session.abort === 'function' ? session.abort.bind(session) : null;
     this.rawDisconnect = typeof session.disconnect === 'function' ? session.disconnect.bind(session) : null;
@@ -133,11 +132,12 @@ class SessionGuard {
   }
 
   wrapControlMethods() {
-    // IMPORTANT: Copilot SDK's sendAndWait timeout is a wall-clock deadline for
-    // waiting until session.idle, not an inactivity timeout. Long but healthy
-    // agentic turns can exceed it while continuously using tools. Convergent
-    // therefore intentionally does not forward that timeout; the event-driven
-    // watchdog below owns inactivity/stall detection instead.
+    // Copilot SDK 1.0.8 sendAndWait() always installs a wall-clock timer:
+    // omitting timeout uses 60s, and supplying a timeout still limits the total
+    // turn duration rather than inactivity. Agentic turns can legitimately run
+    // much longer while continuously making progress, so Convergent implements
+    // its own send + session.idle wait and lets the event-driven watchdog own
+    // liveness policy.
     this.session.sendAndWait = (options, _sdkWallClockTimeoutMs) => this.guardedSendAndWait(options);
 
     if (this.rawAbort) {
@@ -166,6 +166,65 @@ class SessionGuard {
       reject(makeControlError(reason, 'CONVERGENT_CANCELLED', diagnostic));
     }
     this.activeRejectors.clear();
+  }
+
+  createIdleWait(options) {
+    if (!this.rawSend) {
+      throw new Error(`${this.agentName} session does not expose send(); cannot run an unbounded agentic turn.`);
+    }
+
+    let settled = false;
+    let lastAssistantMessage;
+    let resolveOperation;
+    let rejectOperation;
+    const localDisposers = [];
+
+    const cleanup = () => {
+      for (const dispose of localDisposers.splice(0)) {
+        try { dispose?.(); } catch {}
+      }
+    };
+
+    const promise = new Promise((resolve, reject) => {
+      resolveOperation = resolve;
+      rejectOperation = reject;
+    });
+
+    const resolveOnce = (value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolveOperation(value);
+    };
+
+    const rejectOnce = (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      rejectOperation(error);
+    };
+
+    // Register before send() to preserve the race-safety of SDK sendAndWait().
+    localDisposers.push(
+      this.session.on('assistant.message', (event) => {
+        lastAssistantMessage = event;
+      }),
+      this.session.on('session.idle', () => resolveOnce(lastAssistantMessage)),
+      this.session.on('session.error', (event) => {
+        const error = new Error(event?.data?.message ?? `${this.agentName} session error.`);
+        if (event?.data?.stack) error.stack = event.data.stack;
+        rejectOnce(error);
+      }),
+    );
+
+    Promise.resolve()
+      .then(() => this.rawSend(options))
+      .catch(rejectOnce);
+
+    return {
+      promise,
+      cancel: () => resolveOnce(undefined),
+    };
   }
 
   async steerStalledTool(tool) {
@@ -202,7 +261,8 @@ class SessionGuard {
 
   guardedSendAndWait(options) {
     this.touch();
-    const operation = this.rawSendAndWait(options);
+    const idleWait = this.createIdleWait(options);
+    const operation = idleWait.promise;
     let timer;
     let active = true;
 
@@ -286,6 +346,7 @@ class SessionGuard {
 
     return Promise.race([operation, control]).finally(() => {
       active = false;
+      idleWait.cancel();
       if (timer) clearInterval(timer);
       this.activeRejectors.clear();
     });
