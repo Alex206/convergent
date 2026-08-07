@@ -23,8 +23,24 @@ function normalizeResumeState(value, workspace) {
   if (value.version !== RESUME_STATE_VERSION) return null;
   if (typeof value.workspace !== 'string' || value.workspace !== workspace) return null;
   if (typeof value.request !== 'string' || !value.request.trim()) return null;
-  if (!value.plan || typeof value.plan !== 'object' || !Array.isArray(value.plan.tasks) || !value.plan.tasks.length) return null;
   if (!RESUMABLE_STATUSES.has(value.status)) return null;
+
+  const hasPlan = Boolean(value.plan && typeof value.plan === 'object' && Array.isArray(value.plan.tasks) && value.plan.tasks.length);
+  if (!hasPlan) {
+    if (value.stage !== 'planning') return null;
+    return {
+      ...value,
+      version: RESUME_STATE_VERSION,
+      workspace,
+      request: value.request.trim(),
+      plan: null,
+      status: value.status,
+      nextTaskIndex: 0,
+      currentTaskIndex: null,
+      startTaskIndex: 0,
+      stats: defaultStats(0),
+    };
+  }
 
   const taskCount = value.plan.tasks.length;
   const nextTaskIndex = Number.isInteger(value.nextTaskIndex)
@@ -53,6 +69,7 @@ function normalizeResumeState(value, workspace) {
 
 function resumeSummary(state) {
   if (!state) return 'No resumable Convergent workflow is available.';
+  if (!state.plan) return 'Planning was interrupted before a plan was accepted; resume will re-run planning with the saved user request.';
   const task = state.plan.tasks[state.startTaskIndex];
   const completed = state.startTaskIndex;
   const detail = state.currentTaskIndex === null
