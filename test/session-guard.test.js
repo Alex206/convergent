@@ -32,12 +32,20 @@ test('settleWithin reports an operation that does not settle', async () => {
   assert.equal(result.settled, false);
 });
 
-test('guard does not forward a hard SDK sendAndWait timeout for active agentic turns', async () => {
-  let observedTimeout = 'not-called';
-  const session = fakeSession({
-    sendAndWait: async (_options, timeout) => {
-      observedTimeout = timeout;
-      return { data: { content: 'done' } };
+test('guard bypasses SDK sendAndWait wall-clock timeout and waits on events itself', async () => {
+  let sdkSendAndWaitCalls = 0;
+  let sendCalls = 0;
+  let session;
+  session = fakeSession({
+    sendAndWait: async () => {
+      sdkSendAndWaitCalls += 1;
+      throw new Error('SDK sendAndWait must not be used for agentic turns');
+    },
+    send: async () => {
+      sendCalls += 1;
+      setTimeout(() => session.emit('assistant.message', { content: 'done' }), 5);
+      setTimeout(() => session.emit('session.idle', {}), 10);
+      return 'message-1';
     },
   });
   new SessionGuard(session, 'Worker A', fakeUi(), {
@@ -45,13 +53,30 @@ test('guard does not forward a hard SDK sendAndWait timeout for active agentic t
     heartbeatMs: 60_000,
   });
 
-  await session.sendAndWait({ prompt: 'complex work' }, 180_000);
-  assert.equal(observedTimeout, undefined, 'SDK timeout is wall-clock, so Convergent must rely on activity watchdogs instead');
+  const result = await session.sendAndWait({ prompt: 'complex work' }, 180_000);
+  assert.equal(sdkSendAndWaitCalls, 0, 'Copilot SDK sendAndWait has a 60s default wall-clock timeout and must be bypassed');
+  assert.equal(sendCalls, 1);
+  assert.equal(result?.data?.content, 'done');
+});
+
+test('event-driven wait propagates session errors', async () => {
+  let session;
+  session = fakeSession({
+    send: async () => {
+      setTimeout(() => session.emit('session.error', { message: 'runtime failed' }), 5);
+      return 'message-1';
+    },
+  });
+  new SessionGuard(session, 'Worker A', fakeUi(), { heartbeatMs: 60_000 });
+
+  await assert.rejects(
+    session.sendAndWait({ prompt: 'work' }, 180_000),
+    /runtime failed/,
+  );
 });
 
 test('wrapped abort rejects a pending guarded send even when SDK abort never settles', async () => {
   const session = fakeSession({
-    sendAndWait: async () => new Promise(() => {}),
     abort: async () => new Promise(() => {}),
   });
   new SessionGuard(session, 'Worker A', fakeUi(), { controlTimeoutMs: 20, heartbeatMs: 60_000 });
