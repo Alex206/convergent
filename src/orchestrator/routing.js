@@ -72,7 +72,8 @@ function normalizeTaskRoute(task, routingMode = 'adaptive') {
   };
 }
 
-function routePolicy(route) {
+function routePolicy(route, risk = 'medium') {
+  const normalizedRisk = normalizeRisk(risk);
   switch (route) {
     case 'read_only':
       return {
@@ -101,7 +102,11 @@ function routePolicy(route) {
         description: 'Full A/B convergence plus persistent strong review.',
         workerMode: 'converge',
         strongReview: true,
-        efforts: { workerA: 'low', workerB: 'low', reviewer: 'medium' },
+        efforts: {
+          workerA: 'low',
+          workerB: 'low',
+          reviewer: normalizedRisk === 'low' ? 'low' : 'medium',
+        },
       };
   }
 }
