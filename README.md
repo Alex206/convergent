@@ -127,7 +127,7 @@ Instead, Convergent uses two event-driven watchdogs:
 
 On a watchdog threshold Convergent first sends immediate steering and allows `convergent.toolStallGraceSeconds` (default 10s) for activity to resume. Only if the operation remains quiet does Convergent reject the local turn and attempt a bounded SDK abort. `convergent.heartbeatSeconds` controls live progress messages.
 
-The older `convergent.agentTurnTimeoutSeconds` setting is deprecated because its name suggested a total turn limit. It remains only as a compatibility fallback.
+The older `convergent.agentTurnTimeoutSeconds` setting is deprecated because its name suggested a total turn limit. If it was explicitly configured and the new inactivity setting is not, Convergent uses the legacy value as the inactivity threshold during migration.
 
 The SDK currently does not expose a documented `kill(toolCallId)` for built-in PowerShell/bash calls, so Convergent guarantees that its own UI/orchestrator stops waiting but cannot yet guarantee termination of an already-spawned subprocess if the Copilot runtime itself fails to cancel it.
 
