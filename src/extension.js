@@ -6,6 +6,7 @@ const { resolveModel } = require('./orchestrator/model-resolver');
 const { ensureConcreteUserRequest } = require('./orchestrator/request-preflight');
 const { normalizeResumeState, resumeSummary } = require('./orchestrator/resume');
 const { workspaceRevision } = require('./orchestrator/revision');
+const { isWorkflowPausedError } = require('./orchestrator/control');
 const { createPermissionHandler, createUserInputHandler } = require('./copilot/permissions');
 const { createClientOptions } = require('./copilot/runtime');
 const { VscodeWorkflowUi, compactUsage, detailedUsageMarkdown, diagnosticsMarkdown } = require('./ui/vscode-ui');
@@ -85,6 +86,8 @@ function readConfig() {
     reasoningMode: config.get('reasoningMode', 'adaptive'),
     maxWorkerPasses: config.get('maxWorkerPasses', 8),
     maxReviewerCycles: config.get('maxReviewerCycles', 3),
+    maxAiCredits: config.get('maxAiCredits', 0),
+    taskCommitMode: config.get('taskCommits', 'off'),
     agentInactivityTimeoutMs: agentInactivityTimeoutSeconds(config) * 1000,
     toolStallTimeoutMs: config.get('toolStallTimeoutSeconds', 120) * 1000,
     stallGraceMs: config.get('toolStallGraceSeconds', 10) * 1000,
@@ -208,6 +211,8 @@ async function executeWorkflow(prompt, stream, token, resumeState = null) {
     ui,
     maxWorkerPasses: config.maxWorkerPasses,
     maxReviewerCycles: config.maxReviewerCycles,
+    maxAiCredits: config.maxAiCredits,
+    taskCommitMode: config.taskCommitMode,
     routingMode: config.routingMode,
     reasoningMode: config.reasoningMode,
     signal: controller.signal,
@@ -238,6 +243,10 @@ async function executeWorkflow(prompt, stream, token, resumeState = null) {
     stream.markdown('\n**Convergent finished successfully.**');
   } catch (error) {
     await markResumeInterrupted(latestCheckpoint, error.message ?? String(error));
+    if (isWorkflowPausedError(error)) {
+      ui.workflowPaused(error.message ?? 'Paused at a configured soft limit.');
+      return;
+    }
     throw error;
   } finally {
     cancellation.dispose();
