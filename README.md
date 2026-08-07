@@ -1,17 +1,11 @@
 # Convergent
 
-Convergent is a VS Code extension that turns GitHub Copilot into an adaptive, deterministic multi-agent coding workflow with a persistent strong coordinator, independent implementation/review agents, exact-revision convergence, strong review, resumable checkpoints, and visible workflow state.
-
-## Current development build
-
-`0.2.0-dev.4`
-
-## Workflow
+Convergent is a VS Code extension that turns GitHub Copilot into an adaptive, deterministic multi-agent workflow. A persistent strong coordinator understands the request, clarifies material ambiguity, slices it into proportionate tasks, defines acceptance criteria, and classifies each task; application code decides what workflow is allowed to run.
 
 ```text
-User request
+User
   ↓
-Strong coordinator (persistent, read-only)
+Strong coordinator (persistent for the whole request, read-only)
   ↓ understand + clarify + classify + plan
 Task N
   ├─ read_only → coordinator result only
@@ -22,7 +16,53 @@ Task N
   └─ high_risk → same full workflow with higher supported reasoning effort
 ```
 
-Worker A, Worker B, and the strong reviewer use fresh persistent contexts for each implementation task. A/B exchange structured reports and Convergent, rather than the models, owns the state machine and convergence rules.
+Every run has a plan, but planning is proportionate: a simple request can be a one-task plan. Worker A, Worker B, and the strong reviewer keep independent persistent contexts for the lifetime of one implementation task. A and B also receive each other's explicit structured reports so their technical positions can challenge each other instead of communicating only through changed files. Task-local contexts are discarded when the task completes.
+
+## Current MVP
+
+- Native VS Code Copilot Chat entry point: `@convergent`
+- Persistent, strong, read-only coordinator that owns requirements understanding, clarification, task decomposition, acceptance criteria, and route/risk classification
+- Coordinator can inspect files and run non-mutating repository/shell commands such as `git status` and `git diff`
+- Deterministic request preflight catches obvious references to a missing prompt/task and asks the user for the actual objective before spending a coordinator turn
+- Coordinator instructions explicitly treat repository instructions/profiles/manifests as constraints, never as a substitute user objective
+- Per-task adaptive routes: `read_only`, `trivial`, `standard`, and `high_risk`
+- Engine-enforced minimums: `trivial` is reserved for clearly documentation/comment/text-only changes; executable code/tests/scripts are at least `standard`; high-risk semantics force `high_risk`
+- Lightweight fast path: A implements, B reviews once, and any B modification automatically escalates to the full standard workflow
+- Fresh persistent Worker A, Worker B, and strong-reviewer sessions for each implementation task
+- Structured coordinator plan and structured worker/reviewer verdicts via application-owned Copilot SDK tools, with defensive normalization and semantic validation at the tool boundary
+- Serialized `<report_pass>` / `<report_review>` assistant output is narrowly recovered when a model emits the structured report as text instead of invoking the custom tool
+- Worker reports reserve `findings` for unresolved actionable issues; CLEAN/CHANGED reports with findings are rejected and retried instead of crashing convergence
+- Worker verdicts are reconciled against authoritative workspace fingerprints: attributable worker writes can correct a mistaken CLEAN to CHANGED, while unexplained workspace changes still fail closed
+- A/B adversarial review/fix loop with explicit peer-report exchange
+- Full-workflow convergence requires A and B to approve the exact same workspace revision; a valid `CHANGED` pass approves the revision that worker just produced, while `CLEAN` approves the unchanged current revision
+- Persistent strong reviewer remembers its earlier findings during remediation cycles
+- Strong-review findings feed back into A/B and must converge again before re-review
+- Revision-scoped validation evidence is carried from A/B to the strong reviewer so checks are not rerun mechanically
+- Adaptive reasoning effort (`low`, `medium`, `high`) when the selected Copilot model advertises support
+- Runtime model discovery with `strong`, `planner`, `cheap-a`, `cheap-b`, risk-adaptive worker policies, and exact model selection
+- Worker model capability is resolved after each task is classified: cheap for trivial/low-risk work, economical capable models for standard work, and a stronger implementation tier for high-risk work; Worker B diversifies when possible
+- Role-specific Copilot tool allow-lists so coordinator/reviewer do not inherit editing tools and workers do not inherit the full Copilot CLI toolbox
+- Workers use purpose-built `apply_patch`, `edit`, and `create` tools for file-content changes; shell-based content editing is blocked
+- Validation guidance avoids transient working-tree pollution, optional unrequested extras, and redundant re-reading/re-running after a successful validation
+- Event-driven tool and agent inactivity watchdogs with live heartbeats and bounded cancellation
+- Long healthy agent turns are not killed by a fixed wall-clock `sendAndWait` deadline; watchdogs react to lack of progress instead
+- Safe workflow checkpoints support `@convergent /resume` and **Convergent: Resume Last Workflow** after interruption or stop
+- Interrupted planning retains the original request; completed tasks are skipped; an interrupted task restarts only that task against the current workspace with fresh task-local sessions
+- Live chat status for route/risk, selected models/effort, pass duration, escalation, and usage
+- AI usage tracking from Copilot token/usage events and durable nano-AIU checkpoints
+- **Show usage**, **Show diagnostics**, **Show agent log**, **Stop workflow**, **Resume workflow**, and **Source Control** chat/command actions
+- Native VS Code clarification UI for coordinator `ask_user` requests
+- Workspace-aware permission handling and explicit prompts for risky commands
+- Detailed agent/tool/usage trace in the **Convergent** output channel, including each role's configured tool allow-list
+
+## Requirements
+
+- VS Code with GitHub Copilot Chat available
+- Node.js 22.12+; Node.js 24 LTS is recommended for development
+- A Git workspace (Convergent uses Git state to establish exact convergence)
+- A GitHub Copilot entitlement that can use the Copilot SDK
+
+The Node.js Copilot SDK bundles the compatible Copilot CLI runtime. Authentication uses the SDK's normal Copilot authentication chain.
 
 ## Development
 
@@ -33,11 +73,17 @@ npm run check
 npm run package
 ```
 
-Use `@convergent <request>` in Copilot Chat, or run **Convergent: Start Workflow**.
+Press `F5` in VS Code to launch an Extension Development Host, open a Git repository, then use:
 
-## Resume
+```text
+@convergent Implement <your task>
+```
 
-Convergent persists safe checkpoints in VS Code workspace state. Resume using:
+Or run **Convergent: Start Workflow** from the command palette.
+
+## Resume after interruption
+
+Convergent persists safe workflow checkpoints in VS Code workspace state. Resume with:
 
 ```text
 @convergent /resume
@@ -45,97 +91,142 @@ Convergent persists safe checkpoints in VS Code workspace state. Resume using:
 
 or **Convergent: Resume Last Workflow**.
 
-Current resume boundaries include:
+Resume is deliberately boundary-based rather than pretending to restore an opaque in-flight model/tool call:
 
-- planning: retain the original request and restart coordinator planning;
-- completed task: skip it and continue with the next task;
-- generic interruption inside a task: restart only that task against the current workspace;
-- `strong_review_pending`: resume directly at the next strong-review cycle when the workspace fingerprint still matches;
-- `strong_review_findings`: resume directly with remediation of the saved findings when the fingerprint still matches.
+- interrupted during coordinator planning: keep the original request and re-run planning;
+- interrupted between tasks: continue with the next pending task and skip completed tasks;
+- interrupted inside a task: restart only that task with fresh task-local sessions against the current partially modified workspace.
 
-If a fine-grained checkpoint no longer matches the current workspace, Convergent discards that stale task state and safely falls back to restarting only the current task.
+If the workspace changed after a completed-task checkpoint, Convergent asks before continuing with the saved next task. Finer pass/reviewer-level checkpoints are a future refinement.
 
-## Model selection
+## Adaptive routing
 
-Convergent discovers Copilot models at runtime. Defaults are:
+The strong coordinator classifies every task, but the JavaScript engine validates the result. The default `convergent.routingMode` is `adaptive`.
 
-| Role | Default |
-| --- | --- |
-| Coordinator | `strong` |
-| Worker A | `adaptive` |
-| Worker B | `adaptive-diverse` |
-| Strong reviewer | `strong` |
+| Route | Intended use | Enforced workflow |
+| --- | --- | --- |
+| `read_only` | Inspection/explanation; no writes required. May still be conceptually complex. | Strong coordinator only |
+| `trivial` | Clearly low-risk docs/comment/text/wording change | A implement → B review; B changes → escalate |
+| `standard` | Executable source, scripts, tests, build/CI/configuration, normal feature/bugfix/code change | A/B same-revision convergence → strong review |
+| `high_risk` | Security/auth, concurrency, migrations, destructive/production-release/architectural changes | Full workflow with higher supported reasoning effort |
 
-Adaptive worker selection happens after route/risk classification. Trivial/low-risk work stays cheap, standard work favors economical capable models, and high-risk work promotes Worker A to a stronger implementation tier. Worker B prefers a different capable model when available. Exact model ids/names and explicit presets are hard overrides.
+Set `convergent.routingMode` to `full` to force every modifying task through at least the standard full-review workflow.
 
-## Convergence
+## Model selection and reasoning effort
 
-For `standard` and `high_risk`, both workers must approve the exact same workspace revision fingerprint. A valid `CHANGED` pass approves the resulting revision; a valid `CLEAN` pass approves an unchanged revision. Any later write invalidates older approvals and revision-scoped validation evidence.
+Convergent discovers models from `client.listModels()` at runtime. This is important for enterprise installations where model availability is controlled by policy. Worker models are selected only after the coordinator has classified the task so route/risk can influence capability.
 
-The fingerprint covers `HEAD`, staged changes, unstaged changes, and untracked file contents.
+| Role | Selector | Default behavior |
+| --- | --- | --- |
+| Coordinator | `strong` | Strong model; medium reasoning when supported. Persistent for the complete user request. |
+| Worker A | `adaptive` | `trivial/low` → cheap tier; `standard` → economical capable tier; `high_risk`/high risk → stronger implementation tier |
+| Worker B | `adaptive-diverse` | Scale with the same route/risk, but prefer a different capable model from Worker A when one is available |
+| Strong reviewer | `strong` | Strong model; low effort for low-risk standard tasks, medium for normal standard tasks, high for high-risk tasks when supported |
 
-If a worker mistakenly reports `CLEAN` after attributable `edit`, `apply_patch`, or `create` activity changed the fingerprint, Convergent reconciles the verdict to `CHANGED`. An unexplained workspace change still fails closed.
+Current adaptive tier preferences are deterministic and availability-aware. For example, a high-risk Worker A prefers GPT-5.6 Terra or Claude Sonnet 5 when available, then strong GPT-5.6 Sol/GPT-5.5/full GPT-5.4-class options; Worker B first seeks a different capable model such as GPT-5.4 mini. Standard Worker A prefers GPT-5.6 Luna or GPT-5.4 mini before falling back to less preferred options. Trivial/low-risk work retains the existing cheap-worker behavior.
 
-## Long-running tools and status
+Exact model ids/names and explicit presets are overrides. For example, setting `convergent.models.workerA` to `claude-haiku-4.5`, `gpt-5.5`, `cheap-a`, or `strong` disables adaptive promotion for Worker A. `cheap-b` retains its low-cost diversity behavior. This makes `adaptive` a policy, while explicit configuration remains predictable.
 
-Convergent bypasses the Copilot SDK 1.0.8 `sendAndWait()` wall-clock timeout and waits on SDK events instead. Healthy active turns can therefore run beyond 60/180 seconds.
+The lower-cost `planner` selector remains available as an explicit configuration option, but it is not the default: planning and task slicing are treated as high-leverage decisions where an underpowered model can incorrectly simplify a complex request.
 
-Routine `working · last activity ...` heartbeats are written to the **Convergent** Output channel instead of being repeatedly appended to Chat. Chat surfaces meaningful phase changes, usage checkpoints, pass/review results, and periodic status for genuinely long-running tools.
+`convergent.reasoningMode=adaptive` applies role/route-driven effort only when the selected model advertises the requested reasoning-effort capability. Set it to `model-default` to leave reasoning effort untouched.
 
-`convergent.toolStallTimeoutSeconds` is a no-progress threshold, not a maximum command duration. If a built-in tool is quiet past the threshold, Convergent shows the tool and, when the SDK provides useful arguments, the command/path, and asks whether to:
+## Tool policy
 
-- **Continue 5 min**;
-- **Continue 15 min**;
-- **Abort agent turn**.
+Convergent deliberately does not expose every Copilot CLI tool to every role. This both limits authority and reduces the tool-definition context paid on each model roundtrip.
 
-`convergent.agentInactivityTimeoutSeconds` similarly asks whether to continue waiting or abort when no agent/tool activity is observed.
+- Coordinator: `view`, `glob`, `rg`/`grep`, the platform shell for read-only diagnostics, `ask_user`, and `report_plan`.
+- Worker A/B: the same repository inspection/search primitives, the platform shell for validation/cleanup, `apply_patch`, `edit`, `create`, and `report_pass`.
+- Strong reviewer: read/search/diagnostic shell plus `report_review`; no file editing and no `ask_user`.
 
-The Copilot SDK does not currently expose a documented `kill(toolCallId)` for built-in PowerShell/bash tools, so abort currently cancels the in-flight agent turn rather than guaranteeing independent subprocess termination. A Convergent-owned command runner with PID/process-tree control is the planned path to command-only cancellation/retry.
+`apply_patch` is the Copilot CLI patch-oriented editing primitive and is preferred when a coherent change can be applied efficiently as a patch, including related edits across files. `edit` remains useful for precise replacements and `create` for new files. Workers are prevented from falling back to PowerShell/bash file-content editing such as `Set-Content`, redirection, `sed -i`, or shell-level patch commands.
 
-## Soft limits
+Convergent intentionally does not expose Copilot subagent/delegation tools to A/B/reviewer because agent scheduling belongs to the deterministic Convergent engine. The configured tool list for each live session is written to the **Convergent** output channel for troubleshooting.
 
-Iteration and budget limits are decision points rather than automatic workflow failures.
+## Stall detection and cancellation
 
-- `convergent.maxWorkerPasses` (default `8`): A/B convergence tranche. At the limit Convergent asks to continue for 1 or 3 more passes, or pause.
-- `convergent.maxReviewerCycles` (default `3`): strong-review tranche. If findings remain, Convergent asks to continue for 1 or 3 more cycles, or pause. Remaining findings have already been checkpointed.
-- `convergent.maxAiCredits` (default `0`, disabled): optional soft run budget. At a safe workflow boundary after reported usage crosses the budget, Convergent asks to add another budget tranche, continue without a budget, or pause.
+Copilot SDK `sendAndWait(..., timeout)` treats `timeout` as a wall-clock deadline for waiting until `session.idle`. It does not mean “cancel only after this much inactivity.” Convergent therefore does not use that SDK timeout as its stall detector: a healthy agentic turn may run for many minutes while continuously producing tool/usage/message events.
 
-A user-selected pause is presented as a normal resumable state, not as an error. Resume later with `@convergent /resume`.
+Instead, Convergent uses two event-driven watchdogs:
 
-Copilot credit checkpoints can lag live token growth, so an AI-credit budget is necessarily enforced at safe boundaries using the latest reported durable usage rather than as an exact real-time hard cap.
+- `convergent.toolStallTimeoutSeconds` (default 120s): while a tool is running, this measures time since the latest tool progress/partial-result event.
+- `convergent.agentInactivityTimeoutSeconds` (default 180s): when no tool is running, this measures time since any observed agent/tool/usage activity.
 
-## Optional task checkpoint commits
+On a watchdog threshold Convergent first sends immediate steering and allows `convergent.toolStallGraceSeconds` (default 10s) for activity to resume. Only if the operation remains quiet does Convergent reject the local turn and attempt a bounded SDK abort. `convergent.heartbeatSeconds` controls live progress messages.
 
-Set:
+The older `convergent.agentTurnTimeoutSeconds` setting is deprecated because its name suggested a total turn limit. If it was explicitly configured and the new inactivity setting is not, Convergent uses the legacy value as the inactivity threshold during migration.
 
-```json
-{
-  "convergent.taskCommits": "safe"
-}
+The SDK currently does not expose a documented `kill(toolCallId)` for built-in PowerShell/bash calls, so Convergent guarantees that its own UI/orchestrator stops waiting but cannot yet guarantee termination of an already-spawned subprocess if the Copilot runtime itself fails to cancel it.
+
+## Validation evidence
+
+Each worker report can include concise checks actually performed against its final revision. Convergent keeps this evidence only while the exact workspace revision remains current; any repository change discards evidence from the previous revision.
+
+When A/B converge, the strong reviewer receives the accumulated evidence for that exact revision. Evidence is not treated as proof, but low-risk reviewers are instructed not to rerun already-passed checks mechanically unless a concrete concern justifies independent verification. Medium/high-risk review can still rerun critical checks as needed.
+
+Validation should avoid polluting the working tree. For example, Python validation should use `-B` or `PYTHONDONTWRITEBYTECODE=1` where practical so `__pycache__` is not created merely by Convergent's own checks.
+
+## Usage and AI credits
+
+Convergent records per-session model calls, input/output tokens, turn count, active duration, context usage, and Copilot durable `totalNanoAiu` checkpoints. The chat shows a running compact usage line after meaningful turns and a per-agent table at the end. **Convergent: Show AI Usage** shows the latest snapshot while a run is active or after it finishes.
+
+The displayed AI-credit figure is an approximate presentation derived as `totalNanoAiu / 1e9`, following the Copilot SDK usage documentation's nano-unit example. GitHub Copilot billing remains the source of truth for actual billable credits/cost.
+
+## Convergence invariant
+
+For the `standard` and `high_risk` routes, convergence means both workers approve the exact same workspace revision fingerprint.
+
+A worker's final workspace fingerprint is authoritative for whether the pass changed the workspace. The normal report contract remains:
+
+```text
+CLEAN   → worker changed nothing and approves the current revision
+CHANGED → worker made a substantive change, left no unresolved findings,
+          and approves the resulting revision it just produced
 ```
 
-to create a Git checkpoint commit after each accepted modifying task **only if that task started with a clean worktree**. The next task then starts with the previous accepted task as `HEAD`, which makes normal Git diffs much more task-local and can reduce cumulative-change exploration by later agents.
+If a worker mistakenly reports `CLEAN` after successful Convergent-observed `edit`, `apply_patch`, or `create` calls changed the fingerprint, Convergent reconciles that verdict to `CHANGED` instead of discarding the whole run. If the fingerprint changed without attributable worker write-tool activity, Convergent still fails closed because the change could have come from the user, another process, or validation pollution. Conversely, a `CHANGED` report whose final fingerprint is identical is normalized to `CLEAN`.
 
-The default is `off`. If a task begins with an existing dirty worktree, safe mode skips the automatic commit rather than sweeping pre-existing changes into history. Commit failures do not discard accepted changes; they remain in the worktree.
+A worker therefore does not need a second pass merely to approve its own unchanged result. For example:
 
-## Tool and permission policy
+```text
+A: CHANGED R1   → A approves R1
+B: CLEAN   R1   → B approves R1
+=============================
+worker convergence
+```
 
-The coordinator and strong reviewer are read-only. Workers use repository read/search tools, validation shell commands, and purpose-built `apply_patch`, `edit`, and `create` tools. Shell-based file-content editing is blocked for workers. Obvious shell mutations are denied for read-only roles, and workspace fingerprints before/after read-only turns provide a second defense.
+If B instead changes `R1` to `R2`, every approval and validation result for `R1` is discarded. B's valid `CHANGED` pass approves `R2`, and A must independently approve `R2`:
 
-`convergent.permissionMode=workspace` automatically approves normal workspace operations while still prompting for risky commands. `ask` prompts more aggressively.
+```text
+A: CHANGED R1   → A approves R1
+B: CHANGED R2   → discard all R1 approvals/evidence; B approves R2
+A: CLEAN   R2   → A approves R2
+=============================
+worker convergence
+```
 
-## Usage
+Any later repository write repeats the same invalidation rule. `BLOCKED` never approves a revision.
 
-Convergent records per-session models, token usage, turns, active duration, context information, and Copilot durable nano-AIU checkpoints. **Convergent: Show AI Usage** shows the latest snapshot.
+Worker `findings` means unresolved actionable issues only. Issues found and fixed, disagreements with the peer, and other non-actionable observations belong in the structured summary. This keeps `CLEAN` and `CHANGED` unambiguous while still preserving the peer's technical position.
 
-The displayed AI-credit number is derived from Copilot nano-AIU usage (`nano-AIU / 1e9`). Durable credit reporting may lag token growth during an active turn; GitHub billing remains the source of truth.
+The revision fingerprint covers `HEAD`, staged changes, unstaged changes, and untracked file contents.
+
+The `trivial` route intentionally uses a lighter guarantee: Worker B is the independent approval after A's implementation. If B changes anything, that lightweight approval is invalid and the task escalates to standard convergence plus strong review.
 
 ## Packaging
 
-`npm run package` uses the pinned `@vscode/vsce`. `.vscodeignore` excludes development/test/editor/CI metadata and prior VSIX files, and reviewed native/packaging install scripts are explicitly allowed.
+`npm run package` uses the project's pinned `@vscode/vsce`. A `.vscodeignore` excludes development/test/editor/CI metadata and old VSIX files, and npm install-script permissions for the reviewed native/packaging dependencies are explicit.
 
-The VSIX is still large (currently about 176 MB in CI) because the Copilot SDK carries its compatible runtime/platform payload. That runtime is intentionally not excluded blindly. VSCE's file-count/bundle warning remains a measured packaging optimization item.
+The VSIX remains large because the Copilot SDK carries its compatible runtime/platform payload; current CI measures roughly 176 MB compressed. That runtime is intentionally not excluded blindly. VSCE's remaining file-count/bundle warning is tracked as a packaging optimization problem rather than suppressed as if solved.
+
+## Safety
+
+The coordinator and strong reviewer are read-only. They can inspect repository state and run diagnostic commands, but Convergent blocks obvious shell mutations and also checks the workspace revision before/after their turns as a second line of defense.
+
+The default `workspace` permission mode automatically approves ordinary reads, workspace writes for implementation workers, and non-risky shell commands so the workflow can operate without constant prompts. Writes outside the workspace are denied. Risky commands such as `git push`, `git reset --hard`, and destructive recursive deletion require explicit approval.
+
+Set `convergent.permissionMode` to `ask` to require approval for shell commands and writes.
 
 ## Status
 
-Convergent is still pre-0.2 development. Current priorities include a Convergent-owned cancellable command runner, richer task/pass resume boundaries, better task dashboards/diff navigation, empirical model cost/quality routing, and profile/team topologies such as architect → implementer → test engineer → reviewer.
+This is still an MVP. Useful next increments include pass/reviewer-level resume checkpoints, interactive long-running-command control, a dedicated mutable agent/task dashboard, richer diff/finding navigation, empirical model-quality/cost scoring to refine the adaptive tiers, profile-based specialized teams, and a CLI frontend over the same orchestrator core. Optional use of the VS Code-selected chat model for coordination and explicit user routing hints are tracked separately as future improvements.
