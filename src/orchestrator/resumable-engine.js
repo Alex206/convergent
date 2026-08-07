@@ -12,7 +12,7 @@ class ResumableConvergentEngine extends ConvergentEngine {
     this.onCheckpoint = typeof options.onCheckpoint === 'function' ? options.onCheckpoint : async () => {};
   }
 
-  async saveCheckpoint({ request, plan, status, nextTaskIndex, currentTaskIndex = null, stage }) {
+  async saveCheckpoint({ request, plan = null, status, nextTaskIndex = 0, currentTaskIndex = null, stage }) {
     let revision;
     try {
       revision = await this.revisionProvider(this.workspace);
@@ -61,8 +61,9 @@ class ResumableConvergentEngine extends ConvergentEngine {
     let plan;
     let startTaskIndex = 0;
     let planningUsage = null;
+    const canReusePlan = Boolean(resumeState?.plan);
 
-    if (resumeState) {
+    if (canReusePlan) {
       plan = resumeState.plan;
       startTaskIndex = resumeState.startTaskIndex;
       this.stats = { ...defaultStats(plan.tasks.length), ...resumeState.stats, tasks: plan.tasks.length };
@@ -72,7 +73,21 @@ class ResumableConvergentEngine extends ConvergentEngine {
         : `Restarting interrupted task ${startTaskIndex + 1}/${plan.tasks.length} from the current workspace state: ${task.title}. Completed tasks will not be rerun.`;
       this.ui.phase('Resuming', detail);
     } else {
-      this.ui.phase('Planning', 'Coordinator is inspecting the repository, classifying risk, and choosing the proportionate workflow.');
+      this.stats = defaultStats(0);
+      await this.saveCheckpoint({
+        request: userRequest,
+        plan: null,
+        status: 'running',
+        nextTaskIndex: 0,
+        currentTaskIndex: null,
+        stage: 'planning',
+      });
+      this.ui.phase(
+        resumeState ? 'Resuming planning' : 'Planning',
+        resumeState
+          ? 'The prior run stopped before a plan was accepted. The coordinator is re-running planning from the saved user request.'
+          : 'Coordinator is inspecting the repository, classifying risk, and choosing the proportionate workflow.',
+      );
       coordinator = await factory.createCoordinator();
       this.sessions.push(coordinator.session);
       this.ui.agentConfiguration([
@@ -108,8 +123,8 @@ class ResumableConvergentEngine extends ConvergentEngine {
       plan,
       status: 'ready',
       nextTaskIndex: startTaskIndex,
-      currentTaskIndex: resumeState?.currentTaskIndex ?? null,
-      stage: resumeState ? 'resume_ready' : 'plan_complete',
+      currentTaskIndex: canReusePlan ? resumeState.currentTaskIndex : null,
+      stage: canReusePlan ? 'resume_ready' : 'plan_complete',
     });
 
     for (let index = startTaskIndex; index < plan.tasks.length; index += 1) {
