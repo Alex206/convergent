@@ -2,7 +2,7 @@
   "name": "convergent",
   "displayName": "Convergent",
   "description": "Adaptive multi-agent implementation and adversarial review workflows powered by GitHub Copilot.",
-  "version": "0.2.0-dev.1",
+  "version": "0.2.0-dev.2",
   "publisher": "alex206",
   "license": "MIT",
   "engines": {
@@ -61,13 +61,13 @@
         },
         "convergent.models.workerA": {
           "type": "string",
-          "default": "cheap-a",
-          "description": "Persistent worker A model selector. cheap-a prefers GPT-5.6 Luna when available for low-cost tool-heavy implementation passes, then other low-cost models."
+          "default": "adaptive",
+          "description": "Worker A model selector. adaptive resolves after each task is classified: trivial/low uses the cheap tier, standard uses an economical capable tier, and high-risk work promotes to a stronger implementation tier. An exact model id/name or an explicit preset such as cheap-a/strong overrides adaptation."
         },
         "convergent.models.workerB": {
           "type": "string",
-          "default": "cheap-b",
-          "description": "Persistent worker B model selector. cheap-b prefers a different low-cost model from Worker A when one is available."
+          "default": "adaptive-diverse",
+          "description": "Worker B model selector. adaptive-diverse scales capability with task route/risk and avoids Worker A's selected model when a suitable alternative exists. An exact model id/name or explicit preset overrides adaptation; cheap-b keeps its existing low-cost diversified behavior."
         },
         "convergent.models.reviewer": {
           "type": "string",
@@ -170,7 +170,7 @@
   },
   "scripts": {
     "test": "node --test",
-    "check": "node --check src/extension.js && node --check src/orchestrator/engine.js && node --check src/orchestrator/resumable-engine.js && node --check src/orchestrator/resume.js && node --check src/orchestrator/request-preflight.js && node --check src/orchestrator/routing.js && node --check src/orchestrator/usage.js && node --check src/ui/vscode-ui.js && node --check src/copilot/session-factory.js && node --check src/copilot/session-guard.js && node --check src/copilot/runtime.js",
+    "check": "node --check src/extension.js && node --check src/orchestrator/engine.js && node --check src/orchestrator/model-resolver.js && node --check src/orchestrator/resumable-engine.js && node --check src/orchestrator/resume.js && node --check src/orchestrator/request-preflight.js && node --check src/orchestrator/routing.js && node --check src/orchestrator/usage.js && node --check src/ui/vscode-ui.js && node --check src/copilot/session-factory.js && node --check src/copilot/session-guard.js && node --check src/copilot/runtime.js",
     "package": "vsce package",
     "package:list": "vsce ls --tree"
   },
