@@ -7,7 +7,7 @@ const {
   REVIEWER_PROMPT,
 } = require('../orchestrator/prompts');
 const { routePolicy, chooseReasoningEffort } = require('../orchestrator/routing');
-const { createPlanTool, createPassTool, createReviewTool } = require('./tools');
+const { createPlanTool, createPassTool, createReviewTool, recoverSerializedReport } = require('./tools');
 const { guardSession } = require('./session-guard');
 
 const SHELL_BUILTINS = process.platform === 'win32'
@@ -90,13 +90,23 @@ function safeSessionPart(value) {
   return (part || 'task').slice(0, 80);
 }
 
-function attachEventLogging(session, agentName, ui, usage, model, usageKey = agentName) {
+function attachEventLogging(session, agentName, ui, usage, model, usageKey = agentName, reportFallback = null) {
   usage?.register(usageKey, session, model, agentName);
   const disposers = [];
   disposers.push(
     session.on('assistant.intent', (event) => ui.agentIntent(agentName, event.data.intent)),
     session.on('tool.execution_start', (event) => ui.agentTool(agentName, event.data.toolName)),
-    session.on('assistant.message', (event) => ui.agentMessage(agentName, event.data.content)),
+    session.on('assistant.message', (event) => {
+      const content = event.data.content;
+      ui.agentMessage(agentName, content);
+      if (reportFallback?.sink && !reportFallback.sink.value) {
+        const recovered = recoverSerializedReport(content, reportFallback.toolName);
+        if (recovered) {
+          reportFallback.sink.value = recovered;
+          ui.agentReportRecovered?.(agentName, reportFallback.toolName);
+        }
+      }
+    }),
     session.on('assistant.usage', (event) => {
       usage?.recordAssistantUsage(usageKey, event.data);
       ui.agentUsageEvent?.(agentName, usage?.summary());
@@ -188,7 +198,7 @@ class SessionFactory {
     const name = `Worker ${worker}`;
     const guard = this.guard(session, name);
     const usageKey = `${safeTaskId}:worker-${worker.toLowerCase()}`;
-    attachEventLogging(session, name, this.ui, this.usage, model, usageKey);
+    attachEventLogging(session, name, this.ui, this.usage, model, usageKey, { sink, toolName: 'report_pass' });
     this.ui.agentTools?.(name, WORKER_TOOLS);
     return { session, guard, sink, name: worker, usageName: usageKey, model, reasoningEffort: effort };
   }
@@ -215,7 +225,7 @@ class SessionFactory {
     }, effort));
     const guard = this.guard(session, 'Strong reviewer');
     const usageKey = `${safeTaskId}:reviewer`;
-    attachEventLogging(session, 'Strong reviewer', this.ui, this.usage, model, usageKey);
+    attachEventLogging(session, 'Strong reviewer', this.ui, this.usage, model, usageKey, { sink, toolName: 'report_review' });
     this.ui.agentTools?.('Strong reviewer', REVIEWER_TOOLS);
     return { session, guard, sink, name: 'Strong reviewer', usageName: usageKey, model, reasoningEffort: effort };
   }
@@ -223,6 +233,7 @@ class SessionFactory {
 
 module.exports = {
   SessionFactory,
+  attachEventLogging,
   readonlyHook,
   workerHook,
   readonlyShellMutation,
