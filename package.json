@@ -2,7 +2,7 @@
   "name": "convergent",
   "displayName": "Convergent",
   "description": "Adaptive multi-agent implementation and adversarial review workflows powered by GitHub Copilot.",
-  "version": "0.1.0",
+  "version": "0.2.0-dev.0",
   "publisher": "alex206",
   "license": "SEE LICENSE IN LICENSE",
   "engines": {
