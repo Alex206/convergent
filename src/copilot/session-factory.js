@@ -7,6 +7,7 @@ const {
   REVIEWER_PROMPT,
 } = require('../orchestrator/prompts');
 const { routePolicy, chooseReasoningEffort } = require('../orchestrator/routing');
+const { resolveWorkerModel } = require('../orchestrator/model-resolver');
 const { createPlanTool, createPassTool, createReviewTool, recoverSerializedReport } = require('./tools');
 const { guardSession } = require('./session-guard');
 
@@ -137,6 +138,7 @@ class SessionFactory {
     this.usage = usage;
     this.runId = runId;
     this.reasoningMode = reasoningMode;
+    this.taskWorkerModels = new Map();
   }
 
   guard(session, agentName) {
@@ -146,6 +148,25 @@ class SessionFactory {
       stallGraceMs: this.ui?.stallGraceMs,
       heartbeatMs: this.ui?.heartbeatMs,
     });
+  }
+
+  workerModel(taskId, worker, route, risk) {
+    const safeTaskId = safeSessionPart(taskId);
+    const isA = worker === 'A';
+    const selector = isA ? this.models.workerASelector : this.models.workerBSelector;
+    const peer = this.taskWorkerModels.get(safeTaskId)?.A;
+    const normalized = String(selector ?? '').trim().toLowerCase();
+    const diversify = !isA && (normalized === 'adaptive' || normalized === 'adaptive-diverse' || normalized === 'cheap-b');
+    const model = resolveWorkerModel(selector, this.models.available ?? [], {
+      worker,
+      route,
+      risk,
+      excludeIds: diversify && peer?.id ? [peer.id] : [],
+    });
+    const selected = this.taskWorkerModels.get(safeTaskId) ?? {};
+    selected[worker] = model;
+    this.taskWorkerModels.set(safeTaskId, selected);
+    return model;
   }
 
   async createCoordinator() {
@@ -173,14 +194,14 @@ class SessionFactory {
     return { session, guard, sink, name: 'Coordinator', usageName: usageKey, model, reasoningEffort: effort };
   }
 
-  async createWorker(taskId, worker, route = 'standard') {
+  async createWorker(taskId, worker, route = 'standard', risk = 'medium') {
     const safeTaskId = safeSessionPart(taskId);
     const sink = { value: null };
     const tool = createPassTool(this.sdk.defineTool, sink);
     const isA = worker === 'A';
     const role = isA ? 'workerA' : 'workerB';
-    const model = isA ? this.models.workerA : this.models.workerB;
-    const desiredEffort = routePolicy(route).efforts[role];
+    const model = this.workerModel(taskId, worker, route, risk);
+    const desiredEffort = routePolicy(route, risk).efforts[role];
     const effort = chooseReasoningEffort(model, desiredEffort, this.reasoningMode);
     const session = await this.client.createSession(withReasoning({
       sessionId: `${this.runId}-${safeTaskId}-worker-${worker.toLowerCase()}`,
