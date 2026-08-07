@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
+  SessionFactory,
   readonlyHook,
   workerHook,
   readonlyShellMutation,
@@ -65,4 +66,25 @@ test('role tool allowlists expose purpose-built file tools only to workers', () 
 test('session ids sanitize coordinator-provided task ids', () => {
   assert.equal(safeSessionPart('Task 1 / Windows runner'), 'Task-1-Windows-runner');
   assert.equal(safeSessionPart('///'), 'task');
+});
+
+test('session factory promotes high-risk Worker A and keeps Worker B capable and diverse', () => {
+  const factory = new SessionFactory({
+    client: {}, sdk: {}, workspace: '/repo', ui: {}, runId: 'run',
+    models: {
+      workerASelector: 'adaptive',
+      workerBSelector: 'adaptive-diverse',
+      available: [
+        { id: 'claude-haiku-4.5', name: 'Claude Haiku 4.5' },
+        { id: 'gpt-5.4-mini', name: 'GPT-5.4 mini' },
+        { id: 'gpt-5.5', name: 'GPT-5.5' },
+      ],
+    },
+  });
+
+  const a = factory.workerModel('T2', 'A', 'high_risk', 'high');
+  const b = factory.workerModel('T2', 'B', 'high_risk', 'high');
+  assert.equal(a.id, 'gpt-5.5');
+  assert.equal(b.id, 'gpt-5.4-mini');
+  assert.notEqual(a.id, b.id);
 });
