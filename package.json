@@ -1,0 +1,148 @@
+{
+  "name": "convergent",
+  "displayName": "Convergent",
+  "description": "Adaptive multi-agent implementation and adversarial review workflows powered by GitHub Copilot.",
+  "version": "0.1.0",
+  "publisher": "alex206",
+  "license": "SEE LICENSE IN LICENSE",
+  "engines": {
+    "vscode": "^1.102.0",
+    "node": ">=22.12.0"
+  },
+  "categories": ["Other"],
+  "keywords": ["copilot", "agents", "review", "orchestration", "workflow"],
+  "main": "./src/extension.js",
+  "activationEvents": [
+    "onChatParticipant:convergent.workflow",
+    "onCommand:convergent.start",
+    "onCommand:convergent.stop",
+    "onCommand:convergent.showModels",
+    "onCommand:convergent.showUsage",
+    "onCommand:convergent.showOutput"
+  ],
+  "contributes": {
+    "chatParticipants": [
+      {
+        "id": "convergent.workflow",
+        "name": "convergent",
+        "fullName": "Convergent",
+        "description": "Inspect or implement a task with an adaptive multi-agent workflow",
+        "isSticky": true,
+        "commands": [
+          {
+            "name": "implement",
+            "description": "Classify, plan, and execute a task using the proportionate Convergent workflow"
+          }
+        ]
+      }
+    ],
+    "commands": [
+      { "command": "convergent.start", "title": "Convergent: Start Workflow" },
+      { "command": "convergent.stop", "title": "Convergent: Stop Active Workflow" },
+      { "command": "convergent.showModels", "title": "Convergent: Show Available Copilot Models" },
+      { "command": "convergent.showUsage", "title": "Convergent: Show AI Usage" },
+      { "command": "convergent.showOutput", "title": "Convergent: Show Agent Log" }
+    ],
+    "configuration": {
+      "title": "Convergent",
+      "properties": {
+        "convergent.models.coordinator": {
+          "type": "string",
+          "default": "strong",
+          "description": "Persistent coordinator model selector. Defaults to strong because this role owns requirements understanding, clarification, task decomposition, acceptance criteria, and workflow classification. Use an exact Copilot model id/name, or one of: strong, planner, cheap-a, cheap-b, auto."
+        },
+        "convergent.models.workerA": {
+          "type": "string",
+          "default": "cheap-a",
+          "description": "Persistent worker A model selector. cheap-a prefers GPT-5.6 Luna when available for low-cost tool-heavy implementation passes, then other low-cost models."
+        },
+        "convergent.models.workerB": {
+          "type": "string",
+          "default": "cheap-b",
+          "description": "Persistent worker B model selector. cheap-b prefers a different low-cost model from Worker A when one is available."
+        },
+        "convergent.models.reviewer": {
+          "type": "string",
+          "default": "strong",
+          "description": "Strong reviewer model selector. The reviewer context is retained for the lifetime of one implementation task."
+        },
+        "convergent.routingMode": {
+          "type": "string",
+          "enum": ["adaptive", "full"],
+          "default": "adaptive",
+          "enumDescriptions": [
+            "Let the strong coordinator classify read-only, trivial, standard, and high-risk tasks; the engine enforces minimum review levels and escalation.",
+            "Force every modifying task through at least the full A/B convergence + strong-review workflow. Read-only tasks remain coordinator-only."
+          ],
+          "description": "How Convergent chooses the workflow depth for each task."
+        },
+        "convergent.reasoningMode": {
+          "type": "string",
+          "enum": ["adaptive", "model-default"],
+          "default": "adaptive",
+          "enumDescriptions": [
+            "Use low/medium/high reasoning effort according to role and route when the selected model advertises support. The coordinator uses medium effort by default.",
+            "Do not override model reasoning effort."
+          ],
+          "description": "Whether Convergent adapts supported models' reasoning effort to task risk/workflow depth."
+        },
+        "convergent.maxWorkerPasses": {
+          "type": "number",
+          "default": 8,
+          "minimum": 2,
+          "maximum": 30,
+          "description": "Maximum A/B review/fix passes per convergence cycle, excluding the initial implementation pass."
+        },
+        "convergent.maxReviewerCycles": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 10,
+          "description": "Maximum strong-review remediation cycles per implementation task."
+        },
+        "convergent.agentTurnTimeoutSeconds": {
+          "type": "number",
+          "default": 180,
+          "minimum": 30,
+          "maximum": 900,
+          "description": "Maximum time to wait for one Copilot agent turn. Structured reports already submitted before a late session.idle timeout are preserved."
+        },
+        "convergent.permissionMode": {
+          "type": "string",
+          "enum": ["workspace", "ask"],
+          "default": "workspace",
+          "enumDescriptions": [
+            "Automatically approve normal workspace reads, writes, and commands; still ask for risky operations.",
+            "Ask before shell commands and writes."
+          ],
+          "description": "How Copilot SDK tool permission requests are handled."
+        },
+        "convergent.runtimeTransport": {
+          "type": "string",
+          "enum": ["auto", "inprocess", "stdio"],
+          "default": "auto",
+          "enumDescriptions": [
+            "Use stdio under a real Node process and the SDK in-process transport inside a VS Code/Electron extension host.",
+            "Always use the Copilot SDK in-process FFI transport.",
+            "Always use the Copilot SDK stdio child-process transport. With Copilot SDK 1.0.8 this is not suitable inside a VS Code Extension Host because the SDK launches JS CLI files through process.execPath (Code.exe)."
+          ],
+          "description": "Copilot SDK runtime transport. Keep this on auto unless troubleshooting."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check src/extension.js && node --check src/orchestrator/engine.js && node --check src/orchestrator/routing.js && node --check src/orchestrator/usage.js && node --check src/ui/vscode-ui.js && node --check src/copilot/session-factory.js && node --check src/copilot/runtime.js",
+    "package": "npx @vscode/vsce package"
+  },
+  "dependencies": {
+    "@github/copilot-sdk": "1.0.8"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^3.6.0"
+  },
+  "repository": { "type": "git", "url": "https://github.com/Alex206/convergent.git" },
+  "bugs": { "url": "https://github.com/Alex206/convergent/issues" },
+  "homepage": "https://github.com/Alex206/convergent#readme"
+}
