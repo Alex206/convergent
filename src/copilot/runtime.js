@@ -1,11 +1,14 @@
 'use strict';
 
-const path = require('node:path');
-
 const VALID_TRANSPORTS = new Set(['auto', 'stdio', 'inprocess']);
 
+function executableName(execPath = process.execPath) {
+  const parts = String(execPath || '').split(/[\\/]/);
+  return (parts.at(-1) || '').toLowerCase();
+}
+
 function isNodeExecutable(execPath = process.execPath) {
-  const executable = path.basename(execPath || '').toLowerCase();
+  const executable = executableName(execPath);
   return executable === 'node' || executable === 'node.exe';
 }
 
@@ -44,6 +47,7 @@ function createClientOptions(sdk, requested = 'auto', execPath = process.execPat
 }
 
 module.exports = {
+  executableName,
   isNodeExecutable,
   resolveRuntimeTransport,
   createClientOptions,
