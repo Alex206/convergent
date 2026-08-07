@@ -36,6 +36,13 @@ function normalizePassReport(args = {}) {
   };
 }
 
+function validatePassReport(report) {
+  if ((report.verdict === 'clean' || report.verdict === 'changed') && report.findings.length) {
+    return `${report.verdict.toUpperCase()} requires findings=[] because findings are reserved for unresolved actionable issues. Put resolved issues, peer disagreements, and non-actionable observations in summary.`;
+  }
+  return null;
+}
+
 function normalizeReviewFinding(value) {
   if (typeof value === 'string') {
     return { severity: 'medium', title: 'Review finding', description: value };
@@ -63,6 +70,16 @@ function normalizeReviewReport(args = {}) {
     findings: rawFindings.map(normalizeReviewFinding),
     checks: normalizeStringList(args.checks),
   };
+}
+
+function validateReviewReport(report) {
+  if (report.verdict === 'clean' && report.findings.length) {
+    return 'CLEAN requires findings=[]. Put resolved/non-actionable observations in summary.';
+  }
+  if (report.verdict === 'findings' && !report.findings.length) {
+    return 'FINDINGS requires at least one actionable finding.';
+  }
+  return null;
 }
 
 function createPlanTool(defineTool, sink) {
@@ -109,14 +126,25 @@ function createPlanTool(defineTool, sink) {
 
 function createPassTool(defineTool, sink) {
   return defineTool('report_pass', {
-    description: 'Report the result of the current implementation/review pass. Call exactly once after all edits and checks.',
+    description: 'Report the final state of the current implementation/review pass. findings means unresolved actionable issues only; resolved issues and peer disagreements belong in summary.',
     parameters: {
       type: 'object',
       properties: {
         verdict: { type: 'string', enum: ['clean', 'changed', 'blocked'] },
-        summary: { type: 'string' },
-        findings: { type: 'array', items: { type: 'string' } },
-        checks: { type: 'array', items: { type: 'string' } },
+        summary: {
+          type: 'string',
+          description: 'Concise technical result. Include changes made, resolved issues, and disagreements with the peer here.',
+        },
+        findings: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Unresolved actionable issues remaining after this pass. MUST be [] for CLEAN and CHANGED. If a required issue cannot be resolved safely, use BLOCKED.',
+        },
+        checks: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Relevant validation/checks actually performed.',
+        },
       },
       required: ['verdict', 'summary', 'findings', 'checks'],
       additionalProperties: false,
@@ -124,7 +152,10 @@ function createPassTool(defineTool, sink) {
     skipPermission: true,
     defer: 'never',
     handler: async (args) => {
-      sink.value = normalizePassReport(args);
+      const report = normalizePassReport(args);
+      const error = validatePassReport(report);
+      if (error) return { accepted: false, error, retry: true };
+      sink.value = report;
       return { accepted: true };
     },
   });
@@ -132,7 +163,7 @@ function createPassTool(defineTool, sink) {
 
 function createReviewTool(defineTool, sink) {
   return defineTool('report_review', {
-    description: 'Submit the strong review verdict and actionable findings. Call exactly once after the complete review.',
+    description: 'Submit the strong review verdict and unresolved actionable findings. Call exactly once after the complete review.',
     parameters: {
       type: 'object',
       properties: {
@@ -140,6 +171,7 @@ function createReviewTool(defineTool, sink) {
         summary: { type: 'string' },
         findings: {
           type: 'array',
+          description: 'Unresolved actionable findings. MUST be [] for CLEAN and non-empty for FINDINGS.',
           items: {
             type: 'object',
             properties: {
@@ -160,7 +192,10 @@ function createReviewTool(defineTool, sink) {
     skipPermission: true,
     defer: 'never',
     handler: async (args) => {
-      sink.value = normalizeReviewReport(args);
+      const report = normalizeReviewReport(args);
+      const error = validateReviewReport(report);
+      if (error) return { accepted: false, error, retry: true };
+      sink.value = report;
       return { accepted: true };
     },
   });
@@ -172,5 +207,7 @@ module.exports = {
   createReviewTool,
   normalizeStringList,
   normalizePassReport,
+  validatePassReport,
   normalizeReviewReport,
+  validateReviewReport,
 };
