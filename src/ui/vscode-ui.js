@@ -26,6 +26,12 @@ function compactUsage(summary) {
   return `${formatCredits(summary)} · ${formatTokenCount(tokens)} tokens · ${summary.turns ?? 0} turns · ${formatDuration(summary.elapsedMs)}`;
 }
 
+function compactActivity(value, max = 420) {
+  const text = String(value ?? '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
 function aggregateAgentUsage(summary) {
   const groups = new Map();
   for (const entry of summary?.agents ?? []) {
@@ -87,6 +93,7 @@ class VscodeWorkflowUi {
     this.stream = stream;
     this.output = output;
     this.lastUsageLogAt = 0;
+    this.lastUsageChatAt = 0;
     this.lastLongToolChatStatusAt = new Map();
     this.agentInactivityTimeoutMs = undefined;
     this.toolStallTimeoutMs = undefined;
@@ -218,16 +225,21 @@ class VscodeWorkflowUi {
   }
 
   agentIntent(agent, intent) {
-    if (intent) this.stream.progress(`${agent}: ${intent}`);
+    const text = compactActivity(intent);
+    if (text) this.stream.progress(`${agent}: ${text}`);
     this.log(`${agent} intent: ${intent ?? ''}`);
   }
 
   agentTool(agent, tool, detail = '') {
-    this.log(`${agent} tool: ${tool}${detail ? ` — ${detail}` : ''}`);
+    const text = `${agent} tool: ${tool}${detail ? ` — ${compactActivity(detail, 300)}` : ''}`;
+    this.stream.progress(text);
+    this.log(text);
   }
 
   agentToolComplete(agent, tool, durationMs, success) {
-    this.log(`${agent} tool complete: ${tool} · ${formatDuration(durationMs)} · ${success ? 'success' : 'failure'}`);
+    const text = `${agent} tool complete: ${tool} · ${formatDuration(durationMs)} · ${success ? 'success' : 'failure'}`;
+    if (!success || durationMs >= 10_000) this.stream.progress(text);
+    this.log(text);
   }
 
   agentHeartbeat(agent, snapshot) {
@@ -236,9 +248,9 @@ class VscodeWorkflowUi {
       ? `${tool.name}${tool.detail ? ` — ${tool.detail}` : ''} running ${formatDuration(tool.elapsedMs)} · no progress ${formatDuration(tool.quietMs)}`
       : `working · last activity ${formatDuration(snapshot?.lastActivityAgoMs ?? 0)} ago`;
 
-    // Heartbeats remain fully available in the Output channel, but normal
-    // no-tool heartbeats are intentionally not appended to Chat because
-    // ChatResponseStream progress entries are immutable and otherwise pile up.
+    // Heartbeats remain fully available in the Output channel. Chat is driven
+    // by actual agent messages, tool starts/completions, and throttled usage so
+    // the user can follow the work without immutable last-activity spam.
     this.log(`${agent} heartbeat: ${detail}`);
 
     if (!tool || tool.elapsedMs < 60_000) return;
@@ -353,7 +365,11 @@ class VscodeWorkflowUi {
   }
 
   agentMessage(agent, content) {
-    if (content) this.log(`${agent}: ${content}`);
+    const text = compactActivity(content);
+    if (text) {
+      this.stream.progress(`${agent}: ${text}`);
+      this.log(`${agent}: ${content}`);
+    }
   }
 
   agentUsageEvent(agent, summary) {
@@ -362,9 +378,14 @@ class VscodeWorkflowUi {
       this.log(`${agent} usage checkpoint: ${compactUsage(summary)}`);
       this.lastUsageLogAt = now;
     }
+    if (now - this.lastUsageChatAt > 30_000) {
+      this.stream.progress(`Usage so far: ${compactUsage(summary)}`);
+      this.lastUsageChatAt = now;
+    }
   }
 
   agentError(agent, message) {
+    this.stream.progress(`${agent} error: ${compactActivity(message, 300)}`);
     this.log(`${agent} ERROR: ${message}`);
   }
 }
