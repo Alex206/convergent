@@ -1,6 +1,7 @@
 'use strict';
 
 const DEFAULT_TOOL_STALL_TIMEOUT_MS = 120_000;
+const DEFAULT_AGENT_INACTIVITY_TIMEOUT_MS = 180_000;
 const DEFAULT_STALL_GRACE_MS = 10_000;
 const DEFAULT_HEARTBEAT_MS = 30_000;
 const DEFAULT_CONTROL_TIMEOUT_MS = 5_000;
@@ -36,6 +37,7 @@ class SessionGuard {
     this.agentName = agentName;
     this.ui = ui;
     this.toolStallTimeoutMs = Math.max(1_000, Number(options.toolStallTimeoutMs) || DEFAULT_TOOL_STALL_TIMEOUT_MS);
+    this.agentInactivityTimeoutMs = Math.max(1_000, Number(options.agentInactivityTimeoutMs) || DEFAULT_AGENT_INACTIVITY_TIMEOUT_MS);
     this.stallGraceMs = Math.max(1_000, Number(options.stallGraceMs) || DEFAULT_STALL_GRACE_MS);
     this.heartbeatMs = Math.max(1_000, Number(options.heartbeatMs) || DEFAULT_HEARTBEAT_MS);
     this.controlTimeoutMs = Math.max(250, Number(options.controlTimeoutMs) || DEFAULT_CONTROL_TIMEOUT_MS);
@@ -46,6 +48,7 @@ class SessionGuard {
     this.startedAt = Date.now();
     this.lastActivityAt = this.startedAt;
     this.lastHeartbeatAt = 0;
+    this.inactivitySteeringSentAt = 0;
     this.activeRejectors = new Set();
     this.disposers = [];
 
@@ -61,6 +64,7 @@ class SessionGuard {
 
   touch() {
     this.lastActivityAt = Date.now();
+    this.inactivitySteeringSentAt = 0;
   }
 
   attachEvents() {
@@ -114,13 +118,27 @@ class SessionGuard {
       this.touch();
     });
 
-    for (const eventName of ['assistant.intent', 'assistant.message', 'assistant.usage', 'session.usage_checkpoint', 'session.idle', 'session.error']) {
+    for (const eventName of [
+      'assistant.intent',
+      'assistant.message',
+      'assistant.message_delta',
+      'assistant.usage',
+      'session.usage_checkpoint',
+      'session.usage_info',
+      'session.idle',
+      'session.error',
+    ]) {
       on(eventName, () => this.touch());
     }
   }
 
   wrapControlMethods() {
-    this.session.sendAndWait = (options, timeoutMs) => this.guardedSendAndWait(options, timeoutMs);
+    // IMPORTANT: Copilot SDK's sendAndWait timeout is a wall-clock deadline for
+    // waiting until session.idle, not an inactivity timeout. Long but healthy
+    // agentic turns can exceed it while continuously using tools. Convergent
+    // therefore intentionally does not forward that timeout; the event-driven
+    // watchdog below owns inactivity/stall detection instead.
+    this.session.sendAndWait = (options, _sdkWallClockTimeoutMs) => this.guardedSendAndWait(options);
 
     if (this.rawAbort) {
       this.session.abort = async () => {
@@ -163,14 +181,28 @@ class SessionGuard {
     if (!result.settled) this.ui?.agentControlTimeout?.(this.agentName, 'immediate steering', Math.min(this.controlTimeoutMs, 2_000));
   }
 
+  async steerInactiveAgent(quietMs) {
+    if (!this.rawSend) return;
+    const prompt = [
+      `Convergent watchdog: no agent or tool activity has been observed for ${Math.round(quietMs / 1000)} seconds.`,
+      'If you are still working, respond or continue with a bounded next action now. If blocked, report the obstacle promptly instead of waiting silently.',
+    ].join(' ');
+    const result = await settleWithin(
+      Promise.resolve().then(() => this.rawSend({ prompt, mode: 'immediate' })),
+      Math.min(this.controlTimeoutMs, 2_000),
+    );
+    if (!result.settled) this.ui?.agentControlTimeout?.(this.agentName, 'inactivity steering', Math.min(this.controlTimeoutMs, 2_000));
+  }
+
   async forceAbortAfterStall() {
     if (!this.rawAbort) return;
     const result = await settleWithin(Promise.resolve().then(() => this.rawAbort()), this.controlTimeoutMs);
     if (!result.settled) this.ui?.agentControlTimeout?.(this.agentName, 'abort after stall', this.controlTimeoutMs);
   }
 
-  guardedSendAndWait(options, timeoutMs) {
-    const operation = this.rawSendAndWait(options, timeoutMs);
+  guardedSendAndWait(options) {
+    this.touch();
+    const operation = this.rawSendAndWait(options);
     let timer;
     let active = true;
 
@@ -186,32 +218,65 @@ class SessionGuard {
           this.ui?.agentHeartbeat?.(this.agentName, this.snapshot());
         }
 
-        if (!tool) return;
-        const quietMs = now - tool.lastProgressAt;
-        if (quietMs < this.toolStallTimeoutMs) return;
+        if (tool) {
+          const quietMs = now - tool.lastProgressAt;
+          if (quietMs < this.toolStallTimeoutMs) return;
 
-        if (!tool.steeringSentAt) {
-          tool.steeringSentAt = now;
-          this.ui?.agentToolStallWarning?.(this.agentName, tool.name, quietMs, this.toolStallTimeoutMs);
-          void this.steerStalledTool(tool);
+          if (!tool.steeringSentAt) {
+            tool.steeringSentAt = now;
+            this.ui?.agentToolStallWarning?.(this.agentName, tool.name, quietMs, this.toolStallTimeoutMs);
+            void this.steerStalledTool(tool);
+            return;
+          }
+
+          if (now - tool.steeringSentAt < this.stallGraceMs) return;
+
+          const diagnostic = this.snapshot();
+          this.stalls.push({
+            at: new Date(now).toISOString(),
+            kind: 'tool',
+            tool: tool.name,
+            toolCallId: tool.id,
+            quietMs,
+            elapsedMs: now - tool.startedAt,
+          });
+          this.ui?.agentToolStalled?.(this.agentName, tool.name, now - tool.startedAt, diagnostic);
+          active = false;
+          reject(makeControlError(
+            `${this.agentName} tool ${tool.name} stalled for ${Math.round(quietMs / 1000)}s without progress.`,
+            'CONVERGENT_TOOL_STALL',
+            diagnostic,
+          ));
+          void this.forceAbortAfterStall();
           return;
         }
 
-        if (now - tool.steeringSentAt < this.stallGraceMs) return;
+        const inactiveMs = now - this.lastActivityAt;
+        if (inactiveMs < this.agentInactivityTimeoutMs) return;
+
+        if (!this.inactivitySteeringSentAt) {
+          this.inactivitySteeringSentAt = now;
+          this.ui?.agentInactivityWarning?.(this.agentName, inactiveMs, this.agentInactivityTimeoutMs);
+          void this.steerInactiveAgent(inactiveMs);
+          return;
+        }
+
+        if (now - this.inactivitySteeringSentAt < this.stallGraceMs) return;
 
         const diagnostic = this.snapshot();
         this.stalls.push({
           at: new Date(now).toISOString(),
-          tool: tool.name,
-          toolCallId: tool.id,
-          quietMs,
-          elapsedMs: now - tool.startedAt,
+          kind: 'agent_inactivity',
+          tool: null,
+          toolCallId: null,
+          quietMs: inactiveMs,
+          elapsedMs: inactiveMs,
         });
-        this.ui?.agentToolStalled?.(this.agentName, tool.name, now - tool.startedAt, diagnostic);
+        this.ui?.agentInactivityStalled?.(this.agentName, inactiveMs, diagnostic);
         active = false;
         reject(makeControlError(
-          `${this.agentName} tool ${tool.name} stalled for ${Math.round(quietMs / 1000)}s without progress.`,
-          'CONVERGENT_TOOL_STALL',
+          `${this.agentName} produced no agent/tool activity for ${Math.round(inactiveMs / 1000)}s.`,
+          'CONVERGENT_AGENT_INACTIVITY',
           diagnostic,
         ));
         void this.forceAbortAfterStall();
@@ -222,8 +287,6 @@ class SessionGuard {
     return Promise.race([operation, control]).finally(() => {
       active = false;
       if (timer) clearInterval(timer);
-      // The reject function becomes unreachable after Promise.race settles; clear all
-      // current rejectors when there is no longer an active guarded send.
       this.activeRejectors.clear();
     });
   }
@@ -237,6 +300,7 @@ class SessionGuard {
       agent: this.agentName,
       elapsedMs: now - this.startedAt,
       lastActivityAgoMs: now - this.lastActivityAt,
+      agentInactivityTimeoutMs: this.agentInactivityTimeoutMs,
       currentTool: this.currentTool ? {
         name: this.currentTool.name,
         toolCallId: this.currentTool.id,
@@ -265,6 +329,7 @@ module.exports = {
   guardSession,
   settleWithin,
   DEFAULT_TOOL_STALL_TIMEOUT_MS,
+  DEFAULT_AGENT_INACTIVITY_TIMEOUT_MS,
   DEFAULT_STALL_GRACE_MS,
   DEFAULT_HEARTBEAT_MS,
   DEFAULT_CONTROL_TIMEOUT_MS,
