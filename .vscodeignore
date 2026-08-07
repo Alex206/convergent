@@ -1,0 +1,9 @@
+.github/**
+.vscode/**
+test/**
+.gitignore
+*.vsix
+coverage/**
+.nyc_output/**
+**/*.map
+**/*.log
