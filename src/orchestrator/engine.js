@@ -296,8 +296,8 @@ class ConvergentEngine {
     let workerB;
     let reviewer;
     try {
-      workerA = await factory.createWorker(taskSessionKey, 'A', 'trivial');
-      workerB = await factory.createWorker(taskSessionKey, 'B', 'trivial');
+      workerA = await factory.createWorker(taskSessionKey, 'A', 'trivial', routing.risk);
+      workerB = await factory.createWorker(taskSessionKey, 'B', 'trivial', routing.risk);
       this.sessions.push(workerA.session, workerB.session);
       this.ui.agentConfiguration([
         { role: 'A', model: workerA.model.name ?? workerA.model.id, effort: workerA.reasoningEffort },
@@ -340,8 +340,8 @@ class ConvergentEngine {
     let reviewer;
     const route = routing.route;
     try {
-      workerA = await factory.createWorker(taskSessionKey, 'A', route);
-      workerB = await factory.createWorker(taskSessionKey, 'B', route);
+      workerA = await factory.createWorker(taskSessionKey, 'A', route, routing.risk);
+      workerB = await factory.createWorker(taskSessionKey, 'B', route, routing.risk);
       reviewer = await factory.createReviewer(taskSessionKey, route, routing.risk);
       this.sessions.push(workerA.session, workerB.session, reviewer.session);
       this.ui.agentConfiguration([
