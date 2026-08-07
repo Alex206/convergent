@@ -77,8 +77,8 @@ function readConfig() {
   return {
     selectors: {
       coordinator: config.get('models.coordinator', 'strong'),
-      workerA: config.get('models.workerA', 'cheap-a'),
-      workerB: config.get('models.workerB', 'cheap-b'),
+      workerA: config.get('models.workerA', 'adaptive'),
+      workerB: config.get('models.workerB', 'adaptive-diverse'),
       reviewer: config.get('models.reviewer', 'strong'),
     },
     routingMode: config.get('routingMode', 'adaptive'),
@@ -166,23 +166,21 @@ async function resolveConfiguredModels(copilotClient, selectors) {
   }
 
   const coordinator = resolveModel(selectors.coordinator, available);
-  const workerA = resolveModel(selectors.workerA, available);
-  const workerBSelector = String(selectors.workerB ?? '').trim().toLowerCase();
-  const workerB = resolveModel(
-    selectors.workerB,
-    available,
-    workerBSelector === 'cheap-b' ? { excludeIds: [workerA.id] } : {},
-  );
   const reviewer = resolveModel(selectors.reviewer, available);
-  const resolved = { coordinator, workerA, workerB, reviewer };
+  const resolved = {
+    coordinator,
+    reviewer,
+    workerASelector: selectors.workerA,
+    workerBSelector: selectors.workerB,
+    available,
+  };
 
-  for (const [role, model] of Object.entries(resolved)) {
+  for (const [role, model] of Object.entries({ coordinator, reviewer })) {
     const efforts = model.supportedReasoningEfforts?.length ? `; reasoning=${model.supportedReasoningEfforts.join('/')}` : '';
     output.appendLine(`${role}: ${model.name ?? model.id} (${model.id}) — ${model.reason}${efforts}`);
   }
-  if (workerA.id !== 'auto' && workerA.id === workerB.id) {
-    output.appendLine('Warning: Worker A and Worker B resolved to the same model. Configure convergent.models.workerB explicitly if you want model-family diversity.');
-  }
+  output.appendLine(`workerA policy: ${selectors.workerA} — resolved per task after route/risk classification`);
+  output.appendLine(`workerB policy: ${selectors.workerB} — resolved per task after route/risk classification; adaptive-diverse/cheap-b avoid Worker A when possible`);
   return resolved;
 }
 
