@@ -78,6 +78,10 @@ function formatValidationEvidence(evidence) {
   ].join('\n');
 }
 
+function passApprovesRevision(pass) {
+  return pass?.report?.verdict === 'clean' || pass?.report?.verdict === 'changed';
+}
+
 async function sendAndCaptureReport(session, sink, prompt, timeoutMs) {
   try {
     await session.sendAndWait({ prompt }, timeoutMs);
@@ -358,7 +362,7 @@ class ConvergentEngine {
 
   async convergeWorkers(task, workerA, workerB, nextWorker, previousPass) {
     const approvals = new Map();
-    if (!previousPass.changed && previousPass.report.verdict === 'clean') approvals.set(previousPass.worker, previousPass.revision);
+    if (passApprovesRevision(previousPass)) approvals.set(previousPass.worker, previousPass.revision);
 
     let currentRevision = previousPass.revision;
     let evidence = evidenceFromPass(previousPass);
@@ -378,11 +382,9 @@ class ConvergentEngine {
         evidence = evidenceFromPass(result);
       } else {
         evidence = mergeEvidence(evidence, result, currentRevision);
-        if (result.report.verdict === 'clean') approvals.set(worker.name, result.revision);
-        else if (result.report.verdict === 'changed') {
-          throw new Error(`Worker ${worker.name} reported CHANGED but the workspace revision did not change.`);
-        }
       }
+
+      if (passApprovesRevision(result)) approvals.set(worker.name, result.revision);
 
       if (approvals.get('A') === currentRevision && approvals.get('B') === currentRevision) {
         this.ui.converged(currentRevision, pass);
@@ -449,5 +451,6 @@ module.exports = {
   evidenceFromPass,
   mergeEvidence,
   formatValidationEvidence,
+  passApprovesRevision,
   sendAndCaptureReport,
 };
