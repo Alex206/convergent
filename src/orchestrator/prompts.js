@@ -24,10 +24,13 @@ Be terse and action-oriented. Avoid narrating routine inspection. Once the plan 
 
 const COMMON_WORKER_RULES = `
 Editing and validation rules:
+- Implement the smallest complete solution that satisfies the task and acceptance criteria while following established repository patterns. Do NOT add optional frameworks, alternative commands, dependencies, features, configuration, compatibility layers, or documentation that were not requested and are not already established by the repository.
 - Prefer purpose-built file tools over shell writes. Use apply_patch for coordinated patch-style edits (including multiple related file changes) when suitable, edit for precise string replacement, and create for new files. Do not use PowerShell/bash redirection, Set-Content, Out-File, sed -i, tee, or a shell-level apply_patch command to edit file contents.
-- Batch related edits into as few file-tool calls as practical, then inspect/validate once. Avoid repeated view → edit → view → edit loops caused only by formatting uncertainty.
+- Batch related edits into as few file-tool calls as practical. If several independent validation commands are needed, batch them into one shell invocation when that keeps failures understandable.
+- Inspect before editing only as much as needed to avoid mistakes. After a successful edit/validation, do not re-read files you just wrote merely to reassure yourself and do not rerun the same successful check unless a later change could invalidate it or a concrete concern requires independent verification.
 - Validation must not pollute the working tree. Suppress transient artifacts where practical (for Python, for example, use -B or PYTHONDONTWRITEBYTECODE=1). Do not add unrelated ignore/config files solely to compensate for artifacts created by your own validation unless that is independently appropriate for the task/repository.
 - The prompt may include validation evidence already produced against the exact current revision. Treat it as useful evidence, not proof. Do not rerun an already-passed check merely to duplicate it; rerun when you changed relevant behavior, need independent verification for a concrete concern, or the prior evidence is insufficient.
+- When your final revision is correct and has no unresolved actionable issue, report it immediately instead of narrating a checklist of satisfied criteria.
 - If you need a material user decision, return BLOCKED with the reason. The persistent coordinator owns user clarification.
 `;
 
@@ -58,7 +61,7 @@ report_pass semantics are strict:
 
 Be terse. Do not narrate routine verification step by step. The structured report is the authoritative output. After report_pass, do not add a lengthy completion message.
 
-A CLEAN verdict is valid only when you changed no files and the current revision has no unresolved actionable issue. CHANGED means you made a substantive repository change and left no unresolved actionable issue. BLOCKED means correctness cannot be established or a required action needs the user.
+A CLEAN verdict is valid only when you changed no files and the current revision has no unresolved actionable issue. CHANGED means you made a substantive repository change, left no unresolved actionable issue, and approve the exact revision you produced. The engine counts that CHANGED pass as your approval of that revision; you do not need to review your own unchanged revision again. BLOCKED means correctness cannot be established or a required action needs the user.
 `;
 
 const WORKER_B_PROMPT = `
@@ -87,7 +90,7 @@ report_pass semantics are strict:
 
 Be terse. Do not narrate routine verification step by step. The structured report is the authoritative output. After report_pass, do not add a lengthy completion message.
 
-A CLEAN verdict is valid only when you changed no files and the current revision has no unresolved actionable issue. CHANGED means you made a substantive repository change and left no unresolved actionable issue. BLOCKED means correctness cannot be established or a required action needs the user.
+A CLEAN verdict is valid only when you changed no files and the current revision has no unresolved actionable issue. CHANGED means you made a substantive repository change, left no unresolved actionable issue, and approve the exact revision you produced. The engine counts that CHANGED pass as your approval of that revision; you do not need to review your own unchanged revision again. BLOCKED means correctness cannot be established or a required action needs the user.
 `;
 
 const REVIEWER_PROMPT = `
