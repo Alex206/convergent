@@ -114,6 +114,14 @@ function loadResumeState(workspace = workspacePath()) {
   return normalizeResumeState(value, workspace);
 }
 
+function tryLoadResumeState() {
+  try {
+    return loadResumeState();
+  } catch {
+    return null;
+  }
+}
+
 async function persistResumeState(state) {
   await extensionContext?.workspaceState.update(RESUME_STATE_KEY, state);
 }
@@ -133,7 +141,7 @@ async function markResumeInterrupted(state, reason) {
 }
 
 async function confirmBoundaryResume(state, workspace) {
-  if (!state?.revision || state.currentTaskIndex !== null) return true;
+  if (!state?.plan || !state?.revision || state.currentTaskIndex !== null) return true;
   let current;
   try {
     current = await workspaceRevision(workspace);
@@ -270,7 +278,7 @@ async function activate(context) {
 
       if (!prompt) {
         stream.markdown('Describe what you want Convergent to inspect or implement. The persistent strong coordinator will understand, clarify, plan, and classify the request before execution.');
-        const state = loadResumeState();
+        const state = tryLoadResumeState();
         if (state) stream.markdown(`\nA previous workflow can also be resumed with \`@convergent /resume\`. ${resumeSummary(state)}`);
         return;
       }
@@ -291,7 +299,7 @@ async function activate(context) {
       if (error?.code === 'CONVERGENT_TOOL_STALL' || error?.code === 'CONVERGENT_AGENT_INACTIVITY') {
         stream.markdown('\nThe watchdog cancelled a stalled agent turn. Use **Show diagnostics** for the captured tool/runtime state.');
       }
-      const state = loadResumeState();
+      const state = tryLoadResumeState();
       if (state) {
         stream.markdown(`\nA resume checkpoint was kept. ${resumeSummary(state)}`);
         stream.button({ command: 'convergent.resume', title: 'Resume workflow' });
@@ -310,7 +318,7 @@ async function activate(context) {
         vscode.window.showWarningMessage('A Convergent workflow is already running.');
         return;
       }
-      const state = loadResumeState();
+      const state = tryLoadResumeState();
       if (!state) {
         vscode.window.showInformationMessage('No resumable Convergent workflow is available for this workspace.');
         return;
@@ -325,7 +333,7 @@ async function activate(context) {
       activeRun.controller.abort();
       await markResumeInterrupted(activeRun.latestCheckpoint, 'Stopped by user.');
       void activeRun.engine.stop();
-      vscode.window.showInformationMessage('Convergent cancellation requested. A resume checkpoint is kept when a plan/task boundary is available.');
+      vscode.window.showInformationMessage('Convergent cancellation requested. A resume checkpoint was kept so the saved request or current task can be continued safely.');
     }),
     vscode.commands.registerCommand('convergent.showOutput', () => output.show(true)),
     vscode.commands.registerCommand('convergent.showUsage', async () => {
@@ -374,7 +382,7 @@ async function activate(context) {
 async function deactivate() {
   if (activeRun) {
     activeRun.controller.abort();
-    void markResumeInterrupted(activeRun.latestCheckpoint, 'VS Code extension deactivated.');
+    await markResumeInterrupted(activeRun.latestCheckpoint, 'VS Code extension deactivated.').catch(() => {});
     void activeRun.engine.stop();
   }
   if (client) await client.stop();
