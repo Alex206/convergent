@@ -33,7 +33,8 @@ Worker A, Worker B, and the strong reviewer keep independent persistent contexts
 - Strong-review findings feed back into A/B and must converge again before re-review
 - Adaptive reasoning effort (`low`, `medium`, `high`) when the selected Copilot model advertises support
 - Runtime model discovery with `planner`, `strong`, `cheap-a`, and `cheap-b` presets plus exact model selection
-- Worker B prefers a different cheap model from Worker A when available
+- Worker A prefers GPT-5.6 Luna when available for low-cost tool-heavy implementation passes; Worker B prefers a different cheap model
+- Role-specific Copilot tool allow-lists so coordinator/reviewer do not inherit editing tools and workers do not inherit the full Copilot CLI toolbox
 - Live chat status for route/risk, selected models/effort, pass duration, escalation, and usage
 - AI usage tracking from Copilot token/usage events and durable nano-AIU checkpoints
 - **Show usage**, **Show agent log**, **Stop workflow**, and **Source Control** chat buttons
@@ -86,7 +87,7 @@ Convergent resolves models from `client.listModels()` at runtime. This is import
 | Role | Selector | Default behavior |
 | --- | --- | --- |
 | Coordinator | `planner` | Prefer a capable lower-cost planner model (for example GPT-5.6 Luna or GPT-5.4 mini when available); low reasoning when supported |
-| Worker A | `cheap-a` | Prefer a low-cost worker model |
+| Worker A | `cheap-a` | Prefer GPT-5.6 Luna when available, then another low-cost worker model |
 | Worker B | `cheap-b` | Prefer a different low-cost model from A |
 | Strong reviewer | `strong` | Strong model; medium/high reasoning according to route when supported |
 
@@ -99,6 +100,8 @@ Set `convergent.models.coordinator` to `strong` if you explicitly want the stron
 Convergent records per-session model calls, input/output tokens, turn count, active duration, context usage, and Copilot durable `totalNanoAiu` checkpoints. The chat shows a running compact usage line after meaningful turns and a per-agent table at the end. **Convergent: Show AI Usage** shows the latest snapshot while a run is active or after it finishes.
 
 The displayed AI-credit figure is an approximate presentation derived as `totalNanoAiu / 1e9`, following the Copilot SDK usage documentation's nano-unit example. GitHub Copilot billing remains the source of truth for actual billable credits/cost.
+
+To reduce the fixed context paid on every model/tool roundtrip, Convergent supplies each session with a role-specific `availableTools` allow-list instead of inheriting the complete Copilot CLI tool catalog. Coordinator/reviewer receive inspection, search, shell, ask-user, and their structured report tool; workers additionally receive edit/create and `report_pass`.
 
 ## Convergence invariant
 
@@ -127,4 +130,4 @@ Set `convergent.permissionMode` to `ask` to require approval for shell commands 
 
 ## Status
 
-This is still an MVP. Useful next increments include restricting each agent to a smaller built-in Copilot tool set to reduce fixed prompt/token overhead, resumable workflow state after VS Code reload, a dedicated mutable agent/task dashboard, richer diff/finding navigation, empirical model-quality/cost scoring from Convergent runs, and a CLI frontend over the same orchestrator core.
+This is still an MVP. Useful next increments include resumable workflow state after VS Code reload, a dedicated mutable agent/task dashboard, richer diff/finding navigation, empirical model-quality/cost scoring from Convergent runs, and a CLI frontend over the same orchestrator core.
