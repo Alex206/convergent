@@ -74,6 +74,13 @@ test('security semantics force high-risk treatment even if coordinator underrate
   assert.equal(routing.route, 'high_risk');
 });
 
+test('strong reviewer effort scales with task risk without changing reviewer model', () => {
+  assert.equal(routePolicy('standard', 'low').efforts.reviewer, 'low');
+  assert.equal(routePolicy('standard', 'medium').efforts.reviewer, 'medium');
+  assert.equal(routePolicy('standard', 'high').efforts.reviewer, 'medium');
+  assert.equal(routePolicy('high_risk', 'high').efforts.reviewer, 'high');
+});
+
 test('reasoning effort is selected only from model-supported values', () => {
   const model = { supportedReasoningEfforts: ['low', 'high'] };
   assert.equal(chooseReasoningEffort(model, 'low'), 'low');
