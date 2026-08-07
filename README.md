@@ -30,7 +30,7 @@ Every run has a plan, but planning is proportionate: a simple request can be a o
 - Structured coordinator plan and structured worker/reviewer verdicts via application-owned Copilot SDK tools, with defensive normalization and semantic validation at the tool boundary
 - Worker reports reserve `findings` for unresolved actionable issues; CLEAN/CHANGED reports with findings are rejected and retried instead of crashing convergence
 - A/B adversarial review/fix loop with explicit peer-report exchange
-- Full-workflow convergence only when A and B both return `CLEAN` against the exact same workspace revision fingerprint
+- Full-workflow convergence requires A and B to approve the exact same workspace revision; a valid `CHANGED` pass approves the revision that worker just produced, while `CLEAN` approves the unchanged current revision
 - Persistent strong reviewer remembers its earlier findings during remediation cycles
 - Strong-review findings feed back into A/B and must converge again before re-review
 - Revision-scoped validation evidence is carried from A/B to the strong reviewer so checks are not rerun mechanically
@@ -39,7 +39,7 @@ Every run has a plan, but planning is proportionate: a simple request can be a o
 - Worker A prefers GPT-5.6 Luna when available for low-cost tool-heavy implementation passes; Worker B prefers a different cheap model
 - Role-specific Copilot tool allow-lists so coordinator/reviewer do not inherit editing tools and workers do not inherit the full Copilot CLI toolbox
 - Workers use purpose-built `apply_patch`, `edit`, and `create` tools for file-content changes; shell-based content editing is blocked
-- Validation guidance avoids transient working-tree pollution and redundant reruns
+- Validation guidance avoids transient working-tree pollution, optional unrequested extras, and redundant re-reading/re-running after a successful validation
 - Live chat status for route/risk, selected models/effort, pass duration, escalation, and usage
 - AI usage tracking from Copilot token/usage events and durable nano-AIU checkpoints
 - **Show usage**, **Show agent log**, **Stop workflow**, and **Source Control** chat buttons
@@ -128,18 +128,38 @@ The displayed AI-credit figure is an approximate presentation derived as `totalN
 
 ## Convergence invariant
 
-For the `standard` and `high_risk` routes, a previous `CLEAN` verdict becomes invalid as soon as any agent changes the repository.
+For the `standard` and `high_risk` routes, convergence means both workers approve the exact same workspace revision fingerprint.
+
+A valid worker pass approves its final revision in either of two ways:
 
 ```text
-A reviews revision R → CLEAN
-B reviews revision R → CLEAN
-============================
+CLEAN   → worker changed nothing and approves the current revision
+CHANGED → worker made a substantive change, left no unresolved findings,
+          and approves the resulting revision it just produced
+```
+
+A worker therefore does not need a second pass merely to approve its own unchanged result. For example:
+
+```text
+A: CHANGED R1   → A approves R1
+B: CLEAN   R1   → B approves R1
+=============================
 worker convergence
 ```
 
-If B changes `R` to `R2`, A's earlier approval of `R` is discarded and both agents must approve `R2`. Validation evidence associated with `R` is discarded as well.
+If B instead changes `R1` to `R2`, every approval and validation result for `R1` is discarded. B's valid `CHANGED` pass approves `R2`, and A must independently approve `R2`:
 
-Worker `findings` means unresolved actionable issues only. Issues found and fixed, disagreements with the peer, and other non-actionable observations belong in the structured summary. This keeps `CLEAN` unambiguous while still preserving the peer's technical position.
+```text
+A: CHANGED R1   → A approves R1
+B: CHANGED R2   → discard all R1 approvals/evidence; B approves R2
+A: CLEAN   R2   → A approves R2
+=============================
+worker convergence
+```
+
+Any later repository write repeats the same invalidation rule. `BLOCKED` never approves a revision.
+
+Worker `findings` means unresolved actionable issues only. Issues found and fixed, disagreements with the peer, and other non-actionable observations belong in the structured summary. This keeps `CLEAN` and `CHANGED` unambiguous while still preserving the peer's technical position.
 
 The revision fingerprint covers `HEAD`, staged changes, unstaged changes, and untracked file contents.
 
