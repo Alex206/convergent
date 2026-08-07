@@ -1,12 +1,12 @@
 # Convergent
 
-Convergent is a VS Code extension that turns GitHub Copilot into an adaptive, deterministic multi-agent workflow. The coordinator understands and classifies the task; application code decides what workflow is allowed to run.
+Convergent is a VS Code extension that turns GitHub Copilot into an adaptive, deterministic multi-agent workflow. A persistent strong coordinator understands the request, clarifies material ambiguity, slices it into proportionate tasks, defines acceptance criteria, and classifies each task; application code decides what workflow is allowed to run.
 
 ```text
 User
   ↓
-Coordinator (persistent for the whole request, read-only)
-  ↓ classify + plan
+Strong coordinator (persistent for the whole request, read-only)
+  ↓ understand + clarify + classify + plan
 Task N
   ├─ read_only → coordinator result only
   ├─ trivial   → Worker A implements → Worker B reviews
@@ -16,23 +16,25 @@ Task N
   └─ high_risk → same full workflow with higher supported reasoning effort
 ```
 
-Worker A, Worker B, and the strong reviewer keep independent persistent contexts for the lifetime of one implementation task. A and B also receive each other's explicit structured reports so their technical positions can challenge each other instead of communicating only through changed files. Task-local contexts are discarded when the task completes.
+Every run has a plan, but planning is proportionate: a simple request can be a one-task plan. Worker A, Worker B, and the strong reviewer keep independent persistent contexts for the lifetime of one implementation task. A and B also receive each other's explicit structured reports so their technical positions can challenge each other instead of communicating only through changed files. Task-local contexts are discarded when the task completes.
 
 ## Current MVP
 
 - Native VS Code Copilot Chat entry point: `@convergent`
-- Persistent, read-only coordinator that can inspect files and run non-mutating repository/shell commands such as `git status` and `git diff`
+- Persistent, strong, read-only coordinator that owns requirements understanding, clarification, task decomposition, acceptance criteria, and route/risk classification
+- Coordinator can inspect files and run non-mutating repository/shell commands such as `git status` and `git diff`
 - Per-task adaptive routes: `read_only`, `trivial`, `standard`, and `high_risk`
 - Engine-enforced minimums: `trivial` is reserved for clearly documentation/comment/text-only changes; executable code/tests/scripts are at least `standard`; high-risk semantics force `high_risk`
 - Lightweight fast path: A implements, B reviews once, and any B modification automatically escalates to the full standard workflow
 - Fresh persistent Worker A, Worker B, and strong-reviewer sessions for each implementation task
-- Structured coordinator plan and structured worker/reviewer verdicts via application-owned Copilot SDK tools, with defensive normalization at the tool boundary
+- Structured coordinator plan and structured worker/reviewer verdicts via application-owned Copilot SDK tools, with defensive normalization and semantic validation at the tool boundary
+- Worker reports reserve `findings` for unresolved actionable issues; CLEAN/CHANGED reports with findings are rejected and retried instead of crashing convergence
 - A/B adversarial review/fix loop with explicit peer-report exchange
 - Full-workflow convergence only when A and B both return `CLEAN` against the exact same workspace revision fingerprint
 - Persistent strong reviewer remembers its earlier findings during remediation cycles
 - Strong-review findings feed back into A/B and must converge again before re-review
 - Adaptive reasoning effort (`low`, `medium`, `high`) when the selected Copilot model advertises support
-- Runtime model discovery with `planner`, `strong`, `cheap-a`, and `cheap-b` presets plus exact model selection
+- Runtime model discovery with `strong`, `planner`, `cheap-a`, and `cheap-b` presets plus exact model selection
 - Worker A prefers GPT-5.6 Luna when available for low-cost tool-heavy implementation passes; Worker B prefers a different cheap model
 - Role-specific Copilot tool allow-lists so coordinator/reviewer do not inherit editing tools and workers do not inherit the full Copilot CLI toolbox
 - Live chat status for route/risk, selected models/effort, pass duration, escalation, and usage
@@ -69,11 +71,11 @@ Or run **Convergent: Start Workflow** from the command palette.
 
 ## Adaptive routing
 
-The coordinator classifies every task, but the JavaScript engine validates the result. The default `convergent.routingMode` is `adaptive`.
+The strong coordinator classifies every task, but the JavaScript engine validates the result. The default `convergent.routingMode` is `adaptive`.
 
 | Route | Intended use | Enforced workflow |
 | --- | --- | --- |
-| `read_only` | Inspection/explanation; no writes required | Coordinator only |
+| `read_only` | Inspection/explanation; no writes required. May still be conceptually complex. | Strong coordinator only |
 | `trivial` | Clearly low-risk docs/comment/text/wording change | A implement → B review; B changes → escalate |
 | `standard` | Executable source, scripts, tests, build/CI/configuration, normal feature/bugfix/code change | A/B same-revision convergence → strong review |
 | `high_risk` | Security/auth, concurrency, migrations, destructive/production-release/architectural changes | Full workflow with higher supported reasoning effort |
@@ -86,14 +88,14 @@ Convergent resolves models from `client.listModels()` at runtime. This is import
 
 | Role | Selector | Default behavior |
 | --- | --- | --- |
-| Coordinator | `planner` | Prefer a capable lower-cost planner model (for example GPT-5.6 Luna or GPT-5.4 mini when available); low reasoning when supported |
+| Coordinator | `strong` | Strong model; medium reasoning when supported. Persistent for the complete user request. |
 | Worker A | `cheap-a` | Prefer GPT-5.6 Luna when available, then another low-cost worker model |
 | Worker B | `cheap-b` | Prefer a different low-cost model from A |
 | Strong reviewer | `strong` | Strong model; medium/high reasoning according to route when supported |
 
-Set `convergent.models.coordinator` to `strong` if you explicitly want the strongest available model to do all coordination/planning. An explicitly strong coordinator uses medium reasoning in adaptive mode.
+The lower-cost `planner` selector remains available as an explicit configuration option, but it is not the default: planning and task slicing are treated as high-leverage decisions where an underpowered model can incorrectly simplify a complex request.
 
-`convergent.reasoningMode=adaptive` applies route-driven effort only when the selected model advertises the requested reasoning-effort capability. Set it to `model-default` to leave reasoning effort untouched.
+`convergent.reasoningMode=adaptive` applies role/route-driven effort only when the selected model advertises the requested reasoning-effort capability. Set it to `model-default` to leave reasoning effort untouched.
 
 ## Usage and AI credits
 
@@ -116,6 +118,8 @@ worker convergence
 
 If B changes `R` to `R2`, A's earlier approval of `R` is discarded and both agents must approve `R2`.
 
+Worker `findings` means unresolved actionable issues only. Issues found and fixed, disagreements with the peer, and other non-actionable observations belong in the structured summary. This keeps `CLEAN` unambiguous while still preserving the peer's technical position.
+
 The revision fingerprint covers `HEAD`, staged changes, unstaged changes, and untracked file contents.
 
 The `trivial` route intentionally uses a lighter guarantee: Worker B is the independent approval after A's implementation. If B changes anything, that lightweight approval is invalid and the task escalates to standard convergence plus strong review.
@@ -130,4 +134,4 @@ Set `convergent.permissionMode` to `ask` to require approval for shell commands 
 
 ## Status
 
-This is still an MVP. Useful next increments include resumable workflow state after VS Code reload, a dedicated mutable agent/task dashboard, richer diff/finding navigation, empirical model-quality/cost scoring from Convergent runs, and a CLI frontend over the same orchestrator core.
+This is still an MVP. Useful next increments include resumable workflow state after VS Code reload, a dedicated mutable agent/task dashboard, richer diff/finding navigation, empirical model-quality/cost scoring from Convergent runs, and a CLI frontend over the same orchestrator core. Optional use of the VS Code-selected chat model for coordination and explicit user routing hints are tracked separately as future improvements.
