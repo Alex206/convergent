@@ -101,8 +101,7 @@ class SessionFactory {
     const sink = { value: null };
     const tool = createPlanTool(this.sdk.defineTool, sink);
     const model = this.models.coordinator;
-    const desiredEffort = String(model?.reason ?? '').startsWith('planner preset') ? 'low' : 'medium';
-    const effort = chooseReasoningEffort(model, desiredEffort, this.reasoningMode);
+    const effort = chooseReasoningEffort(model, 'medium', this.reasoningMode);
     const session = await this.client.createSession(withReasoning({
       sessionId: `${this.runId}-coordinator`,
       clientName: 'convergent-vscode',
@@ -181,6 +180,6 @@ module.exports = {
   safeSessionPart,
   withReasoning,
   COORDINATOR_TOOLS,
-  WORKER_TOOLS,
   REVIEWER_TOOLS,
+  WORKER_TOOLS,
 };
