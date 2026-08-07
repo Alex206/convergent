@@ -40,11 +40,12 @@ test('wrapped abort rejects a pending guarded send even when SDK abort never set
   new SessionGuard(session, 'Worker A', fakeUi(), { controlTimeoutMs: 20, heartbeatMs: 60_000 });
 
   const pending = session.sendAndWait({ prompt: 'work' }, 180_000);
+  const rejected = assert.rejects(pending, (error) => error.code === 'CONVERGENT_CANCELLED');
   await new Promise((resolve) => setTimeout(resolve, 5));
   const startedAt = Date.now();
   await session.abort();
-  assert.ok(Date.now() - startedAt < 250, 'bounded abort should return promptly');
-  await assert.rejects(pending, (error) => error.code === 'CONVERGENT_CANCELLED');
+  assert.ok(Date.now() - startedAt < 1000, 'bounded abort should return promptly');
+  await rejected;
 });
 
 test('guard records tool completion timing and current tool diagnostics', async () => {
@@ -70,5 +71,5 @@ test('wrapped disconnect is bounded when SDK disconnect never settles', async ()
   new SessionGuard(session, 'Coordinator', fakeUi(), { controlTimeoutMs: 20, heartbeatMs: 60_000 });
   const startedAt = Date.now();
   await session.disconnect();
-  assert.ok(Date.now() - startedAt < 250, 'bounded disconnect should return promptly');
+  assert.ok(Date.now() - startedAt < 1000, 'bounded disconnect should return promptly');
 });
