@@ -25,22 +25,22 @@ function safeSessionPart(value) {
   return (part || 'task').slice(0, 80);
 }
 
-function attachEventLogging(session, agentName, ui, usage, model) {
-  usage?.register(agentName, session, model);
+function attachEventLogging(session, agentName, ui, usage, model, usageKey = agentName) {
+  usage?.register(usageKey, session, model, agentName);
   const disposers = [];
   disposers.push(
     session.on('assistant.intent', (event) => ui.agentIntent(agentName, event.data.intent)),
     session.on('tool.execution_start', (event) => ui.agentTool(agentName, event.data.toolName)),
     session.on('assistant.message', (event) => ui.agentMessage(agentName, event.data.content)),
     session.on('assistant.usage', (event) => {
-      usage?.recordAssistantUsage(agentName, event.data);
+      usage?.recordAssistantUsage(usageKey, event.data);
       ui.agentUsageEvent?.(agentName, usage?.summary());
     }),
     session.on('session.usage_checkpoint', (event) => {
-      usage?.recordCheckpoint(agentName, event.data);
+      usage?.recordCheckpoint(usageKey, event.data);
       ui.agentUsageEvent?.(agentName, usage?.summary());
     }),
-    session.on('session.usage_info', (event) => usage?.recordContext(agentName, event.data)),
+    session.on('session.usage_info', (event) => usage?.recordContext(usageKey, event.data)),
     session.on('session.error', (event) => ui.agentError(agentName, event.data.message)),
   );
   return () => disposers.forEach((dispose) => dispose?.());
@@ -82,8 +82,9 @@ class SessionFactory {
       onPermissionRequest: this.permissionHandler,
       onUserInputRequest: this.userInputHandler,
     }, effort));
-    attachEventLogging(session, 'Coordinator', this.ui, this.usage, model);
-    return { session, sink, name: 'Coordinator', model, reasoningEffort: effort };
+    const usageKey = 'coordinator';
+    attachEventLogging(session, 'Coordinator', this.ui, this.usage, model, usageKey);
+    return { session, sink, name: 'Coordinator', usageName: usageKey, model, reasoningEffort: effort };
   }
 
   async createWorker(taskId, worker, route = 'standard') {
@@ -107,8 +108,9 @@ class SessionFactory {
       onUserInputRequest: this.userInputHandler,
     }, effort));
     const name = `Worker ${worker}`;
-    attachEventLogging(session, name, this.ui, this.usage, model);
-    return { session, sink, name: worker, usageName: name, model, reasoningEffort: effort };
+    const usageKey = `${safeTaskId}:worker-${worker.toLowerCase()}`;
+    attachEventLogging(session, name, this.ui, this.usage, model, usageKey);
+    return { session, sink, name: worker, usageName: usageKey, model, reasoningEffort: effort };
   }
 
   async createReviewer(taskId, route = 'standard') {
@@ -131,8 +133,9 @@ class SessionFactory {
       onPermissionRequest: this.permissionHandler,
       onUserInputRequest: this.userInputHandler,
     }, effort));
-    attachEventLogging(session, 'Strong reviewer', this.ui, this.usage, model);
-    return { session, sink, name: 'Strong reviewer', model, reasoningEffort: effort };
+    const usageKey = `${safeTaskId}:reviewer`;
+    attachEventLogging(session, 'Strong reviewer', this.ui, this.usage, model, usageKey);
+    return { session, sink, name: 'Strong reviewer', usageName: usageKey, model, reasoningEffort: effort };
   }
 }
 
