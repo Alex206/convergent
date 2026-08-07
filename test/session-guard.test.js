@@ -27,6 +27,14 @@ function fakeUi() {
   return new Proxy({}, { get: () => () => {} });
 }
 
+async function waitFor(predicate, timeoutMs = 3_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate() && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return predicate();
+}
+
 test('settleWithin reports an operation that does not settle', async () => {
   const result = await settleWithin(new Promise(() => {}), 15);
   assert.equal(result.settled, false);
@@ -144,14 +152,16 @@ test('interactive stall decision can extend a quiet long-running tool instead of
   });
 
   const pending = session.sendAndWait({ prompt: 'run tests' });
-  await new Promise((resolve) => setTimeout(resolve, 1_250));
-  assert.equal(asked, 1);
-  assert.equal(aborted, 0);
-  assert.ok(guard.snapshot().currentTool.waitExtendedMs > 0);
-
-  session.emit('tool.execution_complete', { toolCallId: 'long-test', success: true });
-  session.emit('assistant.message', { content: 'tests passed' });
-  session.emit('session.idle', {});
+  try {
+    assert.equal(await waitFor(() => asked > 0), true, 'stall decision should be requested');
+    assert.equal(asked, 1);
+    assert.equal(aborted, 0);
+    assert.ok(guard.snapshot().currentTool.waitExtendedMs > 0);
+  } finally {
+    session.emit('tool.execution_complete', { toolCallId: 'long-test', success: true });
+    session.emit('assistant.message', { content: 'tests passed' });
+    session.emit('session.idle', {});
+  }
   await pending;
   assert.equal(aborted, 0);
 });
