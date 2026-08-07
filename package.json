@@ -9,16 +9,8 @@
     "vscode": "^1.102.0",
     "node": ">=22.12.0"
   },
-  "categories": [
-    "Other"
-  ],
-  "keywords": [
-    "copilot",
-    "agents",
-    "review",
-    "orchestration",
-    "workflow"
-  ],
+  "categories": ["Other"],
+  "keywords": ["copilot", "agents", "review", "orchestration", "workflow"],
   "main": "./src/extension.js",
   "activationEvents": [
     "onChatParticipant:convergent.workflow",
@@ -45,34 +37,19 @@
       }
     ],
     "commands": [
-      {
-        "command": "convergent.start",
-        "title": "Convergent: Start Workflow"
-      },
-      {
-        "command": "convergent.stop",
-        "title": "Convergent: Stop Active Workflow"
-      },
-      {
-        "command": "convergent.showModels",
-        "title": "Convergent: Show Available Copilot Models"
-      },
-      {
-        "command": "convergent.showUsage",
-        "title": "Convergent: Show AI Usage"
-      },
-      {
-        "command": "convergent.showOutput",
-        "title": "Convergent: Show Agent Log"
-      }
+      { "command": "convergent.start", "title": "Convergent: Start Workflow" },
+      { "command": "convergent.stop", "title": "Convergent: Stop Active Workflow" },
+      { "command": "convergent.showModels", "title": "Convergent: Show Available Copilot Models" },
+      { "command": "convergent.showUsage", "title": "Convergent: Show AI Usage" },
+      { "command": "convergent.showOutput", "title": "Convergent: Show Agent Log" }
     ],
     "configuration": {
       "title": "Convergent",
       "properties": {
         "convergent.models.coordinator": {
           "type": "string",
-          "default": "strong",
-          "description": "Coordinator model selector. Use an exact Copilot model id/name, or one of: strong, cheap-a, cheap-b, auto."
+          "default": "planner",
+          "description": "Coordinator model selector. Use an exact Copilot model id/name, or one of: planner, strong, cheap-a, cheap-b, auto. planner prefers a capable lower-cost model; set strong to restore the strongest-model coordinator."
         },
         "convergent.models.workerA": {
           "type": "string",
@@ -91,10 +68,7 @@
         },
         "convergent.routingMode": {
           "type": "string",
-          "enum": [
-            "adaptive",
-            "full"
-          ],
+          "enum": ["adaptive", "full"],
           "default": "adaptive",
           "enumDescriptions": [
             "Let the coordinator classify read-only, trivial, standard, and high-risk tasks; the engine enforces minimum review levels and escalation.",
@@ -104,13 +78,10 @@
         },
         "convergent.reasoningMode": {
           "type": "string",
-          "enum": [
-            "adaptive",
-            "model-default"
-          ],
+          "enum": ["adaptive", "model-default"],
           "default": "adaptive",
           "enumDescriptions": [
-            "Use low/medium/high reasoning effort according to route when the selected model advertises support.",
+            "Use low/medium/high reasoning effort according to route when the selected model advertises support. The planner preset uses low coordinator effort; an explicitly strong coordinator uses medium.",
             "Do not override model reasoning effort."
           ],
           "description": "Whether Convergent adapts supported models' reasoning effort to task risk/workflow depth."
@@ -134,14 +105,11 @@
           "default": 180,
           "minimum": 30,
           "maximum": 900,
-          "description": "Maximum time to wait for one Copilot agent turn. Structured reports already submitted before a late idle timeout are preserved."
+          "description": "Maximum time to wait for one Copilot agent turn. Structured reports already submitted before a late session.idle timeout are preserved."
         },
         "convergent.permissionMode": {
           "type": "string",
-          "enum": [
-            "workspace",
-            "ask"
-          ],
+          "enum": ["workspace", "ask"],
           "default": "workspace",
           "enumDescriptions": [
             "Automatically approve normal workspace reads, writes, and commands; still ask for risky operations.",
@@ -151,11 +119,7 @@
         },
         "convergent.runtimeTransport": {
           "type": "string",
-          "enum": [
-            "auto",
-            "inprocess",
-            "stdio"
-          ],
+          "enum": ["auto", "inprocess", "stdio"],
           "default": "auto",
           "enumDescriptions": [
             "Use stdio under a real Node process and the SDK in-process transport inside a VS Code/Electron extension host.",
@@ -178,12 +142,7 @@
   "devDependencies": {
     "@vscode/vsce": "^3.6.0"
   },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/Alex206/convergent.git"
-  },
-  "bugs": {
-    "url": "https://github.com/Alex206/convergent/issues"
-  },
+  "repository": { "type": "git", "url": "https://github.com/Alex206/convergent.git" },
+  "bugs": { "url": "https://github.com/Alex206/convergent/issues" },
   "homepage": "https://github.com/Alex206/convergent#readme"
 }
