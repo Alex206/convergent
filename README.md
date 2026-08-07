@@ -96,7 +96,7 @@ Convergent resolves models from `client.listModels()` at runtime. This is import
 
 Convergent records per-session model calls, input/output tokens, turn count, active duration, context usage, and Copilot durable `totalNanoAiu` checkpoints. The chat shows a running compact usage line after meaningful turns and a per-agent table at the end. **Convergent: Show AI Usage** shows the latest snapshot while a run is active or after it finishes.
 
-The displayed AI-credit figure is derived as `totalNanoAiu / 1e9`, following the Copilot SDK usage documentation's nano-unit convention. GitHub Copilot billing remains the source of truth for actual billable credits/cost.
+The displayed AI-credit figure is an approximate presentation derived as `totalNanoAiu / 1e9`, following the Copilot SDK usage documentation's nano-unit example. GitHub Copilot billing remains the source of truth for actual billable credits/cost.
 
 ## Convergence invariant
 
@@ -117,7 +117,7 @@ The `trivial` route intentionally uses a lighter guarantee: Worker B is the inde
 
 ## Safety
 
-The coordinator and strong reviewer are read-only. They can inspect repository state and run diagnostic commands, but Convergent checks the workspace revision before/after their turns and rejects any unexpected mutation.
+The coordinator and strong reviewer are read-only. They can inspect repository state and run diagnostic commands, but Convergent blocks obvious shell mutations and also checks the workspace revision before/after their turns as a second line of defense.
 
 The default `workspace` permission mode automatically approves ordinary reads, workspace writes for implementation workers, and non-risky shell commands so the workflow can operate without constant prompts. Writes outside the workspace are denied. Risky commands such as `git push`, `git reset --hard`, and destructive recursive deletion require explicit approval.
 
