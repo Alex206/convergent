@@ -2,7 +2,7 @@
   "name": "convergent",
   "displayName": "Convergent",
   "description": "Adaptive multi-agent implementation and adversarial review workflows powered by GitHub Copilot.",
-  "version": "0.2.0-dev.6",
+  "version": "0.2.0-dev.7",
   "publisher": "alex206",
   "license": "MIT",
   "engines": {
@@ -159,7 +159,7 @@
           "default": 30,
           "minimum": 5,
           "maximum": 300,
-          "description": "Interval for diagnostic heartbeats in the Convergent Output channel. Chat stays observable through actual agent messages, tool activity, throttled usage, and meaningful long-tool status instead of repetitive last-activity heartbeats."
+          "description": "Interval for diagnostic heartbeats in the Convergent Output channel. Routine 'working' heartbeats are no longer appended repeatedly to Chat; only meaningful long-tool status is surfaced there."
         },
         "convergent.permissionMode": {
           "type": "string",
