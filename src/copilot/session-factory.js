@@ -16,12 +16,13 @@ function readonlyHook(input) {
       permissionDecisionReason: 'This Convergent role is read-only.',
     };
   }
-  if (name === 'shell' || name === 'bash' || name === 'powershell') {
-    return {
-      permissionDecision: 'ask',
-      permissionDecisionReason: 'This Convergent role is read-only; approve this shell command only if it cannot modify source files.',
-    };
-  }
+
+  // Do not return `ask` for shell tools here. In the Copilot SDK that becomes a
+  // separate hook-permission request, which produces a modal for every harmless
+  // git/view command. The normal Convergent permission handler still evaluates
+  // shell permissions, and the orchestrator fingerprints the workspace before and
+  // after coordinator/reviewer turns so a shell-based source mutation cannot pass
+  // silently.
   return { permissionDecision: 'allow' };
 }
 
