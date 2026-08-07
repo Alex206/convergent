@@ -56,7 +56,7 @@ function readConfig() {
   const config = vscode.workspace.getConfiguration('convergent');
   return {
     selectors: {
-      coordinator: config.get('models.coordinator', 'strong'),
+      coordinator: config.get('models.coordinator', 'planner'),
       workerA: config.get('models.workerA', 'cheap-a'),
       workerB: config.get('models.workerB', 'cheap-b'),
       reviewer: config.get('models.reviewer', 'strong'),
