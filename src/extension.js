@@ -4,20 +4,40 @@ const vscode = require('vscode');
 const { ConvergentEngine } = require('./orchestrator/engine');
 const { resolveModel } = require('./orchestrator/model-resolver');
 const { createPermissionHandler, createUserInputHandler } = require('./copilot/permissions');
+const { createClientOptions } = require('./copilot/runtime');
 const { VscodeWorkflowUi } = require('./ui/vscode-ui');
 
 let client;
+let clientTransport;
 let sdk;
 let activeRun;
 let output;
 
-async function getClient() {
+async function getClient(requestedTransport = 'auto') {
   if (!sdk) sdk = await import('@github/copilot-sdk');
-  if (!client) {
-    client = new sdk.CopilotClient();
-    await client.start();
+
+  const runtime = createClientOptions(sdk, requestedTransport, process.execPath);
+
+  if (client && clientTransport !== runtime.transport) {
+    await client.stop();
+    client = undefined;
+    clientTransport = undefined;
   }
-  return { client, sdk };
+
+  if (!client) {
+    output?.appendLine(`Copilot runtime transport: ${runtime.transport} (host executable: ${process.execPath})`);
+    const nextClient = new sdk.CopilotClient(runtime.options);
+    try {
+      await nextClient.start();
+    } catch (error) {
+      await nextClient.stop().catch(() => {});
+      throw error;
+    }
+    client = nextClient;
+    clientTransport = runtime.transport;
+  }
+
+  return { client, sdk, transport: clientTransport };
 }
 
 function workspacePath() {
@@ -43,6 +63,7 @@ function readConfig() {
     maxWorkerPasses: config.get('maxWorkerPasses', 8),
     maxReviewerCycles: config.get('maxReviewerCycles', 3),
     permissionMode: config.get('permissionMode', 'workspace'),
+    runtimeTransport: config.get('runtimeTransport', 'auto'),
   };
 }
 
@@ -69,7 +90,7 @@ async function executeWorkflow(prompt, stream, token) {
   if (activeRun) throw new Error('A Convergent workflow is already running. Stop it before starting another one.');
   const workspace = workspacePath();
   const config = readConfig();
-  const runtime = await getClient();
+  const runtime = await getClient(config.runtimeTransport);
   const models = await resolveConfiguredModels(runtime.client, config.selectors);
   const controller = new AbortController();
   const ui = new VscodeWorkflowUi(vscode, stream, output);
@@ -141,7 +162,8 @@ async function activate(context) {
     vscode.commands.registerCommand('convergent.showOutput', () => output.show(true)),
     vscode.commands.registerCommand('convergent.showModels', async () => {
       try {
-        const runtime = await getClient();
+        const config = readConfig();
+        const runtime = await getClient(config.runtimeTransport);
         const models = await runtime.client.listModels();
         output.show(true);
         output.appendLine('Available Copilot models:');
@@ -158,4 +180,4 @@ async function deactivate() {
   if (client) await client.stop();
 }
 
-module.exports = { activate, deactivate, readConfig, resolveConfiguredModels };
+module.exports = { activate, deactivate, readConfig, resolveConfiguredModels, getClient };
