@@ -32,6 +32,23 @@ test('settleWithin reports an operation that does not settle', async () => {
   assert.equal(result.settled, false);
 });
 
+test('guard does not forward a hard SDK sendAndWait timeout for active agentic turns', async () => {
+  let observedTimeout = 'not-called';
+  const session = fakeSession({
+    sendAndWait: async (_options, timeout) => {
+      observedTimeout = timeout;
+      return { data: { content: 'done' } };
+    },
+  });
+  new SessionGuard(session, 'Worker A', fakeUi(), {
+    agentInactivityTimeoutMs: 180_000,
+    heartbeatMs: 60_000,
+  });
+
+  await session.sendAndWait({ prompt: 'complex work' }, 180_000);
+  assert.equal(observedTimeout, undefined, 'SDK timeout is wall-clock, so Convergent must rely on activity watchdogs instead');
+});
+
 test('wrapped abort rejects a pending guarded send even when SDK abort never settles', async () => {
   const session = fakeSession({
     sendAndWait: async () => new Promise(() => {}),
