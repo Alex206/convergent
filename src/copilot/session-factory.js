@@ -132,6 +132,7 @@ class SessionFactory {
   guard(session, agentName) {
     return guardSession(session, agentName, this.ui, {
       toolStallTimeoutMs: this.ui?.toolStallTimeoutMs,
+      agentInactivityTimeoutMs: this.ui?.agentInactivityTimeoutMs,
       stallGraceMs: this.ui?.stallGraceMs,
       heartbeatMs: this.ui?.heartbeatMs,
     });
