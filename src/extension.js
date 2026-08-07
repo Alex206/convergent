@@ -62,6 +62,7 @@ function readConfig() {
     },
     maxWorkerPasses: config.get('maxWorkerPasses', 8),
     maxReviewerCycles: config.get('maxReviewerCycles', 3),
+    agentTurnTimeoutMs: config.get('agentTurnTimeoutSeconds', 180) * 1000,
     permissionMode: config.get('permissionMode', 'workspace'),
     runtimeTransport: config.get('runtimeTransport', 'auto'),
   };
@@ -74,14 +75,23 @@ async function resolveConfiguredModels(copilotClient, selectors) {
   } catch (error) {
     output.appendLine(`Could not list Copilot models; presets fall back to auto: ${error.message}`);
   }
-  const resolved = {
-    coordinator: resolveModel(selectors.coordinator, available),
-    workerA: resolveModel(selectors.workerA, available),
-    workerB: resolveModel(selectors.workerB, available),
-    reviewer: resolveModel(selectors.reviewer, available),
-  };
+
+  const coordinator = resolveModel(selectors.coordinator, available);
+  const workerA = resolveModel(selectors.workerA, available);
+  const workerBSelector = String(selectors.workerB ?? '').trim().toLowerCase();
+  const workerB = resolveModel(
+    selectors.workerB,
+    available,
+    workerBSelector === 'cheap-b' ? { excludeIds: [workerA.id] } : {},
+  );
+  const reviewer = resolveModel(selectors.reviewer, available);
+  const resolved = { coordinator, workerA, workerB, reviewer };
+
   for (const [role, model] of Object.entries(resolved)) {
     output.appendLine(`${role}: ${model.name ?? model.id} (${model.id}) — ${model.reason}`);
+  }
+  if (workerA.id !== 'auto' && workerA.id === workerB.id) {
+    output.appendLine('Warning: Worker A and Worker B resolved to the same model. Configure convergent.models.workerB explicitly if you want model-family diversity.');
   }
   return resolved;
 }
@@ -105,6 +115,7 @@ async function executeWorkflow(prompt, stream, token) {
     ui,
     maxWorkerPasses: config.maxWorkerPasses,
     maxReviewerCycles: config.maxReviewerCycles,
+    agentTurnTimeoutMs: config.agentTurnTimeoutMs,
     signal: controller.signal,
   });
   activeRun = { engine, controller };
