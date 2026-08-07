@@ -2,9 +2,9 @@
   "name": "convergent",
   "displayName": "Convergent",
   "description": "Adaptive multi-agent implementation and adversarial review workflows powered by GitHub Copilot.",
-  "version": "0.2.0-dev.0",
+  "version": "0.2.0-dev.1",
   "publisher": "alex206",
-  "license": "SEE LICENSE IN LICENSE.txt",
+  "license": "MIT",
   "engines": {
     "vscode": "^1.102.0",
     "node": ">=22.12.0"
@@ -159,7 +159,7 @@
           "enum": ["auto", "inprocess", "stdio"],
           "default": "auto",
           "enumDescriptions": [
-            "Use stdio under a real Node process and the SDK in-process FFI transport inside a VS Code/Electron extension host.",
+            "Use stdio under a real Node process and the SDK in-process transport inside a VS Code/Electron extension host.",
             "Always use the Copilot SDK in-process FFI transport.",
             "Always use the Copilot SDK stdio child-process transport. With Copilot SDK 1.0.8 this is not suitable inside a VS Code Extension Host because the SDK launches JS CLI files through process.execPath (Code.exe)."
           ],
