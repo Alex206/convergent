@@ -110,13 +110,28 @@
             "Ask before shell commands and writes."
           ],
           "description": "How Copilot SDK tool permission requests are handled."
+        },
+        "convergent.runtimeTransport": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "inprocess",
+            "stdio"
+          ],
+          "default": "auto",
+          "enumDescriptions": [
+            "Use stdio under a real Node process and the SDK in-process transport inside a VS Code/Electron extension host.",
+            "Always use the Copilot SDK in-process FFI transport.",
+            "Always use the Copilot SDK stdio child-process transport. With Copilot SDK 1.0.8 this is not suitable inside a VS Code Extension Host because the SDK launches JS CLI files through process.execPath (Code.exe)."
+          ],
+          "description": "Copilot SDK runtime transport. Keep this on auto unless troubleshooting."
         }
       }
     }
   },
   "scripts": {
     "test": "node --test",
-    "check": "node --check src/extension.js && node --check src/orchestrator/engine.js && node --check src/copilot/session-factory.js",
+    "check": "node --check src/extension.js && node --check src/orchestrator/engine.js && node --check src/copilot/session-factory.js && node --check src/copilot/runtime.js",
     "package": "npx @vscode/vsce package"
   },
   "dependencies": {
