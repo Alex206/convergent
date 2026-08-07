@@ -16,6 +16,16 @@ const { RESUME_STATE_VERSION, defaultStats } = require('./resume');
 const { pauseWorkflow } = require('./control');
 const { isWorkingTreeClean, createTaskCommit } = require('./task-commit');
 
+function checkpointPass(pass) {
+  if (!pass) return null;
+  return {
+    worker: pass.worker,
+    report: pass.report,
+    changed: Boolean(pass.changed),
+    revision: pass.revision,
+  };
+}
+
 class ResumableConvergentEngine extends ConvergentEngine {
   constructor(options) {
     super(options);
@@ -120,7 +130,108 @@ class ResumableConvergentEngine extends ConvergentEngine {
     );
   }
 
-  async convergeWorkers(task, workerA, workerB, nextWorker, previousPass) {
+  async requestWorkerBlockedDecision(task, blockedWorker, peerWorker, result, routing, { nextReviewCycle = 1 } = {}) {
+    await this.saveTaskCheckpoint({
+      stage: 'worker_blocked',
+      worker: blockedWorker.name,
+      blockedPass: checkpointPass(result),
+      nextReviewCycle,
+      routing,
+    });
+
+    this.ui?.phase?.(
+      'Worker blocked',
+      `Worker ${blockedWorker.name} could not fully complete or validate task ${task.id}. The current workspace revision is preserved${result.changed ? ' and contains worker changes' : ''}; choose how to continue instead of failing the workflow.`,
+    );
+
+    const peerChoice = `Let Worker ${peerWorker.name} inspect current revision`;
+    const retryChoice = `Retry Worker ${blockedWorker.name} now`;
+    const pauseChoice = 'Pause & resume later';
+    const response = await this.userInputHandler?.({
+      question: [
+        `Worker ${blockedWorker.name} reported BLOCKED for task ${task.id}.`,
+        result.report?.summary ?? 'No blocker summary was provided.',
+        result.changed
+          ? 'The worker changed the workspace before reporting the blocker. Those changes are preserved, but BLOCKED does not approve the revision.'
+          : 'The worker did not change the workspace in this pass.',
+        `Choose whether ${peerWorker.name} should independently inspect/try to resolve the current revision, whether ${blockedWorker.name} should retry now, or pause so the environment can be fixed before /resume.`,
+      ].join('\n\n'),
+      choices: [peerChoice, retryChoice, pauseChoice],
+    });
+
+    const answer = response?.answer;
+    this.ui?.log?.(`Worker blocker decision for ${blockedWorker.name}: ${answer ?? 'dismissed'}; task=${task.id}; revision=${result.revision}`);
+    if (answer === peerChoice) return { action: 'peer' };
+    if (answer === retryChoice) return { action: 'retry' };
+
+    pauseWorkflow(
+      `Paused because Worker ${blockedWorker.name} is blocked on task ${task.id}. The blocker and current workspace revision were checkpointed.`,
+      { kind: 'worker_blocked', task: task.id, worker: blockedWorker.name, summary: result.report?.summary },
+    );
+  }
+
+  async requestReviewerBlockedDecision(task, review, reviewCycle, evidence, routing) {
+    await this.saveTaskCheckpoint({
+      stage: 'strong_review_blocked',
+      reviewCycle,
+      summary: review.summary,
+      evidence,
+      routing,
+    });
+
+    this.ui?.phase?.(
+      'Strong reviewer blocked',
+      `Strong reviewer could not complete cycle ${reviewCycle} for task ${task.id}. The converged revision is preserved; retry or pause instead of failing the workflow.`,
+    );
+
+    const retryChoice = 'Retry strong reviewer now';
+    const pauseChoice = 'Pause & resume later';
+    const response = await this.userInputHandler?.({
+      question: `Strong reviewer reported BLOCKED for task ${task.id}:\n\n${review.summary}\n\nThe reviewer is a required gate, so Convergent will not silently bypass it. Retry now or pause and resume after the environment/blocker is addressed.`,
+      choices: [retryChoice, pauseChoice],
+    });
+    const answer = response?.answer;
+    this.ui?.log?.(`Strong reviewer blocker decision: ${answer ?? 'dismissed'}; task=${task.id}; cycle=${reviewCycle}`);
+    if (answer === retryChoice) return { action: 'retry' };
+
+    pauseWorkflow(
+      `Paused because the strong reviewer is blocked on task ${task.id} at cycle ${reviewCycle}. The review boundary was checkpointed.`,
+      { kind: 'strong_review_blocked', task: task.id, reviewCycle, summary: review.summary },
+    );
+  }
+
+  async convergeFromPass(task, workerA, workerB, pass, routing, { nextReviewCycle = 1 } = {}) {
+    let current = pass;
+    const producer = current.worker === 'B' ? workerB : workerA;
+    const peer = producer === workerA ? workerB : workerA;
+
+    while (current.report?.verdict === 'blocked') {
+      const decision = await this.requestWorkerBlockedDecision(
+        task,
+        producer,
+        peer,
+        current,
+        routing,
+        { nextReviewCycle },
+      );
+      if (decision.action === 'peer') break;
+
+      this.ui?.phase?.('Retrying blocked worker', `Worker ${producer.name} will re-check the current workspace and blocker without discarding its existing changes.`);
+      current = await this.runWorkerPass(producer, task, 'RETRY_AFTER_BLOCK', null, null);
+      this.ui.passResult(producer.name, current.report, current.changed, current.revision, current);
+    }
+
+    return this.convergeWorkers(
+      task,
+      workerA,
+      workerB,
+      peer,
+      current,
+      { nextReviewCycle },
+    );
+  }
+
+  async convergeWorkers(task, workerA, workerB, nextWorker, previousPass, { nextReviewCycle = 1 } = {}) {
     const approvals = new Map();
     if (passApprovesRevision(previousPass)) approvals.set(previousPass.worker, previousPass.revision);
 
@@ -136,14 +247,29 @@ class ResumableConvergentEngine extends ConvergentEngine {
       const result = await this.runWorkerPass(worker, task, 'REVIEW_AND_FIX', null, peerPass);
       this.ui.passResult(worker.name, result.report, result.changed, result.revision, result);
 
-      if (result.report.verdict === 'blocked') throw new Error(`Worker ${worker.name} is blocked: ${result.report.summary}`);
-
       if (result.changed) {
         approvals.clear();
         currentRevision = result.revision;
         evidence = evidenceFromPass(result);
       } else {
         evidence = mergeEvidence(evidence, result, currentRevision);
+      }
+
+      if (result.report.verdict === 'blocked') {
+        const peer = worker === workerA ? workerB : workerA;
+        const decision = await this.requestWorkerBlockedDecision(
+          task,
+          worker,
+          peer,
+          result,
+          { route: routing?.route ?? 'standard', risk: routing?.risk ?? 'medium' },
+          { nextReviewCycle },
+        );
+        peerPass = result;
+        if (decision.action === 'peer') worker = peer;
+        passCeiling = Math.max(passCeiling, pass + 1);
+        pass += 1;
+        continue;
       }
 
       if (passApprovesRevision(result)) approvals.set(worker.name, result.revision);
@@ -186,6 +312,31 @@ class ResumableConvergentEngine extends ConvergentEngine {
         { role: 'Strong reviewer', model: reviewer.model.name ?? reviewer.model.id, effort: reviewer.reasoningEffort },
       ]);
 
+      if (taskResumeState?.stage === 'worker_blocked' && taskResumeState.blockedPass?.report?.verdict === 'blocked') {
+        const nextReviewCycle = Math.max(1, Number(taskResumeState.nextReviewCycle) || 1);
+        this.ui.phase(
+          'Resuming blocked worker',
+          `Continuing task ${task.id} from a saved Worker ${taskResumeState.worker ?? taskResumeState.blockedPass.worker} blocker on the preserved workspace revision.`,
+        );
+        const convergence = await this.convergeFromPass(
+          task,
+          workerA,
+          workerB,
+          taskResumeState.blockedPass,
+          routing,
+          { nextReviewCycle },
+        );
+        await this.saveTaskCheckpoint({
+          stage: 'strong_review_pending',
+          nextReviewCycle,
+          evidence: convergence.evidence,
+          routing,
+        });
+        await this.checkAiCreditBudget(`before strong-review cycle ${nextReviewCycle} for ${task.id}`);
+        await this.runStrongReview(task, workerA, workerB, reviewer, convergence.evidence, routing, { startReviewCycle: nextReviewCycle });
+        return { route, escalated: false };
+      }
+
       if (taskResumeState?.stage === 'strong_review_findings' && Array.isArray(taskResumeState.findings) && taskResumeState.findings.length) {
         this.ui.phase(
           'Resuming remediation',
@@ -193,11 +344,15 @@ class ResumableConvergentEngine extends ConvergentEngine {
         );
         const remediation = await this.runWorkerPass(workerA, task, 'FIX_STRONG_REVIEW_FINDINGS', taskResumeState.findings, null);
         this.ui.passResult('A', remediation.report, remediation.changed, remediation.revision, remediation);
-        if (remediation.report.verdict === 'blocked') {
-          throw new Error(`Worker A is blocked during resumed strong-review remediation: ${remediation.report.summary}`);
-        }
-        const convergence = await this.convergeWorkers(task, workerA, workerB, workerB, remediation);
         const nextReviewCycle = Math.max(1, Number(taskResumeState.reviewCycle) + 1 || 1);
+        const convergence = await this.convergeFromPass(
+          task,
+          workerA,
+          workerB,
+          remediation,
+          routing,
+          { nextReviewCycle },
+        );
         await this.saveTaskCheckpoint({
           stage: 'strong_review_pending',
           nextReviewCycle,
@@ -228,11 +383,28 @@ class ResumableConvergentEngine extends ConvergentEngine {
         return { route, escalated: false };
       }
 
+      if (taskResumeState?.stage === 'strong_review_blocked') {
+        const reviewCycle = Math.max(1, Number(taskResumeState.reviewCycle) || 1);
+        this.ui.phase(
+          'Resuming blocked strong review',
+          `Continuing task ${task.id} at the saved blocked strong-review cycle ${reviewCycle}. The converged workspace revision is unchanged.`,
+        );
+        await this.runStrongReview(
+          task,
+          workerA,
+          workerB,
+          reviewer,
+          Array.isArray(taskResumeState.evidence) ? taskResumeState.evidence : [],
+          routing,
+          { startReviewCycle: reviewCycle },
+        );
+        return { route, escalated: false };
+      }
+
       const initial = await this.runWorkerPass(workerA, task, 'IMPLEMENT', null, null);
       this.ui.passResult('A', initial.report, initial.changed, initial.revision, initial);
-      if (initial.report.verdict === 'blocked') throw new Error(`Worker A is blocked: ${initial.report.summary}`);
 
-      const convergence = await this.convergeWorkers(task, workerA, workerB, workerB, initial);
+      const convergence = await this.convergeFromPass(task, workerA, workerB, initial, routing, { nextReviewCycle: 1 });
       await this.saveTaskCheckpoint({
         stage: 'strong_review_pending',
         nextReviewCycle: 1,
@@ -289,7 +461,13 @@ class ResumableConvergentEngine extends ConvergentEngine {
       this.ui.reviewResult(review, reviewCycle, { durationMs, usage });
 
       if (review.verdict === 'clean') return;
-      if (review.verdict === 'blocked') throw new Error(`Strong reviewer is blocked: ${review.summary}`);
+      if (review.verdict === 'blocked') {
+        const decision = await this.requestReviewerBlockedDecision(task, review, reviewCycle, evidence, routing);
+        if (decision.action === 'retry') {
+          this.ui.phase('Retrying strong reviewer', `Strong-review cycle ${reviewCycle} will be retried on the same converged workspace revision.`);
+          continue;
+        }
+      }
       if (!review.findings?.length) throw new Error('Strong reviewer returned findings without any actionable findings.');
 
       await this.saveTaskCheckpoint({
@@ -313,10 +491,14 @@ class ResumableConvergentEngine extends ConvergentEngine {
       );
       const remediation = await this.runWorkerPass(workerA, task, 'FIX_STRONG_REVIEW_FINDINGS', review.findings, null);
       this.ui.passResult('A', remediation.report, remediation.changed, remediation.revision, remediation);
-      if (remediation.report.verdict === 'blocked') {
-        throw new Error(`Worker A is blocked during strong-review remediation: ${remediation.report.summary}`);
-      }
-      const convergence = await this.convergeWorkers(task, workerA, workerB, workerB, remediation);
+      const convergence = await this.convergeFromPass(
+        task,
+        workerA,
+        workerB,
+        remediation,
+        routing,
+        { nextReviewCycle: reviewCycle + 1 },
+      );
       evidence = convergence.evidence;
       await this.saveTaskCheckpoint({
         stage: 'strong_review_pending',
