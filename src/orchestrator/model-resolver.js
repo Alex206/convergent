@@ -40,6 +40,21 @@ function firstPresetMatch(patterns, models) {
   return undefined;
 }
 
+function resolvedModel(model, reason) {
+  if (!model) return { id: 'auto', reason };
+  return {
+    id: model.id,
+    name: model.name,
+    reason,
+    supportedReasoningEfforts: Array.isArray(model.supportedReasoningEfforts)
+      ? [...model.supportedReasoningEfforts]
+      : undefined,
+    defaultReasoningEffort: model.defaultReasoningEffort,
+    billing: model.billing,
+    capabilities: model.capabilities,
+  };
+}
+
 function resolveModel(selector, models = [], options = {}) {
   const excludedIds = new Set((options.excludeIds ?? []).filter(Boolean).map((id) => String(id).toLowerCase()));
   const eligible = models.filter((model) => !excludedIds.has(String(model?.id ?? '').toLowerCase()));
@@ -52,29 +67,20 @@ function resolveModel(selector, models = [], options = {}) {
   const exact = models.find(
     (model) => model?.id?.toLowerCase() === normalized || model?.name?.toLowerCase() === normalized,
   );
-  if (exact) {
-    return { id: exact.id, name: exact.name, reason: 'exact configured model' };
-  }
+  if (exact) return resolvedModel(exact, 'exact configured model');
 
   const patterns = PRESETS[normalized];
   if (patterns) {
     const diversified = firstPresetMatch(patterns, eligible);
     if (diversified) {
       const suffix = excludedIds.size > 0 ? '; diversified from peer worker' : '';
-      return { id: diversified.id, name: diversified.name, reason: `${normalized} preset${suffix}` };
+      return resolvedModel(diversified, `${normalized} preset${suffix}`);
     }
 
-    // Diversity is desirable, but cost predictability is more important. If the
-    // only available preset match is the peer worker's model, reuse it rather than
-    // falling through to Copilot auto (which may choose a more expensive model).
     if (excludedIds.size > 0) {
       const sameCheapModel = firstPresetMatch(patterns, models);
       if (sameCheapModel) {
-        return {
-          id: sameCheapModel.id,
-          name: sameCheapModel.name,
-          reason: `${normalized} preset; no different cheap model available`,
-        };
+        return resolvedModel(sameCheapModel, `${normalized} preset; no different cheap model available`);
       }
     }
 
@@ -82,11 +88,9 @@ function resolveModel(selector, models = [], options = {}) {
   }
 
   const fuzzy = models.find((model) => modelText(model).toLowerCase().includes(normalized));
-  if (fuzzy) {
-    return { id: fuzzy.id, name: fuzzy.name, reason: 'fuzzy configured model match' };
-  }
+  if (fuzzy) return resolvedModel(fuzzy, 'fuzzy configured model match');
 
   return { id: 'auto', reason: `configured selector "${selector}" was unavailable; falling back to auto` };
 }
 
-module.exports = { resolveModel, PRESETS };
+module.exports = { resolveModel, PRESETS, resolvedModel };
