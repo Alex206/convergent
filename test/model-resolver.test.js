@@ -22,12 +22,13 @@ test('planner preset prefers capable lightweight model over strong model', () =>
   assert.deepEqual(result.supportedReasoningEfforts, ['low', 'medium']);
 });
 
-test('planner preset prefers GPT-5.6 Luna when available', () => {
+test('planner and tool-heavy worker A prefer GPT-5.6 Luna when available', () => {
   const withLuna = [{ id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna' }, ...models];
   assert.equal(resolveModel('planner', withLuna).id, 'gpt-5.6-luna');
+  assert.equal(resolveModel('cheap-a', withLuna).id, 'gpt-5.6-luna');
 });
 
-test('cheap presets diversify workers', () => {
+test('cheap presets diversify workers when Luna is absent', () => {
   assert.equal(resolveModel('cheap-a', models).id, 'claude-haiku-4.5');
   assert.equal(resolveModel('cheap-b', models).id, 'gemini-3-flash');
 });
