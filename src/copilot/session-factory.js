@@ -9,7 +9,7 @@ const {
 const { routePolicy, chooseReasoningEffort } = require('../orchestrator/routing');
 const { resolveWorkerModel } = require('../orchestrator/model-resolver');
 const { createPlanTool, createPassTool, createReviewTool, recoverSerializedReport } = require('./tools');
-const { guardSession } = require('./session-guard');
+const { guardSession, describeToolCall } = require('./session-guard');
 
 const SHELL_BUILTINS = process.platform === 'win32'
   ? ['builtin:powershell']
@@ -96,7 +96,7 @@ function attachEventLogging(session, agentName, ui, usage, model, usageKey = age
   const disposers = [];
   disposers.push(
     session.on('assistant.intent', (event) => ui.agentIntent(agentName, event.data.intent)),
-    session.on('tool.execution_start', (event) => ui.agentTool(agentName, event.data.toolName)),
+    session.on('tool.execution_start', (event) => ui.agentTool(agentName, event.data.toolName, describeToolCall(event.data))),
     session.on('assistant.message', (event) => {
       const content = event.data.content;
       ui.agentMessage(agentName, content);
