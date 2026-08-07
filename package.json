@@ -2,7 +2,7 @@
   "name": "convergent",
   "displayName": "Convergent",
   "description": "Adaptive multi-agent implementation and adversarial review workflows powered by GitHub Copilot.",
-  "version": "0.2.0-dev.2",
+  "version": "0.2.0-dev.3",
   "publisher": "alex206",
   "license": "MIT",
   "engines": {
@@ -37,7 +37,7 @@
           },
           {
             "name": "resume",
-            "description": "Resume the last interrupted workflow from its saved task checkpoint"
+            "description": "Resume the last interrupted workflow from its safest saved checkpoint"
           }
         ]
       }
@@ -103,10 +103,10 @@
         },
         "convergent.maxReviewerCycles": {
           "type": "number",
-          "default": 3,
+          "default": 6,
           "minimum": 1,
-          "maximum": 10,
-          "description": "Maximum strong-review remediation cycles per implementation task."
+          "maximum": 20,
+          "description": "Hard safety ceiling for strong-review/remediation cycles per implementation task. Review continues while actionable findings remain, up to this limit; findings at the ceiling are checkpointed so the workflow can be resumed instead of losing the review state."
         },
         "convergent.agentInactivityTimeoutSeconds": {
           "type": "number",
