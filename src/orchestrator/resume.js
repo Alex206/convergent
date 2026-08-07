@@ -75,10 +75,14 @@ function resumeSummary(state) {
   let detail;
   if (state.currentTaskIndex === null) {
     detail = `continue with task ${state.startTaskIndex + 1}`;
+  } else if (state.taskState?.stage === 'worker_blocked') {
+    detail = `resume task ${state.currentTaskIndex + 1} from Worker ${state.taskState.worker ?? '?'} blocker on the saved revision`;
   } else if (state.taskState?.stage === 'strong_review_findings') {
     detail = `resume task ${state.currentTaskIndex + 1} from strong-review remediation cycle ${state.taskState.reviewCycle ?? '?'}`;
   } else if (state.taskState?.stage === 'strong_review_pending') {
     detail = `resume task ${state.currentTaskIndex + 1} at strong-review cycle ${state.taskState.nextReviewCycle ?? '?'}`;
+  } else if (state.taskState?.stage === 'strong_review_blocked') {
+    detail = `resume task ${state.currentTaskIndex + 1} at blocked strong-review cycle ${state.taskState.reviewCycle ?? '?'}`;
   } else {
     detail = `restart interrupted task ${state.currentTaskIndex + 1} from the current workspace state`;
   }
