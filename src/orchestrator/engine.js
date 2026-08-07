@@ -23,14 +23,33 @@ function formatFindings(findings) {
     .join('\n');
 }
 
-async function requireReport(session, sink, prompt, toolName) {
+async function sendAndCaptureReport(session, sink, prompt, timeoutMs) {
+  try {
+    await session.sendAndWait({ prompt }, timeoutMs);
+  } catch (error) {
+    // The structured report is Convergent's completion contract. If the model
+    // already submitted it but then failed to reach session.idle (for example
+    // while producing unnecessary post-tool narration), preserve the report and
+    // abort only the lingering turn. SDK sessions remain usable after abort().
+    if (sink.value) {
+      await session.abort?.().catch(() => {});
+      return;
+    }
+    throw error;
+  }
+}
+
+async function requireReport(session, sink, prompt, toolName, timeoutMs = 180_000) {
   sink.value = null;
-  await session.sendAndWait({ prompt });
+  await sendAndCaptureReport(session, sink, prompt, timeoutMs);
   if (sink.value) return sink.value;
 
-  await session.sendAndWait({
-    prompt: `You did not call ${toolName}. Complete the current pass now and call ${toolName} exactly once with your final structured result.`,
-  });
+  await sendAndCaptureReport(
+    session,
+    sink,
+    `You did not call ${toolName}. Do not perform more exploration. Complete the current pass now and call ${toolName} exactly once with your final structured result.`,
+    timeoutMs,
+  );
   if (!sink.value) {
     throw new Error(`Agent failed to call required tool ${toolName} after a retry.`);
   }
@@ -38,7 +57,7 @@ async function requireReport(session, sink, prompt, toolName) {
 }
 
 class ConvergentEngine {
-  constructor({ client, sdk, workspace, models, permissionHandler, userInputHandler, ui, maxWorkerPasses = 8, maxReviewerCycles = 3, signal, revisionProvider = workspaceRevision }) {
+  constructor({ client, sdk, workspace, models, permissionHandler, userInputHandler, ui, maxWorkerPasses = 8, maxReviewerCycles = 3, agentTurnTimeoutMs = 180_000, signal, revisionProvider = workspaceRevision }) {
     this.client = client;
     this.sdk = sdk;
     this.workspace = workspace;
@@ -48,6 +67,7 @@ class ConvergentEngine {
     this.ui = ui;
     this.maxWorkerPasses = maxWorkerPasses;
     this.maxReviewerCycles = maxReviewerCycles;
+    this.agentTurnTimeoutMs = agentTurnTimeoutMs;
     this.signal = signal;
     this.revisionProvider = revisionProvider;
     this.runId = `convergent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -77,12 +97,18 @@ class ConvergentEngine {
     const coordinator = await factory.createCoordinator();
     this.sessions.push(coordinator.session);
 
+    const beforePlan = await this.revisionProvider(this.workspace);
     const plan = await requireReport(
       coordinator.session,
       coordinator.sink,
-      `User request:\n\n${userRequest}\n\nInspect the repository, clarify only material ambiguities, then submit the implementation plan with report_plan.`,
+      `User request:\n\n${userRequest}\n\nInspect only the repository context needed for this request, clarify only material ambiguities, then submit the smallest useful implementation plan with report_plan.`,
       'report_plan',
+      this.agentTurnTimeoutMs,
     );
+    const afterPlan = await this.revisionProvider(this.workspace);
+    if (beforePlan !== afterPlan) {
+      throw new Error('Coordinator changed the workspace despite the read-only contract.');
+    }
     this.ui.plan(plan);
 
     for (let index = 0; index < plan.tasks.length; index += 1) {
@@ -91,9 +117,6 @@ class ConvergentEngine {
       this.ui.taskStarted(task, index + 1, plan.tasks.length);
       await this.runTask(factory, task, `${index + 1}-${task.id}`);
       this.ui.taskCompleted(task);
-      await coordinator.session.sendAndWait({
-        prompt: `Task ${task.id} (${task.title}) completed and passed the strong review. Keep this result in the overall run context. Do not edit files and do not submit a new plan unless explicitly asked.`,
-      });
     }
 
     this.ui.phase('Complete', `All ${plan.tasks.length} implementation tasks converged and passed strong review.`);
@@ -118,8 +141,7 @@ class ConvergentEngine {
         throw new Error(`Worker A is blocked: ${initial.report.summary}`);
       }
 
-      let nextWorker = workerB;
-      let convergence = await this.convergeWorkers(task, workerA, workerB, nextWorker, initial);
+      await this.convergeWorkers(task, workerA, workerB, workerB, initial);
 
       for (let reviewCycle = 1; reviewCycle <= this.maxReviewerCycles; reviewCycle += 1) {
         this.checkCancelled();
@@ -131,10 +153,13 @@ class ConvergentEngine {
             taskPrompt(task),
             '',
             `Worker A and Worker B both approved current revision ${beforeReview.slice(0, 12)}.`,
-            reviewCycle > 1 ? 'This is a subsequent strong-review cycle. Re-check every finding you raised earlier, then perform a complete review of the current task.' : 'Perform the first complete strong review of this task.',
-            'Do not edit files. Call report_review exactly once.',
+            reviewCycle > 1
+              ? 'Re-check your earlier findings against the current revision first. Then inspect only enough additional context to detect regressions or remaining task-level defects.'
+              : 'Perform the strong review of this task. Inspect only context relevant to correctness and the acceptance criteria.',
+            'Do not edit files. Call report_review exactly once as soon as you have the verdict.',
           ].join('\n'),
           'report_review',
+          this.agentTurnTimeoutMs,
         );
         const afterReview = await this.revisionProvider(this.workspace);
         if (beforeReview !== afterReview) {
@@ -159,8 +184,7 @@ class ConvergentEngine {
         if (remediation.report.verdict === 'blocked') {
           throw new Error(`Worker A is blocked during strong-review remediation: ${remediation.report.summary}`);
         }
-        convergence = await this.convergeWorkers(task, workerA, workerB, workerB, remediation);
-        void convergence;
+        await this.convergeWorkers(task, workerA, workerB, workerB, remediation);
       }
     } finally {
       const taskSessions = [workerA?.session, workerB?.session, reviewer?.session].filter(Boolean);
@@ -217,12 +241,18 @@ class ConvergentEngine {
       findings?.length ? `\nStrong reviewer findings to verify and address:\n${formatFindings(findings)}` : '',
       '',
       mode === 'IMPLEMENT'
-        ? 'Implement this task completely. Inspect the existing repository first and follow its patterns.'
-        : 'Review the CURRENT repository state independently. Fix every valid actionable issue you find; do not merely comment on it.',
-      'Run relevant checks. Then call report_pass exactly once.',
+        ? 'Implement this task completely. Inspect only the repository context needed for the change and follow existing patterns.'
+        : 'Review the CURRENT repository state independently. Fix every valid actionable issue you find; do not merely comment on it. Avoid redundant exploration of unchanged context.',
+      'Run only relevant checks, then call report_pass exactly once as soon as the pass is complete.',
     ].join('\n');
 
-    const report = await requireReport(worker.session, worker.sink, prompt, 'report_pass');
+    const report = await requireReport(
+      worker.session,
+      worker.sink,
+      prompt,
+      'report_pass',
+      this.agentTurnTimeoutMs,
+    );
     const after = await this.revisionProvider(this.workspace);
     const changed = before !== after;
 
@@ -243,4 +273,4 @@ class ConvergentEngine {
   }
 }
 
-module.exports = { ConvergentEngine, taskPrompt, requireReport, formatFindings };
+module.exports = { ConvergentEngine, taskPrompt, requireReport, formatFindings, sendAndCaptureReport };
