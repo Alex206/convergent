@@ -5,12 +5,13 @@ const { ConvergentEngine } = require('./orchestrator/engine');
 const { resolveModel } = require('./orchestrator/model-resolver');
 const { createPermissionHandler, createUserInputHandler } = require('./copilot/permissions');
 const { createClientOptions } = require('./copilot/runtime');
-const { VscodeWorkflowUi } = require('./ui/vscode-ui');
+const { VscodeWorkflowUi, compactUsage, detailedUsageMarkdown } = require('./ui/vscode-ui');
 
 let client;
 let clientTransport;
 let sdk;
 let activeRun;
+let lastUsage;
 let output;
 
 async function getClient(requestedTransport = 'auto') {
@@ -60,6 +61,8 @@ function readConfig() {
       workerB: config.get('models.workerB', 'cheap-b'),
       reviewer: config.get('models.reviewer', 'strong'),
     },
+    routingMode: config.get('routingMode', 'adaptive'),
+    reasoningMode: config.get('reasoningMode', 'adaptive'),
     maxWorkerPasses: config.get('maxWorkerPasses', 8),
     maxReviewerCycles: config.get('maxReviewerCycles', 3),
     agentTurnTimeoutMs: config.get('agentTurnTimeoutSeconds', 180) * 1000,
@@ -88,7 +91,8 @@ async function resolveConfiguredModels(copilotClient, selectors) {
   const resolved = { coordinator, workerA, workerB, reviewer };
 
   for (const [role, model] of Object.entries(resolved)) {
-    output.appendLine(`${role}: ${model.name ?? model.id} (${model.id}) — ${model.reason}`);
+    const efforts = model.supportedReasoningEfforts?.length ? `; reasoning=${model.supportedReasoningEfforts.join('/')}` : '';
+    output.appendLine(`${role}: ${model.name ?? model.id} (${model.id}) — ${model.reason}${efforts}`);
   }
   if (workerA.id !== 'auto' && workerA.id === workerB.id) {
     output.appendLine('Warning: Worker A and Worker B resolved to the same model. Configure convergent.models.workerB explicitly if you want model-family diversity.');
@@ -116,6 +120,8 @@ async function executeWorkflow(prompt, stream, token) {
     maxWorkerPasses: config.maxWorkerPasses,
     maxReviewerCycles: config.maxReviewerCycles,
     agentTurnTimeoutMs: config.agentTurnTimeoutMs,
+    routingMode: config.routingMode,
+    reasoningMode: config.reasoningMode,
     signal: controller.signal,
   });
   activeRun = { engine, controller };
@@ -125,13 +131,17 @@ async function executeWorkflow(prompt, stream, token) {
   });
 
   stream.button({ command: 'convergent.stop', title: 'Stop workflow' });
+  stream.button({ command: 'convergent.showUsage', title: 'Show usage' });
   stream.button({ command: 'convergent.showOutput', title: 'Show agent log' });
+  stream.button({ command: 'workbench.view.scm', title: 'Source Control' });
 
   try {
-    await engine.run(prompt);
-    stream.markdown('\n**Convergent finished successfully.** All planned tasks passed A/B convergence and the persistent strong reviewer.');
+    const result = await engine.run(prompt);
+    lastUsage = result.usage;
+    stream.markdown('\n**Convergent finished successfully.**');
   } finally {
     cancellation.dispose();
+    lastUsage = engine.getUsageSummary();
     await engine.stop();
     activeRun = undefined;
   }
@@ -144,7 +154,7 @@ async function activate(context) {
   const participant = vscode.chat.createChatParticipant('convergent.workflow', async (request, _chatContext, stream, token) => {
     const prompt = request.prompt?.trim();
     if (!prompt) {
-      stream.markdown('Describe the implementation task you want Convergent to plan, implement, cross-review, and quality-gate.');
+      stream.markdown('Describe what you want Convergent to inspect or implement. It will classify the task and choose a proportionate workflow.');
       return;
     }
     try {
@@ -171,6 +181,18 @@ async function activate(context) {
       vscode.window.showInformationMessage('Convergent workflow stopped.');
     }),
     vscode.commands.registerCommand('convergent.showOutput', () => output.show(true)),
+    vscode.commands.registerCommand('convergent.showUsage', async () => {
+      const usage = activeRun?.engine.getUsageSummary() ?? lastUsage;
+      if (!usage) {
+        vscode.window.showInformationMessage('No Convergent usage data is available yet.');
+        return;
+      }
+      output.show(true);
+      output.appendLine('');
+      output.appendLine('Convergent usage snapshot');
+      output.appendLine(detailedUsageMarkdown(usage));
+      vscode.window.showInformationMessage(`Convergent usage: ${compactUsage(usage)}`);
+    }),
     vscode.commands.registerCommand('convergent.showModels', async () => {
       try {
         const config = readConfig();
@@ -178,7 +200,10 @@ async function activate(context) {
         const models = await runtime.client.listModels();
         output.show(true);
         output.appendLine('Available Copilot models:');
-        for (const model of models) output.appendLine(`- ${model.name ?? model.id} [${model.id}]`);
+        for (const model of models) {
+          const efforts = model.supportedReasoningEfforts?.length ? `; reasoning=${model.supportedReasoningEfforts.join('/')}` : '';
+          output.appendLine(`- ${model.name ?? model.id} [${model.id}]${efforts}`);
+        }
       } catch (error) {
         vscode.window.showErrorMessage(`Could not list Copilot models: ${error.message ?? String(error)}`);
       }
