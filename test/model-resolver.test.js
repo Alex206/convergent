@@ -7,6 +7,7 @@ const { resolveModel } = require('../src/orchestrator/model-resolver');
 const models = [
   { id: 'claude-haiku-4.5', name: 'Claude Haiku 4.5' },
   { id: 'gemini-3-flash', name: 'Gemini 3 Flash' },
+  { id: 'gpt-5.4-mini', name: 'GPT-5.4 mini' },
   { id: 'gpt-5.4', name: 'GPT-5.4' },
 ];
 
@@ -19,6 +20,24 @@ test('cheap presets diversify workers', () => {
   assert.equal(resolveModel('cheap-b', models).id, 'gemini-3-flash');
 });
 
+test('cheap-b can exclude worker A model and pick another cheap model', () => {
+  const withoutGemini = [
+    { id: 'claude-haiku-4.5', name: 'Claude Haiku 4.5' },
+    { id: 'gpt-5.4-mini', name: 'GPT-5.4 mini' },
+  ];
+  assert.equal(
+    resolveModel('cheap-b', withoutGemini, { excludeIds: ['claude-haiku-4.5'] }).id,
+    'gpt-5.4-mini',
+  );
+});
+
+test('exact model id wins even when it matches an excluded peer model', () => {
+  assert.equal(
+    resolveModel('claude-haiku-4.5', models, { excludeIds: ['claude-haiku-4.5'] }).id,
+    'claude-haiku-4.5',
+  );
+});
+
 test('exact model id wins', () => {
   assert.equal(resolveModel('gemini-3-flash', models).id, 'gemini-3-flash');
 });
@@ -26,7 +45,6 @@ test('exact model id wins', () => {
 test('unavailable selector falls back to auto', () => {
   assert.equal(resolveModel('does-not-exist', models).id, 'auto');
 });
-
 
 test('cheap-b does not accidentally select a more expensive Gemini 3.5 Flash model', () => {
   const mixed = [
