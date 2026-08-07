@@ -2,7 +2,7 @@
   "name": "convergent",
   "displayName": "Convergent",
   "description": "Adaptive multi-agent implementation and adversarial review workflows powered by GitHub Copilot.",
-  "version": "0.2.0-dev.3",
+  "version": "0.2.0-dev.4",
   "publisher": "alex206",
   "license": "MIT",
   "engines": {
@@ -99,21 +99,38 @@
           "default": 8,
           "minimum": 2,
           "maximum": 30,
-          "description": "Maximum A/B review/fix passes per convergence cycle, excluding the initial implementation pass."
+          "description": "Soft A/B convergence limit per review/fix tranche. When reached without convergence, Convergent asks whether to continue for more passes or pause with the resume checkpoint preserved."
         },
         "convergent.maxReviewerCycles": {
           "type": "number",
-          "default": 6,
+          "default": 3,
           "minimum": 1,
           "maximum": 20,
-          "description": "Hard safety ceiling for strong-review/remediation cycles per implementation task. Review continues while actionable findings remain, up to this limit; findings at the ceiling are checkpointed so the workflow can be resumed instead of losing the review state."
+          "description": "Soft strong-review/remediation cycle limit per tranche. When unresolved findings remain at the limit, Convergent asks whether to continue for more cycles or pause; it does not fail merely because the counter was reached."
+        },
+        "convergent.maxAiCredits": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 100000,
+          "description": "Optional soft AI-credit budget for one run. 0 disables the budget. When reported Copilot usage reaches the budget at a safe workflow boundary, Convergent asks whether to add another budget tranche, continue without a budget, or pause and resume later. Credit reporting can lag live token usage."
+        },
+        "convergent.taskCommits": {
+          "type": "string",
+          "enum": ["off", "safe"],
+          "default": "off",
+          "enumDescriptions": [
+            "Do not create Git commits automatically.",
+            "After an accepted modifying task, create a checkpoint commit only when that task started with a clean worktree. Pre-existing dirty worktrees are never swept into an automatic commit."
+          ],
+          "description": "Optional task-boundary checkpoint commits. Safe commits make the next task's HEAD the previous accepted task, keeping normal Git diffs task-local while preserving existing dirty user work."
         },
         "convergent.agentInactivityTimeoutSeconds": {
           "type": "number",
           "default": 180,
           "minimum": 30,
           "maximum": 3600,
-          "description": "Seconds with no observed agent, usage, or tool activity before Convergent treats the turn as inactive. This is an inactivity watchdog, not a maximum total turn duration; healthy long-running turns may exceed it indefinitely while making progress."
+          "description": "Seconds with no observed agent, usage, or tool activity before Convergent asks whether to keep waiting or abort the current agent turn. This is an inactivity watchdog, not a maximum total turn duration."
         },
         "convergent.agentTurnTimeoutSeconds": {
           "type": "number",
@@ -128,21 +145,21 @@
           "default": 120,
           "minimum": 30,
           "maximum": 1800,
-          "description": "Seconds a running Copilot tool may produce no progress before Convergent steers the agent to stop waiting. If the tool remains stuck through the grace period, the current agent turn is cancelled."
+          "description": "Seconds a running Copilot tool may produce no progress before Convergent shows the tool/command details and asks whether to continue waiting or abort the current agent turn."
         },
         "convergent.toolStallGraceSeconds": {
           "type": "number",
           "default": 10,
           "minimum": 1,
           "maximum": 120,
-          "description": "Grace period after a tool/agent inactivity warning and immediate steering before Convergent cancels the agent turn."
+          "description": "Fallback grace period used only when an interactive stall decision UI is unavailable and Convergent must use bounded steering/cancellation."
         },
         "convergent.heartbeatSeconds": {
           "type": "number",
           "default": 30,
           "minimum": 5,
           "maximum": 300,
-          "description": "Interval for live agent/tool heartbeat progress while a Convergent turn is running."
+          "description": "Interval for diagnostic heartbeats in the Convergent Output channel. Routine 'working' heartbeats are no longer appended repeatedly to Chat; only meaningful long-tool status is surfaced there."
         },
         "convergent.permissionMode": {
           "type": "string",
@@ -170,7 +187,7 @@
   },
   "scripts": {
     "test": "node --test",
-    "check": "node --check src/extension.js && node --check src/orchestrator/engine.js && node --check src/orchestrator/model-resolver.js && node --check src/orchestrator/resumable-engine.js && node --check src/orchestrator/resume.js && node --check src/orchestrator/request-preflight.js && node --check src/orchestrator/routing.js && node --check src/orchestrator/usage.js && node --check src/ui/vscode-ui.js && node --check src/copilot/session-factory.js && node --check src/copilot/session-guard.js && node --check src/copilot/runtime.js",
+    "check": "node --check src/extension.js && node --check src/orchestrator/engine.js && node --check src/orchestrator/model-resolver.js && node --check src/orchestrator/resumable-engine.js && node --check src/orchestrator/resume.js && node --check src/orchestrator/control.js && node --check src/orchestrator/task-commit.js && node --check src/orchestrator/request-preflight.js && node --check src/orchestrator/routing.js && node --check src/orchestrator/usage.js && node --check src/ui/vscode-ui.js && node --check src/copilot/session-factory.js && node --check src/copilot/session-guard.js && node --check src/copilot/runtime.js",
     "package": "vsce package",
     "package:list": "vsce ls --tree"
   },
