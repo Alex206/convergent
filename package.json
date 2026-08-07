@@ -54,7 +54,7 @@
         "convergent.models.workerA": {
           "type": "string",
           "default": "cheap-a",
-          "description": "Persistent worker A model selector. cheap-a prefers a low-cost model."
+          "description": "Persistent worker A model selector. cheap-a prefers GPT-5.6 Luna when available for low-cost tool-heavy implementation passes, then other low-cost models."
         },
         "convergent.models.workerB": {
           "type": "string",
