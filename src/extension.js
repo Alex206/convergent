@@ -5,14 +5,16 @@ const { ConvergentEngine } = require('./orchestrator/engine');
 const { resolveModel } = require('./orchestrator/model-resolver');
 const { createPermissionHandler, createUserInputHandler } = require('./copilot/permissions');
 const { createClientOptions } = require('./copilot/runtime');
-const { VscodeWorkflowUi, compactUsage, detailedUsageMarkdown } = require('./ui/vscode-ui');
+const { VscodeWorkflowUi, compactUsage, detailedUsageMarkdown, diagnosticsMarkdown } = require('./ui/vscode-ui');
 
 let client;
 let clientTransport;
 let sdk;
 let activeRun;
 let lastUsage;
+let lastDiagnostics;
 let output;
+let extensionContext;
 
 async function getClient(requestedTransport = 'auto') {
   if (!sdk) sdk = await import('@github/copilot-sdk');
@@ -66,9 +68,27 @@ function readConfig() {
     maxWorkerPasses: config.get('maxWorkerPasses', 8),
     maxReviewerCycles: config.get('maxReviewerCycles', 3),
     agentTurnTimeoutMs: config.get('agentTurnTimeoutSeconds', 180) * 1000,
+    toolStallTimeoutMs: config.get('toolStallTimeoutSeconds', 120) * 1000,
+    stallGraceMs: config.get('toolStallGraceSeconds', 10) * 1000,
+    heartbeatMs: config.get('heartbeatSeconds', 30) * 1000,
     permissionMode: config.get('permissionMode', 'workspace'),
     runtimeTransport: config.get('runtimeTransport', 'auto'),
   };
+}
+
+function collectDiagnostics(engine) {
+  return (engine?.sessions ?? [])
+    .map((session) => session?.__convergentGuard?.snapshot?.())
+    .filter(Boolean);
+}
+
+async function persistDiagnostics(diagnostics) {
+  lastDiagnostics = diagnostics;
+  try {
+    await extensionContext?.globalState.update('convergent.lastDiagnostics', diagnostics);
+  } catch (error) {
+    output?.appendLine(`Could not persist Convergent diagnostics: ${error.message ?? String(error)}`);
+  }
 }
 
 async function resolveConfiguredModels(copilotClient, selectors) {
@@ -108,6 +128,9 @@ async function executeWorkflow(prompt, stream, token) {
   const models = await resolveConfiguredModels(runtime.client, config.selectors);
   const controller = new AbortController();
   const ui = new VscodeWorkflowUi(vscode, stream, output);
+  ui.toolStallTimeoutMs = config.toolStallTimeoutMs;
+  ui.stallGraceMs = config.stallGraceMs;
+  ui.heartbeatMs = config.heartbeatMs;
 
   const engine = new ConvergentEngine({
     client: runtime.client,
@@ -132,6 +155,7 @@ async function executeWorkflow(prompt, stream, token) {
 
   stream.button({ command: 'convergent.stop', title: 'Stop workflow' });
   stream.button({ command: 'convergent.showUsage', title: 'Show usage' });
+  stream.button({ command: 'convergent.showDiagnostics', title: 'Show diagnostics' });
   stream.button({ command: 'convergent.showOutput', title: 'Show agent log' });
   stream.button({ command: 'workbench.view.scm', title: 'Source Control' });
 
@@ -142,12 +166,15 @@ async function executeWorkflow(prompt, stream, token) {
   } finally {
     cancellation.dispose();
     lastUsage = engine.getUsageSummary();
+    await persistDiagnostics(collectDiagnostics(engine));
     await engine.stop();
     activeRun = undefined;
   }
 }
 
 async function activate(context) {
+  extensionContext = context;
+  lastDiagnostics = context.globalState.get('convergent.lastDiagnostics');
   output = vscode.window.createOutputChannel('Convergent', { log: true });
   context.subscriptions.push(output);
 
@@ -161,7 +188,11 @@ async function activate(context) {
       await executeWorkflow(prompt, stream, token);
     } catch (error) {
       output.error(error?.stack ?? String(error));
+      if (error?.convergentDiagnostic) output.appendLine(`Control diagnostic: ${JSON.stringify(error.convergentDiagnostic)}`);
       stream.markdown(`\n**Convergent stopped:** ${error.message ?? String(error)}`);
+      if (error?.code === 'CONVERGENT_TOOL_STALL') {
+        stream.markdown('\nThe watchdog detected a stalled tool call and cancelled the agent turn. Use **Show diagnostics** for the captured tool/runtime state.');
+      }
     }
   });
   participant.iconPath = new vscode.ThemeIcon('git-merge');
@@ -177,8 +208,8 @@ async function activate(context) {
         return;
       }
       activeRun.controller.abort();
-      await activeRun.engine.stop();
-      vscode.window.showInformationMessage('Convergent workflow stopped.');
+      void activeRun.engine.stop();
+      vscode.window.showInformationMessage('Convergent cancellation requested. The UI will not wait indefinitely for an unresponsive SDK session.');
     }),
     vscode.commands.registerCommand('convergent.showOutput', () => output.show(true)),
     vscode.commands.registerCommand('convergent.showUsage', async () => {
@@ -192,6 +223,19 @@ async function activate(context) {
       output.appendLine('Convergent usage snapshot');
       output.appendLine(detailedUsageMarkdown(usage));
       vscode.window.showInformationMessage(`Convergent usage: ${compactUsage(usage)}`);
+    }),
+    vscode.commands.registerCommand('convergent.showDiagnostics', async () => {
+      const diagnostics = activeRun ? collectDiagnostics(activeRun.engine) : lastDiagnostics;
+      if (!diagnostics?.length) {
+        vscode.window.showInformationMessage('No Convergent diagnostics are available yet.');
+        return;
+      }
+      output.show(true);
+      output.appendLine('');
+      output.appendLine('Convergent diagnostics snapshot');
+      output.appendLine(diagnosticsMarkdown(diagnostics));
+      output.appendLine(JSON.stringify(diagnostics, null, 2));
+      vscode.window.showInformationMessage('Convergent diagnostics written to the Convergent output channel.');
     }),
     vscode.commands.registerCommand('convergent.showModels', async () => {
       try {
@@ -212,8 +256,11 @@ async function activate(context) {
 }
 
 async function deactivate() {
-  if (activeRun) await activeRun.engine.stop();
+  if (activeRun) {
+    activeRun.controller.abort();
+    void activeRun.engine.stop();
+  }
   if (client) await client.stop();
 }
 
-module.exports = { activate, deactivate, readConfig, resolveConfiguredModels, getClient };
+module.exports = { activate, deactivate, readConfig, resolveConfiguredModels, getClient, collectDiagnostics };
