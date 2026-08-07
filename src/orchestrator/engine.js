@@ -31,7 +31,7 @@ function formatPeerPass(peerPass) {
     ? `\nPeer findings:\n${peerPass.report.findings.map((finding) => `- ${finding}`).join('\n')}`
     : '\nPeer findings: none reported.';
   const checks = peerPass.report.checks?.length
-    ? `\nPeer checks:\n${peerPass.report.checks.map((check) => `- ${check}`).join('\n')}`
+    ? `\nPeer checks on this revision:\n${peerPass.report.checks.map((check) => `- ${check}`).join('\n')}`
     : '';
 
   return [
@@ -44,6 +44,37 @@ function formatPeerPass(peerPass) {
     checks,
     '',
     'Treat this as the peer worker\'s explicit technical position. Challenge it where warranted rather than simply agreeing with it. Verify claims against the current repository state, but do not repeat inspection that your retained context already makes unnecessary.',
+  ].join('\n');
+}
+
+function evidenceFromPass(pass) {
+  if (!pass?.report || !Array.isArray(pass.report.checks)) return [];
+  return pass.report.checks
+    .map((check) => String(check ?? '').trim())
+    .filter(Boolean)
+    .map((check) => ({ agent: `Worker ${pass.worker}`, check }));
+}
+
+function mergeEvidence(existing, pass, revision) {
+  const base = pass?.revision === revision ? [...(existing ?? [])] : [];
+  if (pass?.revision !== revision) return base;
+  const seen = new Set(base.map((item) => `${item.agent}\0${item.check}`));
+  for (const item of evidenceFromPass(pass)) {
+    const key = `${item.agent}\0${item.check}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      base.push(item);
+    }
+  }
+  return base;
+}
+
+function formatValidationEvidence(evidence) {
+  if (!evidence?.length) return 'No prior worker validation evidence was reported for this exact revision.';
+  return [
+    'Validation evidence already reported by workers for this exact revision:',
+    ...evidence.map((item) => `- ${item.agent}: ${item.check}`),
+    'Treat this as evidence, not proof. Rerun a check only when independent verification is justified by a concrete concern or task risk.',
   ].join('\n');
 }
 
@@ -67,10 +98,10 @@ async function requireReport(session, sink, prompt, toolName, timeoutMs = 180_00
   await sendAndCaptureReport(
     session,
     sink,
-    `You did not call ${toolName}. Do not perform more exploration. Complete the current pass now and call ${toolName} exactly once with your final structured result.`,
+    `You did not call ${toolName} with an accepted result. Do not perform more exploration. Complete the current pass now and call ${toolName} exactly once with a semantically valid final structured result.`,
     timeoutMs,
   );
-  if (!sink.value) throw new Error(`Agent failed to call required tool ${toolName} after a retry.`);
+  if (!sink.value) throw new Error(`Agent failed to call required tool ${toolName} with an accepted result after a retry.`);
   return sink.value;
 }
 
@@ -177,7 +208,7 @@ class ConvergentEngine {
       this.checkCancelled();
       const task = plan.tasks[index];
       const routing = routings[index];
-      const policy = routePolicy(routing.route);
+      const policy = routePolicy(routing.route, routing.risk);
       this.ui.taskStarted(task, index + 1, plan.tasks.length, routing, policy);
 
       if (routing.route === 'read_only') {
@@ -203,10 +234,10 @@ class ConvergentEngine {
 
   async runTask(factory, task, taskSessionKey, routing) {
     if (routing.route === 'trivial') return this.runTrivialTask(factory, task, taskSessionKey, routing);
-    return this.runFullTask(factory, task, taskSessionKey, routing.route);
+    return this.runFullTask(factory, task, taskSessionKey, routing);
   }
 
-  async runTrivialTask(factory, task, taskSessionKey) {
+  async runTrivialTask(factory, task, taskSessionKey, routing = { risk: 'low' }) {
     let workerA;
     let workerB;
     let reviewer;
@@ -232,28 +263,32 @@ class ConvergentEngine {
       }
 
       this.ui.escalated('trivial', 'standard', 'The peer reviewer changed the workspace, so the lightweight approval is no longer sufficient.');
-      reviewer = await factory.createReviewer(taskSessionKey, 'standard');
+      reviewer = await factory.createReviewer(taskSessionKey, 'standard', routing.risk);
       this.sessions.push(reviewer.session);
       this.ui.agentConfiguration([
         { role: 'Strong reviewer', model: reviewer.model.name ?? reviewer.model.id, effort: reviewer.reasoningEffort },
       ]);
 
-      await this.convergeWorkers(task, workerA, workerB, workerA, peer);
-      await this.runStrongReview(task, workerA, workerB, reviewer);
+      const convergence = await this.convergeWorkers(task, workerA, workerB, workerA, peer);
+      await this.runStrongReview(task, workerA, workerB, reviewer, convergence.evidence, {
+        route: 'standard',
+        risk: routing.risk,
+      });
       return { route: 'standard', escalated: true };
     } finally {
       await this.disposeTaskSessions([workerA?.session, workerB?.session, reviewer?.session]);
     }
   }
 
-  async runFullTask(factory, task, taskSessionKey, route) {
+  async runFullTask(factory, task, taskSessionKey, routing) {
     let workerA;
     let workerB;
     let reviewer;
+    const route = routing.route;
     try {
       workerA = await factory.createWorker(taskSessionKey, 'A', route);
       workerB = await factory.createWorker(taskSessionKey, 'B', route);
-      reviewer = await factory.createReviewer(taskSessionKey, route);
+      reviewer = await factory.createReviewer(taskSessionKey, route, routing.risk);
       this.sessions.push(workerA.session, workerB.session, reviewer.session);
       this.ui.agentConfiguration([
         { role: 'A', model: workerA.model.name ?? workerA.model.id, effort: workerA.reasoningEffort },
@@ -265,15 +300,16 @@ class ConvergentEngine {
       this.ui.passResult('A', initial.report, initial.changed, initial.revision, initial);
       if (initial.report.verdict === 'blocked') throw new Error(`Worker A is blocked: ${initial.report.summary}`);
 
-      await this.convergeWorkers(task, workerA, workerB, workerB, initial);
-      await this.runStrongReview(task, workerA, workerB, reviewer);
+      const convergence = await this.convergeWorkers(task, workerA, workerB, workerB, initial);
+      await this.runStrongReview(task, workerA, workerB, reviewer, convergence.evidence, routing);
       return { route, escalated: false };
     } finally {
       await this.disposeTaskSessions([workerA?.session, workerB?.session, reviewer?.session]);
     }
   }
 
-  async runStrongReview(task, workerA, workerB, reviewer) {
+  async runStrongReview(task, workerA, workerB, reviewer, initialEvidence = [], routing = { route: 'standard', risk: 'medium' }) {
+    let evidence = [...initialEvidence];
     for (let reviewCycle = 1; reviewCycle <= this.maxReviewerCycles; reviewCycle += 1) {
       this.checkCancelled();
       const beforeReview = await this.revisionProvider(this.workspace);
@@ -285,6 +321,9 @@ class ConvergentEngine {
           taskPrompt(task),
           '',
           `Worker A and Worker B approved current revision ${beforeReview.slice(0, 12)}.`,
+          `Task workflow: ${routing.route}; task risk: ${routing.risk}.`,
+          formatValidationEvidence(evidence),
+          '',
           reviewCycle > 1
             ? 'Re-check your earlier findings against the current revision first. Then inspect only enough additional context to detect regressions or remaining task-level defects.'
             : 'Perform the strong review of this task. Inspect only context relevant to correctness and the acceptance criteria.',
@@ -312,7 +351,8 @@ class ConvergentEngine {
       if (remediation.report.verdict === 'blocked') {
         throw new Error(`Worker A is blocked during strong-review remediation: ${remediation.report.summary}`);
       }
-      await this.convergeWorkers(task, workerA, workerB, workerB, remediation);
+      const convergence = await this.convergeWorkers(task, workerA, workerB, workerB, remediation);
+      evidence = convergence.evidence;
     }
   }
 
@@ -321,6 +361,7 @@ class ConvergentEngine {
     if (!previousPass.changed && previousPass.report.verdict === 'clean') approvals.set(previousPass.worker, previousPass.revision);
 
     let currentRevision = previousPass.revision;
+    let evidence = evidenceFromPass(previousPass);
     let worker = nextWorker;
     let peerPass = previousPass;
 
@@ -334,15 +375,18 @@ class ConvergentEngine {
       if (result.changed) {
         approvals.clear();
         currentRevision = result.revision;
-      } else if (result.report.verdict === 'clean') {
-        approvals.set(worker.name, result.revision);
-      } else if (result.report.verdict === 'changed') {
-        throw new Error(`Worker ${worker.name} reported CHANGED but the workspace revision did not change.`);
+        evidence = evidenceFromPass(result);
+      } else {
+        evidence = mergeEvidence(evidence, result, currentRevision);
+        if (result.report.verdict === 'clean') approvals.set(worker.name, result.revision);
+        else if (result.report.verdict === 'changed') {
+          throw new Error(`Worker ${worker.name} reported CHANGED but the workspace revision did not change.`);
+        }
       }
 
       if (approvals.get('A') === currentRevision && approvals.get('B') === currentRevision) {
         this.ui.converged(currentRevision, pass);
-        return currentRevision;
+        return { revision: currentRevision, evidence };
       }
 
       peerPass = result;
@@ -365,8 +409,8 @@ class ConvergentEngine {
       '',
       mode === 'IMPLEMENT'
         ? 'Implement this task completely. Inspect only the repository context needed for the change and follow existing patterns.'
-        : 'Review the CURRENT repository state independently. Fix every valid actionable issue you find; do not merely comment on it. Use your retained task context plus the peer report above, and avoid redundant exploration of unchanged context.',
-      'Run only relevant checks, then call report_pass exactly once as soon as the pass is complete.',
+        : 'Review the CURRENT repository state independently. Fix every valid actionable issue you find; do not merely comment on it. Use your retained task context plus the peer report above, including any validation evidence reported for the current revision, and avoid redundant exploration or check reruns without a concrete reason.',
+      'Run only relevant checks that are still needed, avoid leaving validation artifacts, then call report_pass exactly once as soon as the pass is complete.',
     ].join('\n');
 
     const startedAt = Date.now();
@@ -402,5 +446,8 @@ module.exports = {
   requireReport,
   formatFindings,
   formatPeerPass,
+  evidenceFromPass,
+  mergeEvidence,
+  formatValidationEvidence,
   sendAndCaptureReport,
 };
