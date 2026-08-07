@@ -55,6 +55,19 @@ function workspacePath() {
   return folders[0].uri.fsPath;
 }
 
+function explicitConfigValue(config, key) {
+  const inspected = config.inspect?.(key);
+  return inspected?.workspaceFolderValue ?? inspected?.workspaceValue ?? inspected?.globalValue;
+}
+
+function agentInactivityTimeoutSeconds(config) {
+  const current = explicitConfigValue(config, 'agentInactivityTimeoutSeconds');
+  if (current !== undefined) return Number(current);
+  const legacy = explicitConfigValue(config, 'agentTurnTimeoutSeconds');
+  if (legacy !== undefined) return Number(legacy);
+  return Number(config.get('agentInactivityTimeoutSeconds', 180));
+}
+
 function readConfig() {
   const config = vscode.workspace.getConfiguration('convergent');
   return {
@@ -68,7 +81,7 @@ function readConfig() {
     reasoningMode: config.get('reasoningMode', 'adaptive'),
     maxWorkerPasses: config.get('maxWorkerPasses', 8),
     maxReviewerCycles: config.get('maxReviewerCycles', 3),
-    agentInactivityTimeoutMs: config.get('agentInactivityTimeoutSeconds', config.get('agentTurnTimeoutSeconds', 180)) * 1000,
+    agentInactivityTimeoutMs: agentInactivityTimeoutSeconds(config) * 1000,
     toolStallTimeoutMs: config.get('toolStallTimeoutSeconds', 120) * 1000,
     stallGraceMs: config.get('toolStallGraceSeconds', 10) * 1000,
     heartbeatMs: config.get('heartbeatSeconds', 30) * 1000,
@@ -272,4 +285,13 @@ async function deactivate() {
   if (client) await client.stop();
 }
 
-module.exports = { activate, deactivate, readConfig, resolveConfiguredModels, getClient, collectDiagnostics };
+module.exports = {
+  activate,
+  deactivate,
+  readConfig,
+  resolveConfiguredModels,
+  getClient,
+  collectDiagnostics,
+  explicitConfigValue,
+  agentInactivityTimeoutSeconds,
+};
