@@ -9,6 +9,24 @@ const {
 const { routePolicy, chooseReasoningEffort } = require('../orchestrator/routing');
 const { createPlanTool, createPassTool, createReviewTool } = require('./tools');
 
+const READ_BUILTINS = [
+  'builtin:view',
+  'builtin:glob',
+  'builtin:rg',
+  'builtin:grep',
+  'builtin:powershell',
+  'builtin:bash',
+  'builtin:ask_user',
+];
+const COORDINATOR_TOOLS = [...READ_BUILTINS, 'custom:report_plan'];
+const REVIEWER_TOOLS = [...READ_BUILTINS, 'custom:report_review'];
+const WORKER_TOOLS = [
+  ...READ_BUILTINS,
+  'builtin:edit',
+  'builtin:create',
+  'custom:report_pass',
+];
+
 function readonlyShellMutation(input) {
   const name = String(input?.toolName ?? '').toLowerCase();
   if (!/(bash|shell|powershell|terminal|cmd)/.test(name)) return false;
@@ -92,8 +110,8 @@ class SessionFactory {
       workingDirectory: this.workspace,
       streaming: true,
       tools: [tool],
+      availableTools: COORDINATOR_TOOLS,
       systemMessage: { mode: 'append', content: COORDINATOR_PROMPT },
-      excludedTools: ['edit'],
       hooks: { onPreToolUse: readonlyHook },
       onPermissionRequest: this.permissionHandler,
       onUserInputRequest: this.userInputHandler,
@@ -119,6 +137,7 @@ class SessionFactory {
       workingDirectory: this.workspace,
       streaming: true,
       tools: [tool],
+      availableTools: WORKER_TOOLS,
       systemMessage: { mode: 'append', content: isA ? WORKER_A_PROMPT : WORKER_B_PROMPT },
       onPermissionRequest: this.permissionHandler,
       onUserInputRequest: this.userInputHandler,
@@ -143,8 +162,8 @@ class SessionFactory {
       workingDirectory: this.workspace,
       streaming: true,
       tools: [tool],
+      availableTools: REVIEWER_TOOLS,
       systemMessage: { mode: 'append', content: REVIEWER_PROMPT },
-      excludedTools: ['edit'],
       hooks: { onPreToolUse: readonlyHook },
       onPermissionRequest: this.permissionHandler,
       onUserInputRequest: this.userInputHandler,
@@ -155,4 +174,13 @@ class SessionFactory {
   }
 }
 
-module.exports = { SessionFactory, readonlyHook, readonlyShellMutation, safeSessionPart, withReasoning };
+module.exports = {
+  SessionFactory,
+  readonlyHook,
+  readonlyShellMutation,
+  safeSessionPart,
+  withReasoning,
+  COORDINATOR_TOOLS,
+  WORKER_TOOLS,
+  REVIEWER_TOOLS,
+};
