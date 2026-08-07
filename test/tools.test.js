@@ -10,6 +10,8 @@ const {
   validatePassReport,
   normalizeReviewReport,
   validateReviewReport,
+  recoverPassReportFromText,
+  recoverReviewReportFromText,
 } = require('../src/copilot/tools');
 
 function captureDefinition(name, definition) {
@@ -82,6 +84,21 @@ test('pass semantic validator keeps the convergence invariant explicit', () => {
   assert.equal(validatePassReport({ verdict: 'clean', findings: [] }), null);
 });
 
+test('serialized report_pass assistant text is recovered and normalized', () => {
+  const report = recoverPassReportFromText(`Some completion prose.\n<report_pass>\n<verdict>changed</verdict>\n<summary>Implemented identity split.</summary>\n<findings>[]</findings>\n<checks>\n- 260 tests passed\n- targeted protocol tests passed\n</checks>\n</report_pass>`);
+  assert.deepEqual(report, {
+    verdict: 'changed',
+    summary: 'Implemented identity split.',
+    findings: [],
+    checks: ['260 tests passed', 'targeted protocol tests passed'],
+  });
+});
+
+test('serialized report_pass fallback rejects contradictory clean findings', () => {
+  const report = recoverPassReportFromText(`<report_pass><verdict>clean</verdict><summary>done</summary><findings>- unresolved race</findings><checks>[]</checks></report_pass>`);
+  assert.equal(report, null);
+});
+
 test('review reports normalize a single string finding into the strong-review shape', () => {
   const report = normalizeReviewReport({
     verdict: 'findings',
@@ -99,4 +116,11 @@ test('strong-review semantic validator rejects contradictory verdict/findings co
   assert.match(validateReviewReport({ verdict: 'clean', findings: [{ description: 'x' }] }), /CLEAN/);
   assert.match(validateReviewReport({ verdict: 'findings', findings: [] }), /FINDINGS/);
   assert.equal(validateReviewReport({ verdict: 'clean', findings: [] }), null);
+});
+
+test('serialized clean report_review assistant text is recovered', () => {
+  const report = recoverReviewReportFromText(`<report_review>\n<verdict>clean</verdict>\n<summary>No actionable findings.</summary>\n<findings>[]</findings>\n<checks>- inspected diff</checks>\n</report_review>`);
+  assert.equal(report.verdict, 'clean');
+  assert.deepEqual(report.findings, []);
+  assert.deepEqual(report.checks, ['inspected diff']);
 });
