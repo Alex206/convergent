@@ -1,7 +1,7 @@
 {
   "name": "convergent",
   "displayName": "Convergent",
-  "description": "Deterministic multi-agent implementation and adversarial review loops powered by GitHub Copilot.",
+  "description": "Adaptive multi-agent implementation and adversarial review workflows powered by GitHub Copilot.",
   "version": "0.1.0",
   "publisher": "alex206",
   "license": "SEE LICENSE IN LICENSE",
@@ -25,6 +25,7 @@
     "onCommand:convergent.start",
     "onCommand:convergent.stop",
     "onCommand:convergent.showModels",
+    "onCommand:convergent.showUsage",
     "onCommand:convergent.showOutput"
   ],
   "contributes": {
@@ -33,12 +34,12 @@
         "id": "convergent.workflow",
         "name": "convergent",
         "fullName": "Convergent",
-        "description": "Implement a task through convergent multi-agent review",
+        "description": "Inspect or implement a task with an adaptive multi-agent workflow",
         "isSticky": true,
         "commands": [
           {
             "name": "implement",
-            "description": "Plan and implement a task using the convergent review workflow"
+            "description": "Classify, plan, and execute a task using the proportionate Convergent workflow"
           }
         ]
       }
@@ -57,6 +58,10 @@
         "title": "Convergent: Show Available Copilot Models"
       },
       {
+        "command": "convergent.showUsage",
+        "title": "Convergent: Show AI Usage"
+      },
+      {
         "command": "convergent.showOutput",
         "title": "Convergent: Show Agent Log"
       }
@@ -72,7 +77,7 @@
         "convergent.models.workerA": {
           "type": "string",
           "default": "cheap-a",
-          "description": "Persistent worker A model selector. cheap-a prefers a low-cost Anthropic model when available."
+          "description": "Persistent worker A model selector. cheap-a prefers a low-cost model."
         },
         "convergent.models.workerB": {
           "type": "string",
@@ -83,6 +88,32 @@
           "type": "string",
           "default": "strong",
           "description": "Strong reviewer model selector. The reviewer context is retained for the lifetime of one implementation task."
+        },
+        "convergent.routingMode": {
+          "type": "string",
+          "enum": [
+            "adaptive",
+            "full"
+          ],
+          "default": "adaptive",
+          "enumDescriptions": [
+            "Let the coordinator classify read-only, trivial, standard, and high-risk tasks; the engine enforces minimum review levels and escalation.",
+            "Force every modifying task through at least the full A/B convergence + strong-review workflow. Read-only tasks remain coordinator-only."
+          ],
+          "description": "How Convergent chooses the workflow depth for each task."
+        },
+        "convergent.reasoningMode": {
+          "type": "string",
+          "enum": [
+            "adaptive",
+            "model-default"
+          ],
+          "default": "adaptive",
+          "enumDescriptions": [
+            "Use low/medium/high reasoning effort according to route when the selected model advertises support.",
+            "Do not override model reasoning effort."
+          ],
+          "description": "Whether Convergent adapts supported models' reasoning effort to task risk/workflow depth."
         },
         "convergent.maxWorkerPasses": {
           "type": "number",
@@ -138,7 +169,7 @@
   },
   "scripts": {
     "test": "node --test",
-    "check": "node --check src/extension.js && node --check src/orchestrator/engine.js && node --check src/copilot/session-factory.js && node --check src/copilot/runtime.js",
+    "check": "node --check src/extension.js && node --check src/orchestrator/engine.js && node --check src/orchestrator/routing.js && node --check src/orchestrator/usage.js && node --check src/ui/vscode-ui.js && node --check src/copilot/session-factory.js && node --check src/copilot/runtime.js",
     "package": "npx @vscode/vsce package"
   },
   "dependencies": {
