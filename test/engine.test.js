@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { ConvergentEngine, requireReport } = require('../src/orchestrator/engine');
+const { ConvergentEngine, requireReport, formatPeerPass } = require('../src/orchestrator/engine');
 
 function fakeUi() {
   return new Proxy({}, { get: () => () => {} });
@@ -98,4 +98,24 @@ test('structured report survives a late session idle timeout', async () => {
   const report = await requireReport(session, sink, 'review', 'report_pass', 1234);
   assert.equal(report.verdict, 'clean');
   assert.equal(aborted, true);
+});
+
+test('peer pass context carries the opposing worker technical position', () => {
+  const text = formatPeerPass({
+    worker: 'B',
+    changed: true,
+    revision: 'R2',
+    report: {
+      verdict: 'changed',
+      summary: 'Changed locking strategy after finding a shutdown race.',
+      findings: ['Shutdown can race with queue draining.'],
+      checks: ['unit tests passed'],
+    },
+  });
+
+  assert.match(text, /Previous peer pass from Worker B/);
+  assert.match(text, /Changed locking strategy/);
+  assert.match(text, /Shutdown can race/);
+  assert.match(text, /unit tests passed/);
+  assert.match(text, /Challenge it where warranted/);
 });
