@@ -11,6 +11,13 @@ const PRESETS = {
     /claude.*sonnet/i,
     /gemini.*pro/i,
   ],
+  planner: [
+    /gpt[- ]?5\.6.*luna/i,
+    /gpt[- ]?5\.4.*mini/i,
+    /gpt[- ]?5.*mini/i,
+    /claude.*haiku.*4\.5/i,
+    /gemini.*\b3(?:\.0)?\b(?!\.\d).*flash/i,
+  ],
   'cheap-a': [
     /claude.*haiku.*4\.5/i,
     /gpt[- ]?5\.4.*nano/i,
