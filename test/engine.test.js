@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { ConvergentEngine } = require('../src/orchestrator/engine');
+const { ConvergentEngine, requireReport } = require('../src/orchestrator/engine');
 
 function fakeUi() {
   return new Proxy({}, { get: () => () => {} });
@@ -80,4 +80,22 @@ test('worker cannot claim clean while changing revision', async () => {
     { nextRevision: 'R2', report: { verdict: 'clean', summary: 'incorrect', findings: [], checks: [] } },
   ], revision);
   await assert.rejects(() => engine.runWorkerPass(a, task, 'REVIEW_AND_FIX', null), /reported CLEAN but changed/);
+});
+
+test('structured report survives a late session idle timeout', async () => {
+  const sink = { value: null };
+  let aborted = false;
+  const session = {
+    async sendAndWait() {
+      sink.value = { verdict: 'clean', summary: 'done', findings: [], checks: [] };
+      throw new Error('Timeout after 60000ms waiting for session.idle');
+    },
+    async abort() {
+      aborted = true;
+    },
+  };
+
+  const report = await requireReport(session, sink, 'review', 'report_pass', 1234);
+  assert.equal(report.verdict, 'clean');
+  assert.equal(aborted, true);
 });
