@@ -82,6 +82,101 @@ function validateReviewReport(report) {
   return null;
 }
 
+function decodeXmlText(value) {
+  return String(value ?? '')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&amp;/gi, '&')
+    .trim();
+}
+
+function lastXmlBlock(text, rootTag) {
+  const source = String(text ?? '');
+  const pattern = new RegExp(`<${rootTag}\\b[^>]*>([\\s\\S]*?)<\\/${rootTag}>`, 'gi');
+  let match;
+  let last = null;
+  while ((match = pattern.exec(source)) !== null) last = match[1];
+  return last;
+}
+
+function xmlTag(block, tagName) {
+  const match = new RegExp(`<${tagName}\\b[^>]*>([\\s\\S]*?)<\\/${tagName}>`, 'i').exec(String(block ?? ''));
+  return match ? decodeXmlText(match[1]) : null;
+}
+
+function parseSerializedList(value) {
+  if (value === null || value === undefined) return null;
+  const text = decodeXmlText(value);
+  if (!text || text === '[]') return [];
+  try {
+    const parsed = JSON.parse(text);
+    if (Array.isArray(parsed)) return parsed;
+  } catch {
+    // Fall through to bullet/newline parsing.
+  }
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim().replace(/^[-*]\s+/, ''))
+    .filter(Boolean);
+}
+
+function recoverPassReportFromText(content) {
+  const block = lastXmlBlock(content, 'report_pass');
+  if (block === null) return null;
+  const verdict = xmlTag(block, 'verdict');
+  const summary = xmlTag(block, 'summary');
+  const findings = parseSerializedList(xmlTag(block, 'findings'));
+  const checks = parseSerializedList(xmlTag(block, 'checks'));
+  if (verdict === null || summary === null || findings === null || checks === null) return null;
+
+  const report = normalizePassReport({
+    verdict: verdict.toLowerCase(),
+    summary,
+    findings,
+    checks,
+  });
+  return validatePassReport(report) ? null : report;
+}
+
+function recoverReviewReportFromText(content) {
+  const block = lastXmlBlock(content, 'report_review');
+  if (block === null) return null;
+  const verdict = xmlTag(block, 'verdict');
+  const summary = xmlTag(block, 'summary');
+  const findingsText = xmlTag(block, 'findings');
+  const checks = parseSerializedList(xmlTag(block, 'checks'));
+  if (verdict === null || summary === null || findingsText === null || checks === null) return null;
+
+  let findings = [];
+  const findingBlocks = [...String(findingsText).matchAll(/<finding\b[^>]*>([\s\S]*?)<\/finding>/gi)];
+  if (findingBlocks.length) {
+    findings = findingBlocks.map((match) => ({
+      severity: (xmlTag(match[1], 'severity') ?? 'medium').toLowerCase(),
+      title: xmlTag(match[1], 'title') ?? 'Review finding',
+      description: xmlTag(match[1], 'description') ?? '',
+      ...(xmlTag(match[1], 'file') ? { file: xmlTag(match[1], 'file') } : {}),
+    }));
+  } else {
+    findings = parseSerializedList(findingsText) ?? [];
+  }
+
+  const report = normalizeReviewReport({
+    verdict: verdict.toLowerCase(),
+    summary,
+    findings,
+    checks,
+  });
+  return validateReviewReport(report) ? null : report;
+}
+
+function recoverSerializedReport(content, toolName) {
+  if (toolName === 'report_pass') return recoverPassReportFromText(content);
+  if (toolName === 'report_review') return recoverReviewReportFromText(content);
+  return null;
+}
+
 function createPlanTool(defineTool, sink) {
   return defineTool('report_plan', {
     description: 'Submit the final structured plan and per-task workflow classification to the Convergent orchestrator. Call exactly once.',
@@ -210,4 +305,7 @@ module.exports = {
   validatePassReport,
   normalizeReviewReport,
   validateReviewReport,
+  recoverPassReportFromText,
+  recoverReviewReportFromText,
+  recoverSerializedReport,
 };
