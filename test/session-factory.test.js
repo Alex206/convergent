@@ -2,7 +2,14 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { readonlyHook, readonlyShellMutation, safeSessionPart } = require('../src/copilot/session-factory');
+const {
+  readonlyHook,
+  readonlyShellMutation,
+  safeSessionPart,
+  COORDINATOR_TOOLS,
+  WORKER_TOOLS,
+  REVIEWER_TOOLS,
+} = require('../src/copilot/session-factory');
 
 test('strong reviewer hook blocks write tools', () => {
   assert.equal(readonlyHook({ toolName: 'edit' }).permissionDecision, 'deny');
@@ -20,6 +27,20 @@ test('read-only roles deny obvious shell mutations before execution', () => {
   assert.equal(readonlyShellMutation({ toolName: 'powershell', toolArgs: { command: 'Set-Content README.md changed' } }), true);
   assert.equal(readonlyHook({ toolName: 'powershell', toolArgs: { command: 'git reset --hard HEAD~1' } }).permissionDecision, 'deny');
   assert.equal(readonlyHook({ toolName: 'bash', toolArgs: { command: 'rm -rf src' } }).permissionDecision, 'deny');
+});
+
+test('role tool allowlists expose only the capabilities each agent needs', () => {
+  assert.ok(COORDINATOR_TOOLS.includes('builtin:view'));
+  assert.ok(COORDINATOR_TOOLS.includes('custom:report_plan'));
+  assert.ok(!COORDINATOR_TOOLS.includes('builtin:edit'));
+  assert.ok(!COORDINATOR_TOOLS.includes('builtin:create'));
+
+  assert.ok(REVIEWER_TOOLS.includes('custom:report_review'));
+  assert.ok(!REVIEWER_TOOLS.includes('builtin:edit'));
+
+  assert.ok(WORKER_TOOLS.includes('builtin:edit'));
+  assert.ok(WORKER_TOOLS.includes('builtin:create'));
+  assert.ok(WORKER_TOOLS.includes('custom:report_pass'));
 });
 
 test('session ids sanitize coordinator-provided task ids', () => {
