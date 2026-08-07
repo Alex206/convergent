@@ -13,6 +13,7 @@ function fakeWorker(name, scriptedReports, revisionState) {
   return {
     name,
     sink,
+    model: { id: `model-${name}`, name: `Model ${name}` },
     session: {
       async sendAndWait() {
         const next = scriptedReports.shift();
@@ -20,6 +21,24 @@ function fakeWorker(name, scriptedReports, revisionState) {
         if (next.nextRevision) revisionState.value = next.nextRevision;
         sink.value = next.report;
       },
+      async disconnect() {},
+    },
+  };
+}
+
+function fakeReviewer(scriptedReports) {
+  const sink = { value: null };
+  return {
+    name: 'Strong reviewer',
+    sink,
+    model: { id: 'reviewer', name: 'Reviewer' },
+    session: {
+      async sendAndWait() {
+        const next = scriptedReports.shift();
+        if (!next) throw new Error('No scripted reviewer report left');
+        sink.value = next;
+      },
+      async disconnect() {},
     },
   };
 }
@@ -118,4 +137,53 @@ test('peer pass context carries the opposing worker technical position', () => {
   assert.match(text, /Shutdown can race/);
   assert.match(text, /unit tests passed/);
   assert.match(text, /Challenge it where warranted/);
+});
+
+test('trivial route finishes after one clean peer review', async () => {
+  const revision = { value: 'R1' };
+  const a = fakeWorker('A', [
+    { nextRevision: 'R2', report: { verdict: 'changed', summary: 'implemented', findings: [], checks: [] } },
+  ], revision);
+  const b = fakeWorker('B', [
+    { report: { verdict: 'clean', summary: 'approved', findings: [], checks: [] } },
+  ], revision);
+  const factory = {
+    async createWorker(_taskId, name) { return name === 'A' ? a : b; },
+    async createReviewer() { throw new Error('reviewer must not be created for clean trivial route'); },
+  };
+  const engine = new ConvergentEngine({
+    client: {}, sdk: {}, workspace: '/repo', models: {}, ui: fakeUi(),
+    revisionProvider: async () => revision.value,
+  });
+
+  const outcome = await engine.runTrivialTask(factory, task, 't1');
+  assert.deepEqual(outcome, { route: 'trivial', escalated: false });
+});
+
+test('trivial route escalates when peer reviewer changes the workspace', async () => {
+  const revision = { value: 'R1' };
+  const a = fakeWorker('A', [
+    { nextRevision: 'R2', report: { verdict: 'changed', summary: 'implemented', findings: [], checks: [] } },
+    { report: { verdict: 'clean', summary: 'A approves B fix', findings: [], checks: [] } },
+  ], revision);
+  const b = fakeWorker('B', [
+    { nextRevision: 'R3', report: { verdict: 'changed', summary: 'B fixed issue', findings: ['issue'], checks: [] } },
+    { report: { verdict: 'clean', summary: 'B approves final', findings: [], checks: [] } },
+  ], revision);
+  const reviewer = fakeReviewer([
+    { verdict: 'clean', summary: 'strong review clean', findings: [], checks: [] },
+  ]);
+  const factory = {
+    async createWorker(_taskId, name) { return name === 'A' ? a : b; },
+    async createReviewer() { return reviewer; },
+  };
+  const engine = new ConvergentEngine({
+    client: {}, sdk: {}, workspace: '/repo', models: {}, ui: fakeUi(),
+    revisionProvider: async () => revision.value,
+    maxWorkerPasses: 5,
+  });
+
+  const outcome = await engine.runTrivialTask(factory, task, 't1');
+  assert.deepEqual(outcome, { route: 'standard', escalated: true });
+  assert.equal(revision.value, 'R3');
 });
