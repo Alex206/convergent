@@ -9,37 +9,64 @@ const {
 const { routePolicy, chooseReasoningEffort } = require('../orchestrator/routing');
 const { createPlanTool, createPassTool, createReviewTool } = require('./tools');
 
+// Keep each role's built-in tool surface deliberately small. Copilot CLI's
+// documented file tools are view/create/edit/apply_patch; apply_patch is the
+// patch-oriented option that can avoid repeated string-replacement turns.
+const SHELL_BUILTINS = process.platform === 'win32'
+  ? ['builtin:powershell']
+  : ['builtin:bash'];
 const READ_BUILTINS = [
   'builtin:view',
   'builtin:glob',
   'builtin:rg',
   'builtin:grep',
-  'builtin:powershell',
-  'builtin:bash',
-  'builtin:ask_user',
+  ...SHELL_BUILTINS,
 ];
-const COORDINATOR_TOOLS = [...READ_BUILTINS, 'custom:report_plan'];
-const REVIEWER_TOOLS = [...READ_BUILTINS, 'custom:report_review'];
+const COORDINATOR_TOOLS = [
+  ...READ_BUILTINS,
+  'builtin:ask_user',
+  'custom:report_plan',
+];
+const REVIEWER_TOOLS = [
+  ...READ_BUILTINS,
+  'custom:report_review',
+];
 const WORKER_TOOLS = [
   ...READ_BUILTINS,
+  'builtin:apply_patch',
   'builtin:edit',
   'builtin:create',
   'custom:report_pass',
 ];
 
-function readonlyShellMutation(input) {
-  const name = String(input?.toolName ?? '').toLowerCase();
-  if (!/(bash|shell|powershell|terminal|cmd)/.test(name)) return false;
+function shellText(input) {
   const args = input?.toolArgs ?? {};
-  const text = [
+  return [
     args.command,
     args.fullCommandText,
     args.script,
     args.input,
     JSON.stringify(args),
   ].filter(Boolean).join(' ');
+}
+
+function readonlyShellMutation(input) {
+  const name = String(input?.toolName ?? '').toLowerCase();
+  if (!/(bash|shell|powershell|terminal|cmd)/.test(name)) return false;
+  const text = shellText(input);
 
   return /\bgit\s+(?:add|commit|push|pull|checkout|switch|reset|clean|restore|merge|rebase|cherry-pick|apply|am|rm|mv|stash)\b|\b(?:Set-Content|Add-Content|Out-File|Remove-Item|Move-Item|Copy-Item|New-Item|Rename-Item)\b|(?:^|[;&|]\s*)\b(?:rm|mv|cp|mkdir|touch|truncate)\b|\bsed\s+-i\b|\bperl\s+-pi\b|\btee\b|(^|[^>])>\s*[^>&]|\bnpm\s+(?:install|update|uninstall)\b|\b(?:pip|uv\s+pip)\s+install\b/i.test(text);
+}
+
+function shellFileContentMutation(input) {
+  const name = String(input?.toolName ?? '').toLowerCase();
+  if (!/(bash|shell|powershell|terminal|cmd)/.test(name)) return false;
+  const text = shellText(input);
+
+  // Cleanup/removal commands are intentionally not included here: workers may
+  // need to delete generated artifacts. This hook is specifically about
+  // editing file CONTENT through a shell when purpose-built file tools exist.
+  return /\b(?:Set-Content|Add-Content|Out-File)\b|\bsed\s+-i\b|\bperl\s+-pi\b|\btee\b|(^|[^>])>\s*[^>&]|\bapply_patch\b/i.test(text);
 }
 
 function readonlyHook(input) {
@@ -48,6 +75,16 @@ function readonlyHook(input) {
     return {
       permissionDecision: 'deny',
       permissionDecisionReason: 'This Convergent role is read-only; use inspection/diagnostic commands only.',
+    };
+  }
+  return { permissionDecision: 'allow' };
+}
+
+function workerHook(input) {
+  if (shellFileContentMutation(input)) {
+    return {
+      permissionDecision: 'deny',
+      permissionDecisionReason: 'Use the built-in apply_patch, edit, or create file tool instead of writing file content through the shell.',
     };
   }
   return { permissionDecision: 'allow' };
@@ -117,6 +154,7 @@ class SessionFactory {
     }, effort));
     const usageKey = 'coordinator';
     attachEventLogging(session, 'Coordinator', this.ui, this.usage, model, usageKey);
+    this.ui.agentTools?.('Coordinator', COORDINATOR_TOOLS);
     return { session, sink, name: 'Coordinator', usageName: usageKey, model, reasoningEffort: effort };
   }
 
@@ -138,21 +176,23 @@ class SessionFactory {
       tools: [tool],
       availableTools: WORKER_TOOLS,
       systemMessage: { mode: 'append', content: isA ? WORKER_A_PROMPT : WORKER_B_PROMPT },
+      hooks: { onPreToolUse: workerHook },
       onPermissionRequest: this.permissionHandler,
       onUserInputRequest: this.userInputHandler,
     }, effort));
     const name = `Worker ${worker}`;
     const usageKey = `${safeTaskId}:worker-${worker.toLowerCase()}`;
     attachEventLogging(session, name, this.ui, this.usage, model, usageKey);
+    this.ui.agentTools?.(name, WORKER_TOOLS);
     return { session, sink, name: worker, usageName: usageKey, model, reasoningEffort: effort };
   }
 
-  async createReviewer(taskId, route = 'standard') {
+  async createReviewer(taskId, route = 'standard', risk = 'medium') {
     const safeTaskId = safeSessionPart(taskId);
     const sink = { value: null };
     const tool = createReviewTool(this.sdk.defineTool, sink);
     const model = this.models.reviewer;
-    const desiredEffort = routePolicy(route).efforts.reviewer;
+    const desiredEffort = routePolicy(route, risk).efforts.reviewer;
     const effort = chooseReasoningEffort(model, desiredEffort, this.reasoningMode);
     const session = await this.client.createSession(withReasoning({
       sessionId: `${this.runId}-${safeTaskId}-reviewer`,
@@ -169,6 +209,7 @@ class SessionFactory {
     }, effort));
     const usageKey = `${safeTaskId}:reviewer`;
     attachEventLogging(session, 'Strong reviewer', this.ui, this.usage, model, usageKey);
+    this.ui.agentTools?.('Strong reviewer', REVIEWER_TOOLS);
     return { session, sink, name: 'Strong reviewer', usageName: usageKey, model, reasoningEffort: effort };
   }
 }
@@ -176,9 +217,12 @@ class SessionFactory {
 module.exports = {
   SessionFactory,
   readonlyHook,
+  workerHook,
   readonlyShellMutation,
+  shellFileContentMutation,
   safeSessionPart,
   withReasoning,
+  SHELL_BUILTINS,
   COORDINATOR_TOOLS,
   REVIEWER_TOOLS,
   WORKER_TOOLS,
