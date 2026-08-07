@@ -9,6 +9,7 @@ const {
   evidenceFromPass,
   mergeEvidence,
   formatValidationEvidence,
+  passApprovesRevision,
 } = require('../src/orchestrator/engine');
 
 function fakeUi() {
@@ -57,35 +58,39 @@ const task = {
   acceptanceCriteria: ['It works'],
 };
 
-test('convergence requires A and B clean on same revision', async () => {
-  const revision = { value: 'R1' };
+test('clean and changed passes both approve their exact resulting revision', () => {
+  assert.equal(passApprovesRevision({ report: { verdict: 'clean' } }), true);
+  assert.equal(passApprovesRevision({ report: { verdict: 'changed' } }), true);
+  assert.equal(passApprovesRevision({ report: { verdict: 'blocked' } }), false);
+});
+
+test('initial changed implementation plus clean peer approval converges without self-review', async () => {
+  const revision = { value: 'R2' };
   const engine = new ConvergentEngine({
     client: {}, sdk: {}, workspace: '/repo', models: {}, ui: fakeUi(),
     revisionProvider: async () => revision.value,
     maxWorkerPasses: 5,
   });
-  const a = fakeWorker('A', [
-    { report: { verdict: 'clean', summary: 'A clean', findings: [], checks: ['A check passed'] } },
-  ], revision);
+  const a = fakeWorker('A', [], revision);
   const b = fakeWorker('B', [
     { report: { verdict: 'clean', summary: 'B clean', findings: [], checks: ['B check passed'] } },
   ], revision);
 
   const previous = {
     worker: 'A',
-    changed: false,
-    revision: 'R1',
-    report: { verdict: 'clean', checks: ['initial A check'] },
+    changed: true,
+    revision: 'R2',
+    report: { verdict: 'changed', summary: 'A implemented R2', findings: [], checks: ['A test passed'] },
   };
   const result = await engine.convergeWorkers(task, a, b, b, previous);
-  assert.equal(result.revision, 'R1');
+  assert.equal(result.revision, 'R2');
   assert.deepEqual(result.evidence, [
-    { agent: 'Worker A', check: 'initial A check' },
+    { agent: 'Worker A', check: 'A test passed' },
     { agent: 'Worker B', check: 'B check passed' },
   ]);
 });
 
-test('a change invalidates earlier approval and validation evidence', async () => {
+test('a peer change invalidates earlier approval and evidence but approves the new revision', async () => {
   const revision = { value: 'R1' };
   const engine = new ConvergentEngine({
     client: {}, sdk: {}, workspace: '/repo', models: {}, ui: fakeUi(),
@@ -97,7 +102,6 @@ test('a change invalidates earlier approval and validation evidence', async () =
   ], revision);
   const b = fakeWorker('B', [
     { nextRevision: 'R2', report: { verdict: 'changed', summary: 'B fixed issue', findings: [], checks: ['B tests on R2 passed'] } },
-    { report: { verdict: 'clean', summary: 'B approves R2', findings: [], checks: ['B final review'] } },
   ], revision);
 
   const previous = {
@@ -111,7 +115,6 @@ test('a change invalidates earlier approval and validation evidence', async () =
   assert.deepEqual(result.evidence, [
     { agent: 'Worker B', check: 'B tests on R2 passed' },
     { agent: 'Worker A', check: 'A checked R2' },
-    { agent: 'Worker B', check: 'B final review' },
   ]);
   assert.equal(result.evidence.some((item) => item.check === 'old R1 check'), false);
 });
@@ -201,7 +204,7 @@ test('trivial route finishes after one clean peer review', async () => {
   assert.deepEqual(outcome, { route: 'trivial', escalated: false });
 });
 
-test('trivial route escalates when peer reviewer changes the workspace', async () => {
+test('trivial escalation converges after A approves the revision changed by B', async () => {
   const revision = { value: 'R1' };
   const a = fakeWorker('A', [
     { nextRevision: 'R2', report: { verdict: 'changed', summary: 'implemented', findings: [], checks: ['A test R2'] } },
@@ -209,7 +212,6 @@ test('trivial route escalates when peer reviewer changes the workspace', async (
   ], revision);
   const b = fakeWorker('B', [
     { nextRevision: 'R3', report: { verdict: 'changed', summary: 'B fixed issue', findings: [], checks: ['B test R3'] } },
-    { report: { verdict: 'clean', summary: 'B approves final', findings: [], checks: ['B review R3'] } },
   ], revision);
   const reviewer = fakeReviewer([
     { verdict: 'clean', summary: 'strong review clean', findings: [], checks: [] },
