@@ -31,6 +31,33 @@ function makeControlError(message, code, diagnostic) {
   return error;
 }
 
+function oneLine(value, max = 260) {
+  const text = String(value ?? '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+function describeToolCall(data = {}) {
+  const raw = data.arguments ?? data.toolArgs ?? data.args ?? data.input ?? data.parameters;
+  let args = raw;
+  if (typeof raw === 'string') {
+    try { args = JSON.parse(raw); } catch { return oneLine(raw); }
+  }
+
+  if (!args || typeof args !== 'object') return '';
+  for (const key of ['fullCommandText', 'command', 'script', 'query', 'pattern']) {
+    if (args[key]) return oneLine(args[key]);
+  }
+  for (const key of ['path', 'filePath', 'file', 'target', 'uri']) {
+    if (args[key]) return oneLine(args[key]);
+  }
+  try {
+    return oneLine(JSON.stringify(args));
+  } catch {
+    return '';
+  }
+}
+
 class SessionGuard {
   constructor(session, agentName, ui, options = {}) {
     this.session = session;
@@ -49,6 +76,8 @@ class SessionGuard {
     this.lastActivityAt = this.startedAt;
     this.lastHeartbeatAt = 0;
     this.inactivitySteeringSentAt = 0;
+    this.inactivityIgnoreUntil = 0;
+    this.inactivityDecisionPending = false;
     this.activeRejectors = new Set();
     this.disposers = [];
 
@@ -64,6 +93,8 @@ class SessionGuard {
   touch() {
     this.lastActivityAt = Date.now();
     this.inactivitySteeringSentAt = 0;
+    this.inactivityIgnoreUntil = 0;
+    this.inactivityDecisionPending = false;
   }
 
   attachEvents() {
@@ -82,9 +113,12 @@ class SessionGuard {
       this.currentTool = {
         id: data.toolCallId ?? 'unknown',
         name: data.toolName ?? 'unknown',
+        detail: describeToolCall(data),
         startedAt: now,
         lastProgressAt: now,
         steeringSentAt: 0,
+        ignoreUntil: 0,
+        decisionPending: false,
       };
       this.touch();
     });
@@ -94,6 +128,8 @@ class SessionGuard {
       if (this.currentTool && (!id || id === this.currentTool.id)) {
         this.currentTool.lastProgressAt = Date.now();
         this.currentTool.steeringSentAt = 0;
+        this.currentTool.ignoreUntil = 0;
+        this.currentTool.decisionPending = false;
       }
       this.touch();
     };
@@ -204,7 +240,6 @@ class SessionGuard {
       rejectOperation(error);
     };
 
-    // Register before send() to preserve the race-safety of SDK sendAndWait().
     localDisposers.push(
       this.session.on('assistant.message', (event) => {
         lastAssistantMessage = event;
@@ -267,62 +302,31 @@ class SessionGuard {
     let active = true;
 
     const control = new Promise((_, reject) => {
-      this.activeRejectors.add(reject);
-      timer = setInterval(() => {
+      const abortTool = (tool, now) => {
+        if (!active || !this.currentTool || this.currentTool.id !== tool.id) return;
+        const quietMs = now - tool.lastProgressAt;
+        const diagnostic = this.snapshot();
+        this.stalls.push({
+          at: new Date(now).toISOString(),
+          kind: 'tool',
+          tool: tool.name,
+          toolCallId: tool.id,
+          quietMs,
+          elapsedMs: now - tool.startedAt,
+        });
+        this.ui?.agentToolStalled?.(this.agentName, tool.name, now - tool.startedAt, diagnostic);
+        active = false;
+        reject(makeControlError(
+          `${this.agentName} tool ${tool.name} was aborted after ${Math.round(quietMs / 1000)}s without progress.`,
+          'CONVERGENT_TOOL_STALL',
+          diagnostic,
+        ));
+        void this.forceAbortAfterStall();
+      };
+
+      const abortInactive = (now) => {
         if (!active) return;
-        const now = Date.now();
-        const tool = this.currentTool;
-
-        if (now - this.lastHeartbeatAt >= this.heartbeatMs) {
-          this.lastHeartbeatAt = now;
-          this.ui?.agentHeartbeat?.(this.agentName, this.snapshot());
-        }
-
-        if (tool) {
-          const quietMs = now - tool.lastProgressAt;
-          if (quietMs < this.toolStallTimeoutMs) return;
-
-          if (!tool.steeringSentAt) {
-            tool.steeringSentAt = now;
-            this.ui?.agentToolStallWarning?.(this.agentName, tool.name, quietMs, this.toolStallTimeoutMs);
-            void this.steerStalledTool(tool);
-            return;
-          }
-
-          if (now - tool.steeringSentAt < this.stallGraceMs) return;
-
-          const diagnostic = this.snapshot();
-          this.stalls.push({
-            at: new Date(now).toISOString(),
-            kind: 'tool',
-            tool: tool.name,
-            toolCallId: tool.id,
-            quietMs,
-            elapsedMs: now - tool.startedAt,
-          });
-          this.ui?.agentToolStalled?.(this.agentName, tool.name, now - tool.startedAt, diagnostic);
-          active = false;
-          reject(makeControlError(
-            `${this.agentName} tool ${tool.name} stalled for ${Math.round(quietMs / 1000)}s without progress.`,
-            'CONVERGENT_TOOL_STALL',
-            diagnostic,
-          ));
-          void this.forceAbortAfterStall();
-          return;
-        }
-
         const inactiveMs = now - this.lastActivityAt;
-        if (inactiveMs < this.agentInactivityTimeoutMs) return;
-
-        if (!this.inactivitySteeringSentAt) {
-          this.inactivitySteeringSentAt = now;
-          this.ui?.agentInactivityWarning?.(this.agentName, inactiveMs, this.agentInactivityTimeoutMs);
-          void this.steerInactiveAgent(inactiveMs);
-          return;
-        }
-
-        if (now - this.inactivitySteeringSentAt < this.stallGraceMs) return;
-
         const diagnostic = this.snapshot();
         this.stalls.push({
           at: new Date(now).toISOString(),
@@ -340,6 +344,111 @@ class SessionGuard {
           diagnostic,
         ));
         void this.forceAbortAfterStall();
+      };
+
+      this.activeRejectors.add(reject);
+      timer = setInterval(() => {
+        if (!active) return;
+        const now = Date.now();
+        const tool = this.currentTool;
+
+        if (now - this.lastHeartbeatAt >= this.heartbeatMs) {
+          this.lastHeartbeatAt = now;
+          this.ui?.agentHeartbeat?.(this.agentName, this.snapshot());
+        }
+
+        if (tool) {
+          if (tool.decisionPending || now < (tool.ignoreUntil || 0)) return;
+          const quietMs = now - tool.lastProgressAt;
+          if (quietMs < this.toolStallTimeoutMs) return;
+
+          if (typeof this.ui?.agentToolStallDecision === 'function' && !tool.steeringSentAt) {
+            tool.decisionPending = true;
+            const diagnostic = this.snapshot();
+            this.ui?.agentToolStallWarning?.(this.agentName, tool.name, quietMs, this.toolStallTimeoutMs, diagnostic);
+            Promise.resolve(this.ui.agentToolStallDecision(this.agentName, diagnostic))
+              .then((decision) => {
+                if (!active || !this.currentTool || this.currentTool.id !== tool.id) return;
+                tool.decisionPending = false;
+                if (decision?.action === 'abort') {
+                  abortTool(tool, Date.now());
+                  return;
+                }
+                if (decision?.action === 'continue') {
+                  const waitMs = Math.max(30_000, Number(decision.waitMs) || 5 * 60_000);
+                  tool.ignoreUntil = Date.now() + waitMs;
+                  this.ui?.agentToolWaitExtended?.(this.agentName, tool.name, waitMs);
+                  return;
+                }
+                // Non-interactive/test UIs may not implement a decision. Preserve
+                // the legacy bounded steering/abort behavior in that case.
+                tool.steeringSentAt = Date.now();
+                void this.steerStalledTool(tool);
+              })
+              .catch(() => {
+                if (!active || !this.currentTool || this.currentTool.id !== tool.id) return;
+                tool.decisionPending = false;
+                tool.steeringSentAt = Date.now();
+                void this.steerStalledTool(tool);
+              });
+            return;
+          }
+
+          if (!tool.steeringSentAt) {
+            tool.steeringSentAt = now;
+            this.ui?.agentToolStallWarning?.(this.agentName, tool.name, quietMs, this.toolStallTimeoutMs, this.snapshot());
+            void this.steerStalledTool(tool);
+            return;
+          }
+
+          if (now - tool.steeringSentAt < this.stallGraceMs) return;
+          abortTool(tool, now);
+          return;
+        }
+
+        if (this.inactivityDecisionPending || now < this.inactivityIgnoreUntil) return;
+        const inactiveMs = now - this.lastActivityAt;
+        if (inactiveMs < this.agentInactivityTimeoutMs) return;
+
+        if (typeof this.ui?.agentInactivityDecision === 'function' && !this.inactivitySteeringSentAt) {
+          this.inactivityDecisionPending = true;
+          const diagnostic = this.snapshot();
+          this.ui?.agentInactivityWarning?.(this.agentName, inactiveMs, this.agentInactivityTimeoutMs);
+          Promise.resolve(this.ui.agentInactivityDecision(this.agentName, diagnostic))
+            .then((decision) => {
+              if (!active) return;
+              this.inactivityDecisionPending = false;
+              if (decision?.action === 'abort') {
+                abortInactive(Date.now());
+                return;
+              }
+              if (decision?.action === 'continue') {
+                const waitMs = Math.max(30_000, Number(decision.waitMs) || 5 * 60_000);
+                this.inactivityIgnoreUntil = Date.now() + waitMs;
+                this.ui?.agentInactivityWaitExtended?.(this.agentName, waitMs);
+                return;
+              }
+              this.inactivitySteeringSentAt = Date.now();
+              void this.steerInactiveAgent(inactiveMs);
+            })
+            .catch(() => {
+              if (!active) return;
+              this.inactivityDecisionPending = false;
+              this.inactivitySteeringSentAt = Date.now();
+              void this.steerInactiveAgent(inactiveMs);
+            });
+          return;
+        }
+
+        if (!this.inactivitySteeringSentAt) {
+          this.inactivitySteeringSentAt = now;
+          this.ui?.agentInactivityWarning?.(this.agentName, inactiveMs, this.agentInactivityTimeoutMs);
+          void this.steerInactiveAgent(inactiveMs);
+          return;
+        }
+
+        if (now - this.inactivitySteeringSentAt < this.stallGraceMs) return;
+        abortInactive(now);
       }, 1_000);
       timer.unref?.();
     });
@@ -364,10 +473,13 @@ class SessionGuard {
       agentInactivityTimeoutMs: this.agentInactivityTimeoutMs,
       currentTool: this.currentTool ? {
         name: this.currentTool.name,
+        detail: this.currentTool.detail,
         toolCallId: this.currentTool.id,
         elapsedMs: now - this.currentTool.startedAt,
         quietMs: now - this.currentTool.lastProgressAt,
         steeringSent: Boolean(this.currentTool.steeringSentAt),
+        waitExtendedMs: Math.max(0, (this.currentTool.ignoreUntil || 0) - now),
+        decisionPending: Boolean(this.currentTool.decisionPending),
       } : null,
       tools,
       stalls: [...this.stalls],
@@ -389,6 +501,7 @@ module.exports = {
   SessionGuard,
   guardSession,
   settleWithin,
+  describeToolCall,
   DEFAULT_TOOL_STALL_TIMEOUT_MS,
   DEFAULT_AGENT_INACTIVITY_TIMEOUT_MS,
   DEFAULT_STALL_GRACE_MS,
