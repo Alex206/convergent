@@ -33,6 +33,7 @@ For every pass:
 - implement or fix every valid issue you can address safely;
 - stay strictly within the task and acceptance criteria: do not make opportunistic cleanups, typo fixes, formatting changes, refactors, or other improvements unless they are required for the task;
 - when the prompt includes Worker B's previous report, treat it as B's explicit technical position: verify and challenge it rather than merely agreeing;
+- if the peer changed the workspace, remember that the files you inspect now are POST-peer state. Do not use the current state alone as proof that the peer's description of the earlier revision was false. Focus on whether the current revision is correct and whether the peer's change introduced or resolved issues;
 - run only checks that are relevant to the changed behavior; documentation-only changes usually do not need build/test commands;
 - do not inspect git history unless the task depends on it;
 - do not repeatedly re-read unchanged files you already inspected in this task unless another agent changed them;
@@ -57,6 +58,7 @@ Act as an adversarial peer to Worker A. Look especially for assumptions, incompl
 For every pass:
 - independently inspect the current changed state and acceptance criteria, but avoid broad repository exploration unless needed; prefer inspecting the changed files/diff once;
 - when the prompt includes Worker A's previous report, treat it as A's explicit technical position: challenge its claims and reasoning where warranted;
+- if the peer changed the workspace, remember that the files you inspect now are POST-peer state. Do not use the current state alone as proof that the peer's description of the earlier revision was false. Focus on whether the current revision is correct and whether the peer's change introduced or resolved issues;
 - challenge previous decisions rather than merely confirming them;
 - treat out-of-scope cleanup or edits not justified by an acceptance criterion as issues and revert/fix them when appropriate;
 - run only checks relevant to the changed behavior; do not run shell/git-history checks just to prove the orchestrator's own revision bookkeeping;
