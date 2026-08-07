@@ -39,8 +39,8 @@ Every run has a plan, but planning is proportionate: a simple request can be a o
 - Strong-review findings feed back into A/B and must converge again before re-review
 - Revision-scoped validation evidence is carried from A/B to the strong reviewer so checks are not rerun mechanically
 - Adaptive reasoning effort (`low`, `medium`, `high`) when the selected Copilot model advertises support
-- Runtime model discovery with `strong`, `planner`, `cheap-a`, and `cheap-b` presets plus exact model selection
-- Worker A prefers GPT-5.6 Luna when available for low-cost tool-heavy implementation passes; Worker B prefers a different cheap model
+- Runtime model discovery with `strong`, `planner`, `cheap-a`, `cheap-b`, risk-adaptive worker policies, and exact model selection
+- Worker model capability is resolved after each task is classified: cheap for trivial/low-risk work, economical capable models for standard work, and a stronger implementation tier for high-risk work; Worker B diversifies when possible
 - Role-specific Copilot tool allow-lists so coordinator/reviewer do not inherit editing tools and workers do not inherit the full Copilot CLI toolbox
 - Workers use purpose-built `apply_patch`, `edit`, and `create` tools for file-content changes; shell-based content editing is blocked
 - Validation guidance avoids transient working-tree pollution, optional unrequested extras, and redundant re-reading/re-running after a successful validation
@@ -114,14 +114,18 @@ Set `convergent.routingMode` to `full` to force every modifying task through at 
 
 ## Model selection and reasoning effort
 
-Convergent resolves models from `client.listModels()` at runtime. This is important for enterprise installations where model availability is controlled by policy.
+Convergent discovers models from `client.listModels()` at runtime. This is important for enterprise installations where model availability is controlled by policy. Worker models are selected only after the coordinator has classified the task so route/risk can influence capability.
 
 | Role | Selector | Default behavior |
 | --- | --- | --- |
 | Coordinator | `strong` | Strong model; medium reasoning when supported. Persistent for the complete user request. |
-| Worker A | `cheap-a` | Prefer GPT-5.6 Luna when available, then another low-cost worker model |
-| Worker B | `cheap-b` | Prefer a different low-cost model from A |
+| Worker A | `adaptive` | `trivial/low` → cheap tier; `standard` → economical capable tier; `high_risk`/high risk → stronger implementation tier |
+| Worker B | `adaptive-diverse` | Scale with the same route/risk, but prefer a different capable model from Worker A when one is available |
 | Strong reviewer | `strong` | Strong model; low effort for low-risk standard tasks, medium for normal standard tasks, high for high-risk tasks when supported |
+
+Current adaptive tier preferences are deterministic and availability-aware. For example, a high-risk Worker A prefers GPT-5.6 Terra or Claude Sonnet 5 when available, then strong GPT-5.6 Sol/GPT-5.5/full GPT-5.4-class options; Worker B first seeks a different capable model such as GPT-5.4 mini. Standard Worker A prefers GPT-5.6 Luna or GPT-5.4 mini before falling back to less preferred options. Trivial/low-risk work retains the existing cheap-worker behavior.
+
+Exact model ids/names and explicit presets are overrides. For example, setting `convergent.models.workerA` to `claude-haiku-4.5`, `gpt-5.5`, `cheap-a`, or `strong` disables adaptive promotion for Worker A. `cheap-b` retains its low-cost diversity behavior. This makes `adaptive` a policy, while explicit configuration remains predictable.
 
 The lower-cost `planner` selector remains available as an explicit configuration option, but it is not the default: planning and task slicing are treated as high-leverage decisions where an underpowered model can incorrectly simplify a complex request.
 
@@ -225,4 +229,4 @@ Set `convergent.permissionMode` to `ask` to require approval for shell commands 
 
 ## Status
 
-This is still an MVP. Useful next increments include pass/reviewer-level resume checkpoints, interactive long-running-command control, a dedicated mutable agent/task dashboard, richer diff/finding navigation, empirical model-quality/cost scoring and task-complexity-aware worker selection, profile-based specialized teams, and a CLI frontend over the same orchestrator core. Optional use of the VS Code-selected chat model for coordination and explicit user routing hints are tracked separately as future improvements.
+This is still an MVP. Useful next increments include pass/reviewer-level resume checkpoints, interactive long-running-command control, a dedicated mutable agent/task dashboard, richer diff/finding navigation, empirical model-quality/cost scoring to refine the adaptive tiers, profile-based specialized teams, and a CLI frontend over the same orchestrator core. Optional use of the VS Code-selected chat model for coordination and explicit user routing hints are tracked separately as future improvements.
