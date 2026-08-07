@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { SessionGuard, settleWithin } = require('../src/copilot/session-guard');
+const { SessionGuard, settleWithin, describeToolCall } = require('../src/copilot/session-guard');
 
 function fakeSession({ sendAndWait, abort, disconnect, send } = {}) {
   const handlers = new Map();
@@ -30,6 +30,11 @@ function fakeUi() {
 test('settleWithin reports an operation that does not settle', async () => {
   const result = await settleWithin(new Promise(() => {}), 15);
   assert.equal(result.settled, false);
+});
+
+test('tool detail prefers the useful command/path instead of dumping opaque event data', () => {
+  assert.equal(describeToolCall({ arguments: { command: 'npm test -- --runInBand', cwd: '/repo' } }), 'npm test -- --runInBand');
+  assert.equal(describeToolCall({ toolArgs: { path: 'src/index.js', view_range: [1, 20] } }), 'src/index.js');
 });
 
 test('guard bypasses SDK sendAndWait wall-clock timeout and waits on events itself', async () => {
@@ -90,14 +95,19 @@ test('wrapped abort rejects a pending guarded send even when SDK abort never set
   await rejected;
 });
 
-test('guard records tool completion timing and current tool diagnostics', async () => {
+test('guard records tool completion timing, command detail, and current diagnostics', async () => {
   const session = fakeSession();
   const guard = new SessionGuard(session, 'Worker B', fakeUi(), { heartbeatMs: 60_000 });
 
-  session.emit('tool.execution_start', { toolCallId: 'tool-1', toolName: 'powershell' });
+  session.emit('tool.execution_start', {
+    toolCallId: 'tool-1',
+    toolName: 'powershell',
+    arguments: { command: 'npm test' },
+  });
   let snapshot = guard.snapshot();
   assert.equal(snapshot.currentTool.name, 'powershell');
   assert.equal(snapshot.currentTool.toolCallId, 'tool-1');
+  assert.equal(snapshot.currentTool.detail, 'npm test');
 
   session.emit('tool.execution_progress', { toolCallId: 'tool-1', progressMessage: 'running' });
   session.emit('tool.execution_complete', { toolCallId: 'tool-1', success: true });
@@ -106,6 +116,44 @@ test('guard records tool completion timing and current tool diagnostics', async 
   assert.equal(snapshot.tools[0].name, 'powershell');
   assert.equal(snapshot.tools[0].calls, 1);
   assert.equal(snapshot.tools[0].failures, 0);
+});
+
+test('interactive stall decision can extend a quiet long-running tool instead of aborting it', async () => {
+  let session;
+  let asked = 0;
+  let aborted = 0;
+  session = fakeSession({
+    send: async () => {
+      session.emit('tool.execution_start', {
+        toolCallId: 'long-test',
+        toolName: 'powershell',
+        arguments: { command: 'npm test' },
+      });
+    },
+    abort: async () => { aborted += 1; },
+  });
+  const ui = fakeUi();
+  ui.agentToolStallDecision = async () => {
+    asked += 1;
+    return { action: 'continue', waitMs: 30_000 };
+  };
+  const guard = new SessionGuard(session, 'Worker A', ui, {
+    toolStallTimeoutMs: 1_000,
+    heartbeatMs: 1_000,
+    agentInactivityTimeoutMs: 60_000,
+  });
+
+  const pending = session.sendAndWait({ prompt: 'run tests' });
+  await new Promise((resolve) => setTimeout(resolve, 1_250));
+  assert.equal(asked, 1);
+  assert.equal(aborted, 0);
+  assert.ok(guard.snapshot().currentTool.waitExtendedMs > 0);
+
+  session.emit('tool.execution_complete', { toolCallId: 'long-test', success: true });
+  session.emit('assistant.message', { content: 'tests passed' });
+  session.emit('session.idle', {});
+  await pending;
+  assert.equal(aborted, 0);
 });
 
 test('wrapped disconnect is bounded when SDK disconnect never settles', async () => {
