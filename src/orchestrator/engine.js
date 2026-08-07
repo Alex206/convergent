@@ -5,6 +5,8 @@ const { normalizeTaskRoute, routePolicy } = require('./routing');
 const { UsageTracker } = require('./usage');
 const { SessionFactory } = require('../copilot/session-factory');
 
+const MUTATING_WORKER_TOOLS = new Set(['edit', 'apply_patch', 'create']);
+
 function taskPrompt(task) {
   return [
     `Task ${task.id}: ${task.title}`,
@@ -80,6 +82,54 @@ function formatValidationEvidence(evidence) {
 
 function passApprovesRevision(pass) {
   return pass?.report?.verdict === 'clean' || pass?.report?.verdict === 'changed';
+}
+
+function guardSnapshot(session) {
+  try {
+    return session?.__convergentGuard?.snapshot?.() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function successfulMutatingToolCalls(snapshot) {
+  let total = 0;
+  for (const tool of snapshot?.tools ?? []) {
+    const name = String(tool.name ?? '').split(':').pop();
+    if (!MUTATING_WORKER_TOOLS.has(name)) continue;
+    total += Math.max(0, Number(tool.calls ?? 0) - Number(tool.failures ?? 0));
+  }
+  return total;
+}
+
+function mutatingToolDelta(beforeSnapshot, afterSnapshot) {
+  return Math.max(0, successfulMutatingToolCalls(afterSnapshot) - successfulMutatingToolCalls(beforeSnapshot));
+}
+
+function reconcileWorkerReport(report, changed, workerName, beforeSnapshot, afterSnapshot) {
+  if (report.verdict === 'clean' && report.findings?.length) {
+    throw new Error(`Worker ${workerName} reported CLEAN with actionable findings.`);
+  }
+
+  if (report.verdict === 'clean' && changed) {
+    const writes = mutatingToolDelta(beforeSnapshot, afterSnapshot);
+    if (writes <= 0) {
+      throw new Error(`Worker ${workerName} reported CLEAN but the workspace changed without attributable worker edit/create/apply_patch activity.`);
+    }
+    return {
+      report: { ...report, verdict: 'changed' },
+      correction: `CLEAN -> CHANGED: workspace fingerprint changed and ${writes} successful worker write tool call(s) occurred during this pass.`,
+    };
+  }
+
+  if (report.verdict === 'changed' && !changed) {
+    return {
+      report: { ...report, verdict: 'clean' },
+      correction: 'CHANGED -> CLEAN: final workspace fingerprint is identical to the pass-start fingerprint.',
+    };
+  }
+
+  return { report, correction: null };
 }
 
 async function sendAndCaptureReport(session, sink, prompt, timeoutMs) {
@@ -400,6 +450,7 @@ class ConvergentEngine {
 
   async runWorkerPass(worker, task, mode, findings, peerPass = null) {
     const before = await this.revisionProvider(this.workspace);
+    const beforeGuard = guardSnapshot(worker.session);
     const peerContext = peerPass ? formatPeerPass(peerPass) : '';
     const prompt = [
       `MODE: ${mode}`,
@@ -412,21 +463,32 @@ class ConvergentEngine {
       mode === 'IMPLEMENT'
         ? 'Implement this task completely. Inspect only the repository context needed for the change and follow existing patterns.'
         : 'Review the CURRENT repository state independently. Fix every valid actionable issue you find; do not merely comment on it. Use your retained task context plus the peer report above, including any validation evidence reported for the current revision, and avoid redundant exploration or check reruns without a concrete reason.',
-      'Run only relevant checks that are still needed, avoid leaving validation artifacts, then call report_pass exactly once as soon as the pass is complete.',
+      'Run only relevant checks that are still needed and avoid leaving validation artifacts.',
+      'Verdict semantics are based on the FINAL workspace fingerprint: if a successful edit/apply_patch/create leaves the final fingerprint different from the one above, report CHANGED; report CLEAN only when the final fingerprint is identical. Then call report_pass exactly once as soon as the pass is complete.',
     ].join('\n');
 
     const startedAt = Date.now();
-    const report = await requireReport(worker.session, worker.sink, prompt, 'report_pass', this.agentTurnTimeoutMs);
+    const submittedReport = await requireReport(worker.session, worker.sink, prompt, 'report_pass', this.agentTurnTimeoutMs);
     const after = await this.revisionProvider(this.workspace);
+    const afterGuard = guardSnapshot(worker.session);
     const usage = await this.finishTurn(worker, startedAt);
     const durationMs = Date.now() - startedAt;
     const changed = before !== after;
+    const reconciled = reconcileWorkerReport(submittedReport, changed, worker.name, beforeGuard, afterGuard);
 
-    if (report.verdict === 'clean' && changed) throw new Error(`Worker ${worker.name} reported CLEAN but changed the workspace.`);
-    if (report.verdict === 'changed' && !changed) throw new Error(`Worker ${worker.name} reported CHANGED but the workspace revision is identical.`);
-    if (report.verdict === 'clean' && report.findings?.length) throw new Error(`Worker ${worker.name} reported CLEAN with actionable findings.`);
+    if (reconciled.correction) {
+      this.ui?.log?.(`Worker ${worker.name} verdict reconciled by Convergent: ${reconciled.correction}`);
+    }
 
-    return { worker: worker.name, report, changed, revision: after, durationMs, usage };
+    return {
+      worker: worker.name,
+      report: reconciled.report,
+      changed,
+      revision: after,
+      durationMs,
+      usage,
+      verdictCorrection: reconciled.correction,
+    };
   }
 
   async disposeTaskSessions(taskSessions) {
@@ -452,5 +514,9 @@ module.exports = {
   mergeEvidence,
   formatValidationEvidence,
   passApprovesRevision,
+  guardSnapshot,
+  successfulMutatingToolCalls,
+  mutatingToolDelta,
+  reconcileWorkerReport,
   sendAndCaptureReport,
 };
