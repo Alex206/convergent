@@ -4,7 +4,7 @@
   "description": "Adaptive multi-agent implementation and adversarial review workflows powered by GitHub Copilot.",
   "version": "0.2.0-dev.0",
   "publisher": "alex206",
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "SEE LICENSE IN LICENSE.txt",
   "engines": {
     "vscode": "^1.102.0",
     "node": ">=22.12.0"
@@ -15,6 +15,7 @@
   "activationEvents": [
     "onChatParticipant:convergent.workflow",
     "onCommand:convergent.start",
+    "onCommand:convergent.resume",
     "onCommand:convergent.stop",
     "onCommand:convergent.showModels",
     "onCommand:convergent.showUsage",
@@ -33,12 +34,17 @@
           {
             "name": "implement",
             "description": "Classify, plan, and execute a task using the proportionate Convergent workflow"
+          },
+          {
+            "name": "resume",
+            "description": "Resume the last interrupted workflow from its saved task checkpoint"
           }
         ]
       }
     ],
     "commands": [
       { "command": "convergent.start", "title": "Convergent: Start Workflow" },
+      { "command": "convergent.resume", "title": "Convergent: Resume Last Workflow" },
       { "command": "convergent.stop", "title": "Convergent: Stop Active Workflow" },
       { "command": "convergent.showModels", "title": "Convergent: Show Available Copilot Models" },
       { "command": "convergent.showUsage", "title": "Convergent: Show AI Usage" },
@@ -164,14 +170,20 @@
   },
   "scripts": {
     "test": "node --test",
-    "check": "node --check src/extension.js && node --check src/orchestrator/engine.js && node --check src/orchestrator/request-preflight.js && node --check src/orchestrator/routing.js && node --check src/orchestrator/usage.js && node --check src/ui/vscode-ui.js && node --check src/copilot/session-factory.js && node --check src/copilot/session-guard.js && node --check src/copilot/runtime.js",
-    "package": "npx @vscode/vsce package"
+    "check": "node --check src/extension.js && node --check src/orchestrator/engine.js && node --check src/orchestrator/resumable-engine.js && node --check src/orchestrator/resume.js && node --check src/orchestrator/request-preflight.js && node --check src/orchestrator/routing.js && node --check src/orchestrator/usage.js && node --check src/ui/vscode-ui.js && node --check src/copilot/session-factory.js && node --check src/copilot/session-guard.js && node --check src/copilot/runtime.js",
+    "package": "vsce package",
+    "package:list": "vsce ls --tree"
   },
   "dependencies": {
     "@github/copilot-sdk": "1.0.8"
   },
   "devDependencies": {
-    "@vscode/vsce": "^3.6.0"
+    "@vscode/vsce": "3.6.0"
+  },
+  "allowScripts": {
+    "@vscode/vsce-sign@2.0.9": true,
+    "keytar@7.9.0": true,
+    "koffi@3.1.4": true
   },
   "repository": { "type": "git", "url": "https://github.com/Alex206/convergent.git" },
   "bugs": { "url": "https://github.com/Alex206/convergent/issues" },
