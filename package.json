@@ -115,7 +115,7 @@
           "minimum": 30,
           "maximum": 3600,
           "deprecationMessage": "Use convergent.agentInactivityTimeoutSeconds. Copilot SDK sendAndWait timeout is a wall-clock limit and is no longer used as the Convergent stall detector.",
-          "description": "Deprecated compatibility setting. It is used only as a fallback inactivity timeout when the new setting is not explicitly configured."
+          "description": "Deprecated compatibility setting. If explicitly configured while the new inactivity setting is not, its value is used as the inactivity threshold."
         },
         "convergent.toolStallTimeoutSeconds": {
           "type": "number",
