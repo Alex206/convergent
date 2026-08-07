@@ -15,3 +15,13 @@ test('structured report tools stay eagerly available to agents', () => {
     assert.equal(tool.skipPermission, true);
   }
 });
+
+test('plan schema requires workflow route, risk, and rationale for every task', () => {
+  const tool = createPlanTool(captureDefinition, { value: null });
+  const taskSchema = tool.parameters.properties.tasks.items;
+  assert.deepEqual(taskSchema.properties.route.enum, ['read_only', 'trivial', 'standard', 'high_risk']);
+  assert.deepEqual(taskSchema.properties.risk.enum, ['low', 'medium', 'high']);
+  assert.ok(taskSchema.required.includes('route'));
+  assert.ok(taskSchema.required.includes('risk'));
+  assert.ok(taskSchema.required.includes('routingReason'));
+});
