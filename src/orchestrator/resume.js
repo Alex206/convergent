@@ -72,9 +72,16 @@ function resumeSummary(state) {
   if (!state.plan) return 'Planning was interrupted before a plan was accepted; resume will re-run planning with the saved user request.';
   const task = state.plan.tasks[state.startTaskIndex];
   const completed = state.startTaskIndex;
-  const detail = state.currentTaskIndex === null
-    ? `continue with task ${state.startTaskIndex + 1}`
-    : `restart interrupted task ${state.currentTaskIndex + 1} from the current workspace state`;
+  let detail;
+  if (state.currentTaskIndex === null) {
+    detail = `continue with task ${state.startTaskIndex + 1}`;
+  } else if (state.taskState?.stage === 'strong_review_findings') {
+    detail = `resume task ${state.currentTaskIndex + 1} from strong-review remediation cycle ${state.taskState.reviewCycle ?? '?'}`;
+  } else if (state.taskState?.stage === 'strong_review_pending') {
+    detail = `resume task ${state.currentTaskIndex + 1} at strong-review cycle ${state.taskState.nextReviewCycle ?? '?'}`;
+  } else {
+    detail = `restart interrupted task ${state.currentTaskIndex + 1} from the current workspace state`;
+  }
   return `${completed}/${state.plan.tasks.length} task(s) are before the resume point; ${detail}: ${task?.title ?? task?.id ?? 'unnamed task'}.`;
 }
 
