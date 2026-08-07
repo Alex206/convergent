@@ -45,7 +45,22 @@ test('resume state continues with next pending task from a task boundary', () =>
   assert.match(resumeSummary(state), /continue with task 2/i);
 });
 
-test('resume state rejects another workspace, completed runs, and unknown schema versions', () => {
+test('planning interruption keeps enough state to re-run planning without retyping the request', () => {
+  const state = normalizeResumeState({
+    version: RESUME_STATE_VERSION,
+    workspace: '/repo',
+    request: 'the original complex request',
+    plan: null,
+    status: 'interrupted',
+    stage: 'planning',
+  }, '/repo');
+
+  assert.equal(state.plan, null);
+  assert.equal(state.startTaskIndex, 0);
+  assert.match(resumeSummary(state), /re-run planning/i);
+});
+
+test('resume state rejects another workspace, completed runs, unknown schema versions, and planless non-planning states', () => {
   const base = {
     version: RESUME_STATE_VERSION,
     workspace: '/repo',
@@ -58,4 +73,5 @@ test('resume state rejects another workspace, completed runs, and unknown schema
   assert.equal(normalizeResumeState({ ...base, status: 'complete' }, '/repo'), null);
   assert.equal(normalizeResumeState({ ...base, version: 99 }, '/repo'), null);
   assert.equal(normalizeResumeState({ ...base, nextTaskIndex: 2 }, '/repo'), null);
+  assert.equal(normalizeResumeState({ ...base, plan: null, stage: 'task_started' }, '/repo'), null);
 });
