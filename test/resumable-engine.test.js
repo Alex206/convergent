@@ -148,7 +148,7 @@ test('resume from strong-review findings starts with remediation rather than imp
   assert.deepEqual(calls, ['A:FIX_STRONG_REVIEW_FINDINGS', 'review']);
 });
 
-test('blocked worker can hand the preserved revision to its peer instead of failing convergence', async () => {
+test('blocked worker can hand the preserved revision to its peer without counting the blocked pass as approval', async () => {
   const calls = [];
   class TestEngine extends ResumableConvergentEngine {
     async requestWorkerBlockedDecision() { return { action: 'peer' }; }
@@ -163,7 +163,7 @@ test('blocked worker can hand the preserved revision to its peer instead of fail
   const result = await engine.convergeFromPass(task, a, b, {
     worker: 'A', report: { verdict: 'blocked', summary: 'environment unavailable', findings: [], checks: [] }, changed: true, revision: 'R1',
   }, routing);
-  assert.deepEqual(calls, ['B']);
+  assert.deepEqual(calls, ['B', 'A']);
   assert.equal(result.revision, 'R1');
 });
 
