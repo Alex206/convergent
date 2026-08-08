@@ -2,7 +2,7 @@
   "name": "convergent",
   "displayName": "Convergent",
   "description": "Adaptive multi-agent implementation and adversarial review workflows powered by GitHub Copilot.",
-  "version": "0.2.0-dev.8",
+  "version": "0.2.0-dev.9",
   "publisher": "alex206",
   "license": "MIT",
   "engines": {
@@ -93,7 +93,7 @@
         "convergent.models.workerA": {
           "type": "string",
           "default": "adaptive",
-          "description": "Worker A model selector. adaptive resolves after each task is classified: trivial/low uses the cheap tier, standard uses an economical capable tier, and high-risk work promotes to a stronger implementation tier. An exact model id/name or an explicit preset such as cheap-a/strong overrides adaptation."
+          "description": "Worker A model selector. adaptive resolves after each task is classified: trivial/low uses the cheap tier, normal low-risk standard work uses an economical capable tier, medium/high-risk Fast work may promote capability, and high-risk work uses the stronger implementation tier. An exact model id/name or explicit preset overrides adaptation."
         },
         "convergent.models.workerB": {
           "type": "string",
@@ -137,7 +137,7 @@
           "default": 3,
           "minimum": 1,
           "maximum": 20,
-          "description": "Soft strong-review/remediation cycle limit per tranche. Fast flow asks after the first unresolved review cycle; auto/thorough use their configured/profile tranche."
+          "description": "Soft strong-review cycle limit per tranche. Fast flow allows the initial review plus one automatic remediation/delta re-review before asking whether to spend more; auto/thorough use their configured/profile tranche."
         },
         "convergent.maxAiCredits": {
           "type": "number",
@@ -254,7 +254,7 @@
   },
   "scripts": {
     "test": "node --test",
-    "check": "node --check src/extension.js && node --check src/orchestrator/engine.js && node --check src/orchestrator/model-resolver.js && node --check src/orchestrator/resumable-engine.js && node --check src/orchestrator/resume.js && node --check src/orchestrator/control.js && node --check src/orchestrator/task-commit.js && node --check src/orchestrator/request-preflight.js && node --check src/orchestrator/routing.js && node --check src/orchestrator/flow.js && node --check src/orchestrator/audit.js && node --check src/orchestrator/usage.js && node --check src/ui/vscode-ui.js && node --check src/copilot/session-factory.js && node --check src/copilot/session-guard.js && node --check src/copilot/runtime.js",
+    "check": "node --check src/extension.js && node --check src/orchestrator/engine.js && node --check src/orchestrator/model-resolver.js && node --check src/orchestrator/resumable-engine.js && node --check src/orchestrator/resume.js && node --check src/orchestrator/control.js && node --check src/orchestrator/task-commit.js && node --check src/orchestrator/request-preflight.js && node --check src/orchestrator/routing.js && node --check src/orchestrator/flow.js && node --check src/orchestrator/audit.js && node --check src/orchestrator/workspace-baseline.js && node --check src/orchestrator/usage.js && node --check src/ui/vscode-ui.js && node --check src/copilot/session-factory.js && node --check src/copilot/session-guard.js && node --check src/copilot/runtime.js",
     "package": "vsce package",
     "package:list": "vsce ls --tree"
   },
