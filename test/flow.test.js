@@ -8,6 +8,7 @@ const {
   workerFlowInstructions,
   reviewerFlowInstructions,
 } = require('../src/orchestrator/flow');
+const { REVIEWER_PROMPT } = require('../src/orchestrator/prompts');
 
 test('fast flow asks sooner without removing the strong review gate', () => {
   const policy = flowPolicy('fast', { maxWorkerPasses: 8, maxReviewerCycles: 3 });
@@ -15,6 +16,7 @@ test('fast flow asks sooner without removing the strong review gate', () => {
   assert.equal(policy.maxWorkerPasses, 3);
   assert.equal(policy.maxReviewerCycles, 1);
   assert.equal(policy.reviewerScope, 'task-diff');
+  assert.match(policy.description, /stronger adaptive implementation/i);
   assert.match(workerFlowInstructions('fast'), /focused inspection/i);
 });
 
@@ -32,11 +34,11 @@ test('thorough never shrinks assurance tranches', () => {
   assert.equal(policy.reviewerScope, 'comprehensive');
 });
 
-test('reviewer guidance collects findings before reporting and later uses remediation delta', () => {
-  const prompt = reviewerFlowInstructions('auto');
-  assert.match(prompt, /do not stop.*first actionable defect/i);
-  assert.match(prompt, /report all independently discoverable actionable findings together/i);
-  assert.match(prompt, /remediation delta/i);
+test('base reviewer collects findings before reporting and later uses remediation delta', () => {
+  assert.match(REVIEWER_PROMPT, /continue the bounded review rather than stopping immediately/i);
+  assert.match(REVIEWER_PROMPT, /report all independently discoverable actionable findings/i);
+  assert.match(REVIEWER_PROMPT, /remediation delta/i);
+  assert.match(reviewerFlowInstructions('auto'), /task diff/i);
 });
 
 test('unknown flow values normalize to auto', () => {
