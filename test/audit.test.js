@@ -36,6 +36,9 @@ test('trajectory audit writes manifest events and optimization summary', async (
     await audit.record(tool);
     await audit.record(tool);
     await audit.record({ type: 'assistant_message', agent: 'Worker A', content: 'hello' });
+    await audit.record({ type: 'worker_pass_result', worker: 'A', report: { verdict: 'changed' }, changed: true, workspaceFingerprint: 'R1', durationMs: 100 });
+    await audit.record({ type: 'strong_review_result', cycle: 1, review: { verdict: 'findings', findings: [{ severity: 'high', title: 'F1', description: 'one', file: 'a.js' }] } });
+    await audit.record({ type: 'strong_review_result', cycle: 2, review: { verdict: 'findings', findings: [{ severity: 'medium', title: 'F2', description: 'two', file: 'b.js' }] } });
     await audit.finish({ status: 'complete', usage: { inputTokens: 10 } });
 
     const manifest = JSON.parse(await fs.readFile(path.join(directory, 'manifest.json'), 'utf8'));
@@ -53,6 +56,10 @@ test('trajectory audit writes manifest events and optimization summary', async (
     assert.equal(summary.trajectory.agents['Worker A'].promptSends, 1);
     assert.equal(summary.trajectory.repeatedToolCalls[0].tool, 'view');
     assert.equal(summary.trajectory.repeatedToolCalls[0].count, 2);
+    assert.equal(summary.trajectory.workerPassTimeline.length, 1);
+    assert.equal(summary.trajectory.reviewTimeline[0].newFindingCount, 1);
+    assert.equal(summary.trajectory.reviewTimeline[1].newFindingCount, 1);
+    assert.equal(summary.trajectory.lateFindingCycles, 1);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
