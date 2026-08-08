@@ -9,7 +9,7 @@ const {
 const { routePolicy, chooseReasoningEffort } = require('../orchestrator/routing');
 const { resolveWorkerModel } = require('../orchestrator/model-resolver');
 const { workerFlowInstructions, reviewerFlowInstructions, normalizeFlowMode } = require('../orchestrator/flow');
-const { createPlanTool, createPassTool, createReviewTool, recoverSerializedReport } = require('./tools');
+const { createPlanTool, createPassTool, createReviewTool, createRecoveryTool, recoverSerializedReport } = require('./tools');
 const { guardSession, describeToolCall } = require('./session-guard');
 
 const SHELL_BUILTINS = process.platform === 'win32'
@@ -27,6 +27,10 @@ const COORDINATOR_TOOLS = [
   'builtin:ask_user',
   'custom:report_plan',
 ];
+const RECOVERY_COORDINATOR_TOOLS = [
+  ...READ_BUILTINS,
+  'custom:report_recovery',
+];
 const REVIEWER_TOOLS = [
   ...READ_BUILTINS,
   'custom:report_review',
@@ -38,6 +42,20 @@ const WORKER_TOOLS = [
   'builtin:create',
   'custom:report_pass',
 ];
+
+const RECOVERY_COORDINATOR_PROMPT = `
+You are Convergent's strong recovery coordinator. You are read-only and handle one blocked worker/reviewer decision. Do not implement the task and do not edit files.
+
+Use the blocker report, task acceptance criteria, checks, workspace state, and at most a small targeted read-only inspection to decide the next deterministic recovery action:
+- peer: another implementation worker should inspect/attempt the current preserved revision (worker blockers only);
+- retry: the blocked agent should retry now, usually with concise guidance;
+- ask_user: a material fact or decision is missing and the operator should answer one concrete free-text question;
+- pause: continuing now would be unsafe or wasteful and the workflow should remain resumable.
+
+Prefer resolving obvious environment/tooling ambiguity from repository evidence before asking the user. Do not invent paths, tools, requirements, or successful validation. A validation-only environment blocker is different from an implementation blocker. If the implementation appears complete but a check belongs in CI or another established environment, say that explicitly in guidance.
+
+Call report_recovery exactly once when you have enough evidence. Keep rationale, question, and guidance concise. For ask_user, question must be concrete. For non-ask_user actions, question should be empty.
+`;
 
 function shellText(input) {
   const args = input?.toolArgs ?? {};
@@ -188,12 +206,24 @@ class SessionFactory {
   }
 
   guard(session, agentName) {
-    return guardSession(session, agentName, this.ui, {
+    const guard = guardSession(session, agentName, this.ui, {
       toolStallTimeoutMs: this.ui?.toolStallTimeoutMs,
       agentInactivityTimeoutMs: this.ui?.agentInactivityTimeoutMs,
       stallGraceMs: this.ui?.stallGraceMs,
       heartbeatMs: this.ui?.heartbeatMs,
     });
+    const guardedSendAndWait = session.sendAndWait.bind(session);
+    session.sendAndWait = (options, timeoutMs) => {
+      audit(this.ui, {
+        type: 'prompt_send',
+        agent: agentName,
+        sessionId: session.sessionId,
+        prompt: options?.prompt,
+        mode: options?.mode ?? 'normal',
+      });
+      return guardedSendAndWait(options, timeoutMs);
+    };
+    return guard;
   }
 
   workerModel(taskId, worker, route, risk) {
@@ -255,6 +285,35 @@ class SessionFactory {
     this.ui.agentTools?.('Coordinator', COORDINATOR_TOOLS);
     this.sessionCreated('Coordinator', session, model, effort, systemPrompt, COORDINATOR_TOOLS, { role: 'coordinator' });
     return { session, guard, sink, name: 'Coordinator', usageName: usageKey, model, reasoningEffort: effort };
+  }
+
+  async createRecoveryCoordinator(taskId, kind = 'worker') {
+    const safeTaskId = safeSessionPart(taskId);
+    const sink = { value: null };
+    const tool = createRecoveryTool(this.sdk.defineTool, sink);
+    const model = this.models.coordinator;
+    const effort = chooseReasoningEffort(model, 'medium', this.reasoningMode);
+    const systemPrompt = RECOVERY_COORDINATOR_PROMPT;
+    const session = await this.client.createSession(withReasoning({
+      sessionId: `${this.runId}-${safeTaskId}-recovery-${safeSessionPart(kind)}-${Date.now()}`,
+      clientName: 'convergent-vscode',
+      model: model.id,
+      workingDirectory: this.workspace,
+      streaming: true,
+      tools: [tool],
+      availableTools: RECOVERY_COORDINATOR_TOOLS,
+      systemMessage: { mode: 'append', content: systemPrompt },
+      hooks: { onPreToolUse: readonlyHook },
+      onPermissionRequest: this.permissionHandler,
+      onUserInputRequest: this.userInputHandler,
+    }, effort));
+    const name = 'Recovery coordinator';
+    const guard = this.guard(session, name);
+    const usageKey = `${safeTaskId}:recovery-${safeSessionPart(kind)}-${Date.now()}`;
+    attachEventLogging(session, name, this.ui, this.usage, model, usageKey);
+    this.ui.agentTools?.(name, RECOVERY_COORDINATOR_TOOLS);
+    this.sessionCreated(name, session, model, effort, systemPrompt, RECOVERY_COORDINATOR_TOOLS, { role: 'recovery-coordinator', taskId: safeTaskId, recoveryKind: kind });
+    return { session, guard, sink, name, usageName: usageKey, model, reasoningEffort: effort };
   }
 
   async createWorker(taskId, worker, route = 'standard', risk = 'medium') {
@@ -331,6 +390,8 @@ module.exports = {
   withReasoning,
   SHELL_BUILTINS,
   COORDINATOR_TOOLS,
+  RECOVERY_COORDINATOR_TOOLS,
   REVIEWER_TOOLS,
   WORKER_TOOLS,
+  RECOVERY_COORDINATOR_PROMPT,
 };
