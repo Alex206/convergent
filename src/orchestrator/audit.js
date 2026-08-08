@@ -44,6 +44,40 @@ function compactValue(value, level, maxFullBytes) {
   return result;
 }
 
+function numberOrZero(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function shortText(value, max = 180) {
+  const text = String(value ?? '').replace(/\s+/g, ' ').trim();
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+function toolArgs(data = {}) {
+  return data.arguments ?? data.toolArgs ?? data.args ?? data.input ?? data.parameters ?? {};
+}
+
+function toolDetail(data = {}) {
+  let args = toolArgs(data);
+  if (typeof args === 'string') {
+    try { args = JSON.parse(args); } catch { return shortText(args); }
+  }
+  if (!args || typeof args !== 'object') return '';
+  for (const key of ['fullCommandText', 'command', 'script', 'query', 'pattern', 'path', 'filePath', 'file', 'target', 'uri']) {
+    if (args[key]) return shortText(args[key]);
+  }
+  return '';
+}
+
+function stableToolSignature(event = {}) {
+  const tool = String(event.tool ?? event.data?.toolName ?? 'unknown');
+  let encoded;
+  try { encoded = JSON.stringify(toolArgs(event.data ?? {})); } catch { encoded = String(toolArgs(event.data ?? {})); }
+  const hash = crypto.createHash('sha256').update(encoded ?? '').digest('hex').slice(0, 16);
+  return { key: `${event.agent ?? '?'}\0${tool}\0${hash}`, tool, argsHash: hash, detail: toolDetail(event.data ?? {}) };
+}
+
 async function directorySize(directory) {
   let total = 0;
   let entries;
@@ -79,7 +113,92 @@ class TrajectoryAudit {
     this.eventsPath = null;
     this.queue = Promise.resolve();
     this.counts = new Map();
+    this.agents = new Map();
+    this.toolSignatures = new Map();
     this.startedAt = Date.now();
+  }
+
+  agent(name = 'unknown') {
+    const key = String(name || 'unknown');
+    const entry = this.agents.get(key) ?? {
+      sessions: 0,
+      model: undefined,
+      reasoningEffort: undefined,
+      systemPromptChars: 0,
+      systemPromptBytes: 0,
+      promptSends: 0,
+      promptChars: 0,
+      promptBytes: 0,
+      assistantMessages: 0,
+      assistantMessageChars: 0,
+      llmCalls: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      reasoningTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      peakContextTokens: 0,
+      peakContextMessages: 0,
+      toolCalls: 0,
+      tools: {},
+    };
+    this.agents.set(key, entry);
+    return entry;
+  }
+
+  observe(event = {}) {
+    const type = String(event.type ?? 'event');
+    const entry = event.agent ? this.agent(event.agent) : null;
+    if (type === 'session_create' && entry) {
+      entry.sessions += 1;
+      entry.model = event.modelName ?? event.model ?? entry.model;
+      entry.reasoningEffort = event.reasoningEffort ?? entry.reasoningEffort;
+      const info = textInfo(event.systemPrompt ?? '');
+      entry.systemPromptChars += info.chars;
+      entry.systemPromptBytes += info.bytes;
+    } else if (type === 'prompt_send' && entry) {
+      const info = textInfo(event.prompt ?? '');
+      entry.promptSends += 1;
+      entry.promptChars += info.chars;
+      entry.promptBytes += info.bytes;
+    } else if (type === 'assistant_message' && entry) {
+      entry.assistantMessages += 1;
+      entry.assistantMessageChars += String(event.content ?? '').length;
+    } else if (type === 'assistant_usage' && entry) {
+      const data = event.data ?? {};
+      entry.llmCalls += 1;
+      entry.inputTokens += numberOrZero(data.inputTokens);
+      entry.outputTokens += numberOrZero(data.outputTokens);
+      entry.reasoningTokens += numberOrZero(data.reasoningTokens);
+      entry.cacheReadTokens += numberOrZero(data.cacheReadTokens);
+      entry.cacheWriteTokens += numberOrZero(data.cacheWriteTokens);
+    } else if (type === 'context_usage' && entry) {
+      const data = event.data ?? {};
+      entry.peakContextTokens = Math.max(entry.peakContextTokens, numberOrZero(data.currentTokens));
+      entry.peakContextMessages = Math.max(entry.peakContextMessages, numberOrZero(data.messagesLength ?? data.messageCount));
+    } else if (type === 'tool_start' && entry) {
+      const signature = stableToolSignature(event);
+      entry.toolCalls += 1;
+      entry.tools[signature.tool] = (entry.tools[signature.tool] ?? 0) + 1;
+      const previous = this.toolSignatures.get(signature.key) ?? { agent: event.agent, ...signature, count: 0 };
+      previous.count += 1;
+      this.toolSignatures.set(signature.key, previous);
+    }
+  }
+
+  trajectorySummary() {
+    const agents = {};
+    for (const [name, entry] of this.agents.entries()) agents[name] = { ...entry };
+    const repeatedToolCalls = [...this.toolSignatures.values()]
+      .filter((item) => item.count > 1)
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 30)
+      .map(({ key, ...item }) => item);
+    return {
+      agents,
+      repeatedToolCalls,
+      repeatedToolSignatureCount: repeatedToolCalls.length,
+    };
   }
 
   async start(meta = {}) {
@@ -105,6 +224,7 @@ class TrajectoryAudit {
     if (!this.enabled || !this.eventsPath) return Promise.resolve();
     const type = String(event.type ?? 'event');
     this.counts.set(type, (this.counts.get(type) ?? 0) + 1);
+    this.observe(event);
     const payload = compactValue({
       at: new Date().toISOString(),
       ...event,
@@ -127,6 +247,7 @@ class TrajectoryAudit {
       durationMs: Date.now() - this.startedAt,
       level: this.level,
       eventCounts: Object.fromEntries([...this.counts.entries()].sort(([a], [b]) => a.localeCompare(b))),
+      trajectory: this.trajectorySummary(),
       usage,
       stats,
       error,
@@ -167,4 +288,12 @@ class TrajectoryAudit {
   }
 }
 
-module.exports = { TrajectoryAudit, textInfo, compactValue, safeName, directorySize };
+module.exports = {
+  TrajectoryAudit,
+  textInfo,
+  compactValue,
+  safeName,
+  directorySize,
+  stableToolSignature,
+  toolDetail,
+};
