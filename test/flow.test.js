@@ -8,16 +8,19 @@ const {
   workerFlowInstructions,
   reviewerFlowInstructions,
 } = require('../src/orchestrator/flow');
-const { REVIEWER_PROMPT } = require('../src/orchestrator/prompts');
+const { REVIEWER_PROMPT, WORKER_A_PROMPT, WORKER_B_PROMPT } = require('../src/orchestrator/prompts');
 
-test('fast flow asks sooner without removing the strong review gate', () => {
+test('fast flow allows one automatic remediation delta review before asking', () => {
   const policy = flowPolicy('fast', { maxWorkerPasses: 8, maxReviewerCycles: 3 });
   assert.equal(policy.mode, 'fast');
   assert.equal(policy.maxWorkerPasses, 3);
-  assert.equal(policy.maxReviewerCycles, 1);
+  assert.equal(policy.maxReviewerCycles, 2);
   assert.equal(policy.reviewerScope, 'task-diff');
-  assert.match(policy.description, /stronger adaptive implementation/i);
+  assert.match(policy.description, /automatic remediation/i);
   assert.match(workerFlowInstructions('fast'), /focused inspection/i);
+  assert.match(workerFlowInstructions('fast'), /apply_patch/i);
+  assert.match(workerFlowInstructions('fast'), /peer already passed/i);
+  assert.match(reviewerFlowInstructions('fast'), /do not mechanically/i);
 });
 
 test('auto preserves configured soft tranches', () => {
@@ -39,6 +42,12 @@ test('base reviewer collects findings before reporting and later uses remediatio
   assert.match(REVIEWER_PROMPT, /report all independently discoverable actionable findings/i);
   assert.match(REVIEWER_PROMPT, /remediation delta/i);
   assert.match(reviewerFlowInstructions('auto'), /task diff/i);
+});
+
+test('agents protect pre-existing dirty or untracked user workspace state', () => {
+  assert.match(WORKER_A_PROMPT, /pre-existing user workspace state as protected/i);
+  assert.match(WORKER_B_PROMPT, /never revert\/remove unrelated pre-existing dirty or untracked user state/i);
+  assert.match(REVIEWER_PROMPT, /not a task defect merely because it appears in git status/i);
 });
 
 test('unknown flow values normalize to auto', () => {
