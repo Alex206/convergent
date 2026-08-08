@@ -3,6 +3,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const vscode = require('vscode');
+const packageJson = require('../package.json');
 const { RecoveryConvergentEngine } = require('./orchestrator/recovery-engine');
 const { resolveModel } = require('./orchestrator/model-resolver');
 const { ensureConcreteUserRequest } = require('./orchestrator/request-preflight');
@@ -17,6 +18,7 @@ const { VscodeWorkflowUi, compactUsage, detailedUsageMarkdown, diagnosticsMarkdo
 
 const RESUME_STATE_KEY = 'convergent.resumeState.v1';
 const FLOW_COMMANDS = new Set(['fast', 'auto', 'thorough']);
+const EXTENSION_VERSION = packageJson.version;
 
 let client;
 let clientTransport;
@@ -280,6 +282,7 @@ async function executeWorkflow(prompt, stream, token, resumeState = null, flowOv
   const auditRunId = `${new Date().toISOString().replace(/[:.]/g, '-')}-${Math.random().toString(36).slice(2, 8)}`;
   lastAuditDir = await audit.start({
     runId: auditRunId,
+    convergentVersion: EXTENSION_VERSION,
     workspace,
     flowMode: flow.mode,
     flowPolicy: flow,
@@ -288,14 +291,19 @@ async function executeWorkflow(prompt, stream, token, resumeState = null, flowOv
     modelSelectors: config.selectors,
   });
 
-  const ui = new VscodeWorkflowUi(vscode, stream, output);
-  ui.auditEvent = (event) => audit.record(event);
+  const ui = new VscodeWorkflowUi(vscode, stream, output, {
+    workspace,
+    version: EXTENSION_VERSION,
+    flowMode: flow.mode,
+    eventSink: (event) => audit.record(event),
+  });
   ui.agentInactivityTimeoutMs = config.agentInactivityTimeoutMs;
   ui.toolStallTimeoutMs = config.toolStallTimeoutMs;
   ui.stallGraceMs = config.stallGraceMs;
   ui.heartbeatMs = config.heartbeatMs;
+  ui.runStarted({ version: EXTENSION_VERSION, flowMode: flow.mode, flowLabel: flow.label });
   stream.progress(`Flow: ${flow.label} — ${flow.description}`);
-  output.appendLine(`[${new Date().toISOString()}] Flow: ${flow.mode}; worker tranche=${flow.maxWorkerPasses}; reviewer tranche=${flow.maxReviewerCycles}; reviewer scope=${flow.reviewerScope}`);
+  output.appendLine(`[${new Date().toISOString()}] Convergent ${EXTENSION_VERSION}; flow=${flow.mode}; worker tranche=${flow.maxWorkerPasses}; reviewer tranche=${flow.maxReviewerCycles}; reviewer scope=${flow.reviewerScope}`);
 
   let latestCheckpoint = resumeState;
   let runStatus = 'failed';
@@ -324,7 +332,7 @@ async function executeWorkflow(prompt, stream, token, resumeState = null, flowOv
       output.appendLine(`[${new Date().toISOString()}] Resume checkpoint: stage=${state.stage}; nextTask=${state.nextTaskIndex}; currentTask=${state.currentTaskIndex ?? 'none'}`);
     },
   });
-  activeRun = { engine, controller, latestCheckpoint, audit, flow };
+  activeRun = { engine, controller, latestCheckpoint, audit, flow, version: EXTENSION_VERSION };
   const cancellation = token.onCancellationRequested(() => {
     controller.abort();
     void audit.record({ type: 'operator_cancel', reason: 'Chat request cancelled by user.' });
@@ -345,7 +353,7 @@ async function executeWorkflow(prompt, stream, token, resumeState = null, flowOv
     lastUsage = result.usage;
     await clearResumeState();
     runStatus = 'complete';
-    stream.markdown('\n**Convergent finished successfully.**');
+    stream.markdown(`\n**Convergent ${EXTENSION_VERSION} finished successfully.**`);
   } catch (error) {
     runError = error?.message ?? String(error);
     await audit.record({ type: 'run_error', error: runError, stack: error?.stack });
@@ -371,6 +379,7 @@ async function activate(context) {
   lastDiagnostics = context.globalState.get('convergent.lastDiagnostics');
   output = vscode.window.createOutputChannel('Convergent', { log: true });
   context.subscriptions.push(output);
+  output.appendLine(`Convergent ${EXTENSION_VERSION} activated (VS Code ${vscode.version}; host ${process.execPath}).`);
 
   const participant = vscode.chat.createChatParticipant('convergent.workflow', async (request, _chatContext, stream, token) => {
     let prompt = request.prompt?.trim();
@@ -385,7 +394,7 @@ async function activate(context) {
         const workspace = workspacePath();
         const state = loadResumeState(workspace);
         if (!state) {
-          stream.markdown('There is no resumable Convergent workflow for this workspace.');
+          stream.markdown(`**Convergent ${EXTENSION_VERSION}**\n\nThere is no resumable Convergent workflow for this workspace.`);
           return;
         }
         if (!(await confirmBoundaryResume(state, workspace))) {
@@ -398,7 +407,7 @@ async function activate(context) {
       }
 
       if (!prompt) {
-        stream.markdown('Describe what you want Convergent to inspect or implement. Use `/fast`, `/auto`, or `/thorough` to choose the assurance/speed profile for this run.');
+        stream.markdown(`**Convergent ${EXTENSION_VERSION}**\n\nDescribe what you want Convergent to inspect or implement. Use \`/fast\`, \`/auto\`, or \`/thorough\` to choose the assurance/speed profile for this run.`);
         const state = tryLoadResumeState();
         if (state) stream.markdown(`\nA previous workflow can also be resumed with \`@convergent /resume\`. ${resumeSummary(state)}`);
         return;
@@ -416,7 +425,7 @@ async function activate(context) {
     } catch (error) {
       output.error(error?.stack ?? String(error));
       if (error?.convergentDiagnostic) output.appendLine(`Control diagnostic: ${JSON.stringify(error.convergentDiagnostic)}`);
-      stream.markdown(`\n**Convergent stopped:** ${error.message ?? String(error)}`);
+      stream.markdown(`\n**Convergent ${EXTENSION_VERSION} stopped:** ${error.message ?? String(error)}`);
       if (error?.code === 'CONVERGENT_TOOL_STALL' || error?.code === 'CONVERGENT_AGENT_INACTIVITY') {
         stream.markdown('\nThe watchdog cancelled a stalled agent turn. Use **Show diagnostics** for the captured tool/runtime state.');
       }
@@ -498,22 +507,22 @@ async function activate(context) {
       }
       output.show(true);
       output.appendLine('');
-      output.appendLine('Convergent usage snapshot');
+      output.appendLine(`Convergent ${EXTENSION_VERSION} usage snapshot`);
       output.appendLine(detailedUsageMarkdown(usage));
-      vscode.window.showInformationMessage(`Convergent usage: ${compactUsage(usage)}`);
+      vscode.window.showInformationMessage(`Convergent ${EXTENSION_VERSION} usage: ${compactUsage(usage)}`);
     }),
     vscode.commands.registerCommand('convergent.showDiagnostics', async () => {
       const diagnostics = activeRun ? collectDiagnostics(activeRun.engine) : lastDiagnostics;
       if (!diagnostics?.length) {
-        vscode.window.showInformationMessage('No Convergent diagnostics are available yet.');
+        vscode.window.showInformationMessage(`No Convergent ${EXTENSION_VERSION} diagnostics are available yet.`);
         return;
       }
       output.show(true);
       output.appendLine('');
-      output.appendLine('Convergent diagnostics snapshot');
-      output.appendLine(diagnosticsMarkdown(diagnostics));
-      output.appendLine(JSON.stringify(diagnostics, null, 2));
-      vscode.window.showInformationMessage('Convergent diagnostics written to the Convergent output channel.');
+      output.appendLine(`Convergent ${EXTENSION_VERSION} diagnostics snapshot`);
+      output.appendLine(diagnosticsMarkdown(diagnostics, { version: EXTENSION_VERSION }));
+      output.appendLine(JSON.stringify({ convergentVersion: EXTENSION_VERSION, agents: diagnostics }, null, 2));
+      vscode.window.showInformationMessage(`Convergent ${EXTENSION_VERSION} diagnostics written to the Convergent output channel.`);
     }),
     vscode.commands.registerCommand('convergent.showModels', async () => {
       try {
@@ -521,7 +530,7 @@ async function activate(context) {
         const runtime = await getClient(config.runtimeTransport);
         const models = await runtime.client.listModels();
         output.show(true);
-        output.appendLine('Available Copilot models:');
+        output.appendLine(`Available Copilot models for Convergent ${EXTENSION_VERSION}:`);
         for (const model of models) {
           const efforts = model.supportedReasoningEfforts?.length ? `; reasoning=${model.supportedReasoningEfforts.join('/')}` : '';
           output.appendLine(`- ${model.name ?? model.id} [${model.id}]${efforts}`);
@@ -557,4 +566,5 @@ module.exports = {
   markResumeInterrupted,
   latestAuditDirectory,
   activeGuards,
+  EXTENSION_VERSION,
 };
