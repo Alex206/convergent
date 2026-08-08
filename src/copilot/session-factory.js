@@ -8,7 +8,7 @@ const {
 } = require('../orchestrator/prompts');
 const { routePolicy, chooseReasoningEffort } = require('../orchestrator/routing');
 const { resolveWorkerModel } = require('../orchestrator/model-resolver');
-const { workerFlowInstructions, reviewerFlowInstructions, normalizeFlowMode } = require('../orchestrator/flow');
+const { coordinatorFlowInstructions, workerFlowInstructions, reviewerFlowInstructions, normalizeFlowMode } = require('../orchestrator/flow');
 const { captureWorkspaceBaseline, formatWorkspaceBaseline } = require('../orchestrator/workspace-baseline');
 const { createPlanTool, createPassTool, createReviewTool, createRecoveryTool, recoverSerializedReport } = require('./tools');
 const { guardSession, describeToolCall } = require('./session-guard');
@@ -209,7 +209,7 @@ class SessionFactory {
   }
 
   async createCoordinator() {
-    const sink = { value: null }; const tool = createPlanTool(this.sdk.defineTool, sink); const model = this.models.coordinator; const effort = chooseReasoningEffort(model, 'medium', this.reasoningMode); const systemPrompt = COORDINATOR_PROMPT;
+    const sink = { value: null }; const tool = createPlanTool(this.sdk.defineTool, sink); const model = this.models.coordinator; const effort = chooseReasoningEffort(model, 'medium', this.reasoningMode); const systemPrompt = [COORDINATOR_PROMPT, coordinatorFlowInstructions(this.flowMode)].filter(Boolean).join('\n\n');
     const session = await this.client.createSession(withReasoning({ sessionId: `${this.runId}-coordinator`, clientName: 'convergent-vscode', model: model.id, workingDirectory: this.workspace, streaming: true, tools: [tool], availableTools: COORDINATOR_TOOLS, systemMessage: { mode: 'append', content: systemPrompt }, hooks: { onPreToolUse: readonlyHook }, onPermissionRequest: this.permissionHandler, onUserInputRequest: this.userInputHandler }, effort));
     const guard = this.guard(session, 'Coordinator'); const usageKey = 'coordinator'; attachEventLogging(session, 'Coordinator', this.ui, this.usage, model, usageKey); this.ui.agentTools?.('Coordinator', COORDINATOR_TOOLS); this.sessionCreated('Coordinator', session, model, effort, systemPrompt, COORDINATOR_TOOLS, { role: 'coordinator' });
     return { session, guard, sink, name: 'Coordinator', usageName: usageKey, model, reasoningEffort: effort };
@@ -226,7 +226,7 @@ class SessionFactory {
   async createWorker(taskId, worker, route = 'standard', risk = 'medium') {
     const safeTaskId = safeSessionPart(taskId); const sink = { value: null }; const tool = createPassTool(this.sdk.defineTool, sink); const isA = worker === 'A'; const role = isA ? 'workerA' : 'workerB'; const model = this.workerModel(taskId, worker, route, risk); const desiredEffort = routePolicy(route, risk).efforts[role]; const effort = chooseReasoningEffort(model, desiredEffort, this.reasoningMode); const baselinePrompt = await this.taskBaselinePrompt(taskId); const systemPrompt = [isA ? WORKER_A_PROMPT : WORKER_B_PROMPT, workerFlowInstructions(this.flowMode), baselinePrompt].filter(Boolean).join('\n\n');
     const session = await this.client.createSession(withReasoning({ sessionId: `${this.runId}-${safeTaskId}-worker-${worker.toLowerCase()}`, clientName: 'convergent-vscode', model: model.id, workingDirectory: this.workspace, streaming: true, tools: [tool], availableTools: WORKER_TOOLS, systemMessage: { mode: 'append', content: systemPrompt }, hooks: { onPreToolUse: workerHook }, onPermissionRequest: this.permissionHandler, onUserInputRequest: this.userInputHandler }, effort));
-    const name = `Worker ${worker}`; const guard = this.guard(session, name); const usageKey = `${safeTaskId}:worker-${worker.toLowerCase()}`; attachEventLogging(session, name, this.ui, this.usage, model, usageKey, { sink, toolName: 'report_pass' }); this.ui.agentTools?.(name, WORKER_TOOLS); this.sessionCreated(name, session, model, effort, systemPrompt, WORKER_TOOLS, { role, taskId: safeTaskId, route, risk, taskBaseline: { clean: !baselinePrompt.includes('user-owned pre-existing state') } });
+    const name = `Worker ${worker}`; const guard = this.guard(session, name); const usageKey = `${safeTaskId}:worker-${worker.toLowerCase()}`; attachEventLogging(session, name, this.ui, this.usage, model, usageKey, { sink, toolName: 'report_pass' }); this.ui.agentTools?.(name, WORKER_TOOLS); this.sessionCreated(name, session, model, effort, systemPrompt, WORKER_TOOLS, { role, taskId: safeTaskId, route, risk });
     return { session, guard, sink, name: worker, usageName: usageKey, model, reasoningEffort: effort };
   }
 
