@@ -4,7 +4,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 
-const SENSITIVE_TEXT_KEYS = /^(content|prompt|request|result|output|text|message|intent|arguments|toolArgs|input|systemPrompt|guidance|operatorAnswer|answer|stack)$/i;
+const SENSITIVE_TEXT_KEYS = /^(content|prompt|request|result|output|text|message|intent|arguments|toolArgs|input|systemPrompt|guidance|operatorAnswer|answer|stack|partialResult|partial_result|stdout|stderr|response)$/i;
 
 function safeName(value) {
   return String(value ?? 'run')
@@ -78,6 +78,11 @@ function stableToolSignature(event = {}) {
   return { key: `${event.agent ?? '?'}\0${tool}\0${hash}`, tool, argsHash: hash, detail: toolDetail(event.data ?? {}) };
 }
 
+function findingIdentity(finding = {}) {
+  const canonical = [finding.file ?? '', finding.severity ?? '', finding.title ?? '', finding.description ?? ''].join('\0');
+  return crypto.createHash('sha256').update(canonical).digest('hex').slice(0, 20);
+}
+
 async function directorySize(directory) {
   let total = 0;
   let entries;
@@ -115,6 +120,9 @@ class TrajectoryAudit {
     this.counts = new Map();
     this.agents = new Map();
     this.toolSignatures = new Map();
+    this.reviewFindingKeys = new Set();
+    this.reviewTimeline = [];
+    this.workerPassTimeline = [];
     this.startedAt = Date.now();
   }
 
@@ -183,6 +191,29 @@ class TrajectoryAudit {
       const previous = this.toolSignatures.get(signature.key) ?? { agent: event.agent, ...signature, count: 0 };
       previous.count += 1;
       this.toolSignatures.set(signature.key, previous);
+    } else if (type === 'strong_review_result') {
+      const findings = Array.isArray(event.review?.findings) ? event.review.findings : [];
+      const firstSeen = [];
+      for (const finding of findings) {
+        const id = findingIdentity(finding);
+        if (!this.reviewFindingKeys.has(id)) firstSeen.push({ id, severity: finding.severity, title: finding.title, file: finding.file });
+        this.reviewFindingKeys.add(id);
+      }
+      this.reviewTimeline.push({
+        cycle: event.cycle,
+        verdict: event.review?.verdict,
+        findingCount: findings.length,
+        newFindingCount: firstSeen.length,
+        firstSeen,
+      });
+    } else if (type === 'worker_pass_result') {
+      this.workerPassTimeline.push({
+        worker: event.worker,
+        verdict: event.report?.verdict,
+        changed: Boolean(event.changed),
+        workspaceFingerprint: event.workspaceFingerprint,
+        durationMs: event.durationMs,
+      });
     }
   }
 
@@ -198,6 +229,9 @@ class TrajectoryAudit {
       agents,
       repeatedToolCalls,
       repeatedToolSignatureCount: repeatedToolCalls.length,
+      workerPassTimeline: this.workerPassTimeline,
+      reviewTimeline: this.reviewTimeline,
+      lateFindingCycles: this.reviewTimeline.filter((item) => Number(item.cycle) > 1 && item.newFindingCount > 0).length,
     };
   }
 
@@ -297,4 +331,5 @@ module.exports = {
   directorySize,
   stableToolSignature,
   toolDetail,
+  findingIdentity,
 };
