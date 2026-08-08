@@ -23,7 +23,7 @@ test('fast flow allows one automatic remediation delta review before asking', ()
   assert.match(workerFlowInstructions('fast'), /focused inspection/i);
   assert.match(workerFlowInstructions('fast'), /apply_patch/i);
   assert.match(workerFlowInstructions('fast'), /peer already passed/i);
-  assert.match(reviewerFlowInstructions('fast'), /do not mechanically/i);
+  assert.match(reviewerFlowInstructions('fast'), /instead of mechanically rerunning/i);
 });
 
 test('auto preserves configured soft tranches', () => {
