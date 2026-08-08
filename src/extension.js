@@ -3,7 +3,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const vscode = require('vscode');
-const { ResumableConvergentEngine } = require('./orchestrator/resumable-engine');
+const { RecoveryConvergentEngine } = require('./orchestrator/recovery-engine');
 const { resolveModel } = require('./orchestrator/model-resolver');
 const { ensureConcreteUserRequest } = require('./orchestrator/request-preflight');
 const { normalizeResumeState, resumeSummary } = require('./orchestrator/resume');
@@ -300,7 +300,7 @@ async function executeWorkflow(prompt, stream, token, resumeState = null, flowOv
   let latestCheckpoint = resumeState;
   let runStatus = 'failed';
   let runError = null;
-  const engine = new ResumableConvergentEngine({
+  const engine = new RecoveryConvergentEngine({
     client: runtime.client,
     sdk: runtime.sdk,
     workspace,
