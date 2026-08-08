@@ -43,14 +43,26 @@ function aggregateAgentUsage(summary) {
       hasCreditData: false,
       inputTokens: 0,
       outputTokens: 0,
+      reasoningTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      maxContextTokens: 0,
+      maxContextMessages: 0,
       turns: 0,
+      calls: 0,
       durationMs: 0,
     };
     group.aiCredits += entry.aiCredits ?? 0;
     group.hasCreditData ||= Boolean(entry.hasCreditData);
     group.inputTokens += entry.inputTokens ?? 0;
     group.outputTokens += entry.outputTokens ?? 0;
+    group.reasoningTokens += entry.reasoningTokens ?? 0;
+    group.cacheReadTokens += entry.cacheReadTokens ?? 0;
+    group.cacheWriteTokens += entry.cacheWriteTokens ?? 0;
+    group.maxContextTokens = Math.max(group.maxContextTokens, entry.maxContextTokens ?? 0);
+    group.maxContextMessages = Math.max(group.maxContextMessages, entry.maxContextMessages ?? 0);
     group.turns += entry.turns ?? 0;
+    group.calls += entry.calls ?? 0;
     group.durationMs += entry.durationMs ?? 0;
     groups.set(key, group);
   }
@@ -61,14 +73,22 @@ function detailedUsageMarkdown(summary) {
   const lines = [
     `**Usage:** ${compactUsage(summary)}`,
     '',
-    '| Agent | Model | AI credits | Tokens in/out | Turns | Active time |',
-    '| --- | --- | ---: | ---: | ---: | ---: |',
+    '| Agent | Model | AI credits | In / out | Cache read / write | Reasoning | LLM calls | Peak context | Turns | Active time |',
+    '| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |',
   ];
   for (const entry of aggregateAgentUsage(summary)) {
     const credits = entry.hasCreditData ? `≈${entry.aiCredits.toFixed(entry.aiCredits < 0.01 ? 5 : 3)}` : 'pending';
-    lines.push(`| ${entry.label} | ${entry.model} | ${credits} | ${formatTokenCount(entry.inputTokens)}/${formatTokenCount(entry.outputTokens)} | ${entry.turns} | ${formatDuration(entry.durationMs)} |`);
+    const context = entry.maxContextTokens
+      ? `${formatTokenCount(entry.maxContextTokens)}${entry.maxContextMessages ? ` / ${entry.maxContextMessages} msg` : ''}`
+      : 'n/a';
+    lines.push(`| ${entry.label} | ${entry.model} | ${credits} | ${formatTokenCount(entry.inputTokens)} / ${formatTokenCount(entry.outputTokens)} | ${formatTokenCount(entry.cacheReadTokens)} / ${formatTokenCount(entry.cacheWriteTokens)} | ${formatTokenCount(entry.reasoningTokens)} | ${entry.calls} | ${context} | ${entry.turns} | ${formatDuration(entry.durationMs)} |`);
   }
-  lines.push('', '_AI credits are derived from Copilot nano-AIU usage (nano-AIU ÷ 1e9). Credit checkpoints can lag live token growth; GitHub billing remains the source of truth._');
+  lines.push(
+    '',
+    `_Totals: cache-read ${formatTokenCount(summary?.cacheReadTokens)} · cache-write ${formatTokenCount(summary?.cacheWriteTokens)} · reasoning ${formatTokenCount(summary?.reasoningTokens)} · peak observed context ${formatTokenCount(summary?.maxContextTokens)} / ${summary?.maxContextMessages ?? 0} messages._`,
+    '',
+    '_AI credits are derived from Copilot nano-AIU usage (nano-AIU ÷ 1e9). Credit checkpoints can lag live token growth; GitHub billing remains the source of truth. Cache token fields depend on what the active Copilot runtime/model reports._',
+  );
   return lines.join('\n');
 }
 
@@ -101,6 +121,10 @@ class VscodeWorkflowUi {
     this.heartbeatMs = undefined;
   }
 
+  audit(event) {
+    try { void this.auditEvent?.(event); } catch {}
+  }
+
   log(message) {
     this.output.appendLine(`[${new Date().toISOString()}] ${message}`);
   }
@@ -108,6 +132,7 @@ class VscodeWorkflowUi {
   phase(name, detail) {
     this.stream.progress(`${name}: ${detail}`);
     this.log(`${name}: ${detail}`);
+    this.audit({ type: 'phase', name, detail });
   }
 
   plan(plan, routes = []) {
@@ -120,6 +145,7 @@ class VscodeWorkflowUi {
     lines.push('');
     this.stream.markdown(lines.join('\n'));
     this.log(`Plan accepted with ${plan.tasks.length} task(s).`);
+    this.audit({ type: 'plan_accepted', plan, routes });
   }
 
   taskStarted(task, index, total, routing, policy) {
@@ -128,6 +154,7 @@ class VscodeWorkflowUi {
     if (routing.reason) this.stream.markdown(`_${routing.reason}_\n`);
     this.stream.progress(`${task.title}: ${routing.route} workflow starting`);
     this.log(`Task ${task.id} started: ${task.title}; route=${routing.route}; risk=${routing.risk}; reason=${routing.reason}`);
+    this.audit({ type: 'task_start', task, index, total, routing, policy });
   }
 
   agentConfiguration(entries) {
@@ -138,16 +165,19 @@ class VscodeWorkflowUi {
     if (text) {
       this.stream.progress(text);
       this.log(`Agent configuration: ${text}`);
+      this.audit({ type: 'agent_configuration', entries });
     }
   }
 
   agentTools(agent, tools) {
     this.log(`${agent} available tools: ${(tools ?? []).join(', ')}`);
+    this.audit({ type: 'agent_tools', agent, tools });
   }
 
   readOnlyResult(task) {
     this.stream.markdown(`\n${task.result}\n`);
     this.log(`Read-only task ${task.id} answered by coordinator.`);
+    this.audit({ type: 'read_only_result', taskId: task.id, result: task.result });
   }
 
   taskCompleted(task, route) {
@@ -158,15 +188,18 @@ class VscodeWorkflowUi {
         : 'passed A/B convergence and strong review';
     this.stream.markdown(`✓ **${task.title}** ${detail}.\n`);
     this.log(`Task ${task.id} completed via ${route}.`);
+    this.audit({ type: 'task_complete', taskId: task.id, title: task.title, route });
   }
 
   taskCommitted(task, sha) {
     this.stream.markdown(`  ↳ checkpoint commit \`${String(sha).slice(0, 12)}\` for **${task.id}**\n`);
     this.log(`Task ${task.id} checkpoint committed at ${sha}.`);
+    this.audit({ type: 'task_commit', taskId: task.id, sha });
   }
 
   taskCommitSkipped(task, reason) {
     this.log(`Task ${task.id} checkpoint commit skipped: ${reason}`);
+    this.audit({ type: 'task_commit_skipped', taskId: task.id, reason });
   }
 
   passResult(worker, report, changed, revision, meta = {}) {
@@ -175,12 +208,14 @@ class VscodeWorkflowUi {
     const duration = meta.durationMs !== undefined ? ` · ${formatDuration(meta.durationMs)}` : '';
     this.stream.markdown(`${mark} Worker ${worker}: **${state}**${duration} — ${report.summary}\n`);
     this.log(`Worker ${worker}: ${report.verdict}, changed=${changed}, revision=${revision.slice(0, 12)}, duration=${meta.durationMs ?? 0}ms; ${report.summary}`);
+    this.audit({ type: 'worker_pass_result', worker, report, changed, workspaceFingerprint: revision, durationMs: meta.durationMs, usage: meta.usage });
     if (meta.usage) this.usageProgress(meta.usage);
   }
 
   converged(revision, pass) {
-    this.stream.markdown(`✓ Workers A and B both approved revision \`${revision.slice(0, 12)}\` after ${pass} review/fix pass(es).\n`);
-    this.log(`Workers converged on ${revision} after ${pass} pass(es).`);
+    this.stream.markdown(`✓ Workers A and B both approved workspace fingerprint \`${revision.slice(0, 12)}\` after ${pass} review/fix pass(es).\n`);
+    this.log(`Workers converged on workspace fingerprint ${revision} after ${pass} pass(es).`);
+    this.audit({ type: 'workers_converged', workspaceFingerprint: revision, passes: pass });
   }
 
   reviewResult(review, cycle, meta = {}) {
@@ -194,6 +229,7 @@ class VscodeWorkflowUi {
       }
     }
     this.log(`Strong reviewer cycle ${cycle}: ${review.verdict}, duration=${meta.durationMs ?? 0}ms; ${review.summary}`);
+    this.audit({ type: 'strong_review_result', cycle, review, durationMs: meta.durationMs, usage: meta.usage });
     if (meta.usage) this.usageProgress(meta.usage);
   }
 
@@ -201,6 +237,7 @@ class VscodeWorkflowUi {
     this.stream.markdown(`↗ **Workflow escalated:** \`${from}\` → \`${to}\` — ${reason}\n`);
     this.stream.progress(`Escalated to ${to}: ${reason}`);
     this.log(`Workflow escalated ${from} -> ${to}: ${reason}`);
+    this.audit({ type: 'workflow_escalated', from, to, reason });
   }
 
   usageProgress(summary) {
@@ -248,9 +285,6 @@ class VscodeWorkflowUi {
       ? `${tool.name}${tool.detail ? ` — ${tool.detail}` : ''} running ${formatDuration(tool.elapsedMs)} · no progress ${formatDuration(tool.quietMs)}`
       : `working · last activity ${formatDuration(snapshot?.lastActivityAgoMs ?? 0)} ago`;
 
-    // Heartbeats remain fully available in the Output channel. Chat is driven
-    // by actual agent messages, tool starts/completions, and throttled usage so
-    // the user can follow the work without immutable last-activity spam.
     this.log(`${agent} heartbeat: ${detail}`);
 
     if (!tool || tool.elapsedMs < 60_000) return;
@@ -340,6 +374,7 @@ class VscodeWorkflowUi {
       choices = [`Continue +${increment} credits`, 'Continue without budget', 'Pause & resume later'];
       const choice = await this.vscode.window.showWarningMessage(message, { modal: true }, ...choices);
       this.log(`AI-credit limit decision: ${choice ?? 'dismissed'}; usage=${current}; ceiling=${limit}`);
+      this.audit({ type: 'limit_decision', kind, current, limit, choice });
       if (choice === 'Continue without budget') return { action: 'unlimited' };
       if (choice === choices[0]) return { action: 'continue', additional: increment };
       return { action: 'pause' };
@@ -350,6 +385,7 @@ class VscodeWorkflowUi {
     choices = ['Continue 1 more', 'Continue 3 more', 'Pause & resume later'];
     const choice = await this.vscode.window.showWarningMessage(message, { modal: true }, ...choices);
     this.log(`${kind} limit decision: ${choice ?? 'dismissed'}; current=${current}; limit=${limit}`);
+    this.audit({ type: 'limit_decision', kind, current, limit, choice });
     if (choice === choices[0]) return { action: 'continue', additional: 1 };
     if (choice === choices[1]) return { action: 'continue', additional: 3 };
     return { action: 'pause' };
@@ -358,6 +394,7 @@ class VscodeWorkflowUi {
   workflowPaused(reason) {
     this.stream.markdown(`\n⏸ **Convergent paused at a safe boundary.** ${reason}\n\nUse \`@convergent /resume\` when you want to continue.\n`);
     this.log(`Workflow paused: ${reason}`);
+    this.audit({ type: 'workflow_paused', reason });
   }
 
   agentControlTimeout(agent, operation, timeoutMs) {
@@ -387,12 +424,14 @@ class VscodeWorkflowUi {
   agentError(agent, message) {
     this.stream.progress(`${agent} error: ${compactActivity(message, 300)}`);
     this.log(`${agent} ERROR: ${message}`);
+    this.audit({ type: 'agent_error', agent, message });
   }
 }
 
 module.exports = {
   VscodeWorkflowUi,
   formatDuration,
+  formatTokenCount,
   compactUsage,
   detailedUsageMarkdown,
   diagnosticsMarkdown,
