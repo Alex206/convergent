@@ -16,7 +16,7 @@ function flowPolicy(mode, config = {}) {
     return {
       mode: flow,
       label: 'Fast',
-      description: 'Reach a reviewed result quickly: focused inspection, short A/B and strong-review tranches, then ask before spending more.',
+      description: 'Reach a reviewed result quickly: focused inspection, stronger adaptive implementation where useful, short A/B and strong-review tranches, then ask before spending more.',
       maxWorkerPasses: Math.min(workerPasses, 3),
       maxReviewerCycles: 1,
       reviewerScope: 'task-diff',
@@ -57,27 +57,13 @@ function workerFlowInstructions(mode) {
 
 function reviewerFlowInstructions(mode) {
   const flow = normalizeFlowMode(mode);
-  const common = [
-    'FINDING COLLECTION RULE: do not stop the review merely because you found the first actionable defect. Continue the bounded review scope and report all independently discoverable actionable findings together in one report_review call.',
-    'On later review cycles, verify every previous finding first, then review the remediation delta and directly affected callers/tests/interfaces. Do not redo the entire original review unless the remediation materially expanded scope or architecture.',
-  ];
-
   if (flow === 'fast') {
-    return [
-      ...common,
-      'FAST FLOW FIRST REVIEW: focus on the task diff/current changed files, acceptance criteria, and directly affected interfaces/tests. Do not perform a whole-repository audit.',
-    ].join(' ');
+    return 'FAST FLOW REVIEW SCOPE: on the first cycle focus on the task diff/current changed files, acceptance criteria, and directly affected interfaces/tests. Do not perform a whole-repository audit.';
   }
   if (flow === 'thorough') {
-    return [
-      ...common,
-      'THOROUGH FLOW FIRST REVIEW: perform a comprehensive task-level review including architecture, affected contracts, regressions, and critical validation appropriate to the risk.',
-    ].join(' ');
+    return 'THOROUGH FLOW REVIEW SCOPE: on the first cycle perform a comprehensive task-level review including architecture, affected contracts, regressions, and critical validation appropriate to the risk.';
   }
-  return [
-    ...common,
-    'AUTO FLOW FIRST REVIEW: review the task diff plus directly affected architectural/contracts/test surfaces; broaden only when risk or concrete evidence warrants it.',
-  ].join(' ');
+  return 'AUTO FLOW REVIEW SCOPE: on the first cycle review the task diff plus directly affected architecture/contracts/test surfaces; broaden only when risk or concrete evidence warrants it.';
 }
 
 module.exports = { FLOW_MODES, normalizeFlowMode, flowPolicy, workerFlowInstructions, reviewerFlowInstructions };
