@@ -46,6 +46,17 @@ function flowPolicy(mode, config = {}) {
   };
 }
 
+function coordinatorFlowInstructions(mode) {
+  const flow = normalizeFlowMode(mode);
+  if (flow !== 'fast') return '';
+  return [
+    'FAST FLOW PLANNING: the user explicitly prefers a short accepted-result trajectory.',
+    'When the request is already concrete, perform at most one bounded repository-inspection batch sufficient to identify project conventions and routing risk, then submit the proportionate plan.',
+    'Prefer directly relevant root instructions/manifests/files over broad whole-repository pattern searches. Do not perform a second reassurance inspection wave after you already have enough evidence to plan.',
+    'Do not inspect unrelated editor settings, caches, or other dirty/untracked workspace artifacts unless they materially affect the requested task.',
+  ].join(' ');
+}
+
 function workerFlowInstructions(mode) {
   const flow = normalizeFlowMode(mode);
   if (flow !== 'fast') return '';
@@ -74,4 +85,11 @@ function reviewerFlowInstructions(mode) {
   return 'AUTO FLOW REVIEW SCOPE: on the first cycle review the task diff plus directly affected architecture/contracts/test surfaces; broaden only when risk or concrete evidence warrants it.';
 }
 
-module.exports = { FLOW_MODES, normalizeFlowMode, flowPolicy, workerFlowInstructions, reviewerFlowInstructions };
+module.exports = {
+  FLOW_MODES,
+  normalizeFlowMode,
+  flowPolicy,
+  coordinatorFlowInstructions,
+  workerFlowInstructions,
+  reviewerFlowInstructions,
+};
