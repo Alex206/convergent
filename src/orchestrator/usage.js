@@ -27,11 +27,17 @@ class UsageTracker {
       turns: 0,
       inputTokens: 0,
       outputTokens: 0,
+      reasoningTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
       premiumRequestCost: 0,
       totalNanoAiu: 0,
       hasCreditData: false,
       contextTokens: undefined,
       contextLimit: undefined,
+      contextMessages: undefined,
+      maxContextTokens: 0,
+      maxContextMessages: 0,
       durationMs: 0,
     });
   }
@@ -42,6 +48,9 @@ class UsageTracker {
     entry.calls += 1;
     entry.inputTokens += numberOrZero(data.inputTokens);
     entry.outputTokens += numberOrZero(data.outputTokens);
+    entry.reasoningTokens += numberOrZero(data.reasoningTokens);
+    entry.cacheReadTokens += numberOrZero(data.cacheReadTokens);
+    entry.cacheWriteTokens += numberOrZero(data.cacheWriteTokens);
     entry.premiumRequestCost += numberOrZero(data.cost);
   }
 
@@ -62,6 +71,9 @@ class UsageTracker {
     if (!entry) return;
     entry.contextTokens = numberOrZero(data.currentTokens);
     entry.contextLimit = numberOrZero(data.tokenLimit);
+    entry.contextMessages = numberOrZero(data.messagesLength ?? data.messageCount);
+    entry.maxContextTokens = Math.max(entry.maxContextTokens, entry.contextTokens);
+    entry.maxContextMessages = Math.max(entry.maxContextMessages, entry.contextMessages);
   }
 
   recordTurn(agent, durationMs) {
@@ -102,7 +114,12 @@ class UsageTracker {
       calls: agents.reduce((sum, entry) => sum + entry.calls, 0),
       inputTokens: agents.reduce((sum, entry) => sum + entry.inputTokens, 0),
       outputTokens: agents.reduce((sum, entry) => sum + entry.outputTokens, 0),
+      reasoningTokens: agents.reduce((sum, entry) => sum + entry.reasoningTokens, 0),
+      cacheReadTokens: agents.reduce((sum, entry) => sum + entry.cacheReadTokens, 0),
+      cacheWriteTokens: agents.reduce((sum, entry) => sum + entry.cacheWriteTokens, 0),
       premiumRequestCost: agents.reduce((sum, entry) => sum + entry.premiumRequestCost, 0),
+      maxContextTokens: agents.reduce((max, entry) => Math.max(max, numberOrZero(entry.maxContextTokens)), 0),
+      maxContextMessages: agents.reduce((max, entry) => Math.max(max, numberOrZero(entry.maxContextMessages)), 0),
       totalNanoAiu,
       aiCredits: aiCreditsFromNanoAiu(totalNanoAiu),
       hasCreditData: agents.some((entry) => entry.hasCreditData),
