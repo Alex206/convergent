@@ -53,6 +53,26 @@ const PRESETS = {
     /claude.*sonnet.*5/i,
     /claude.*haiku.*4\.5/i,
   ],
+  'fast-a': [
+    /gpt[- ]?5\.6.*terra/i,
+    /claude.*sonnet.*5/i,
+    /gpt[- ]?5\.6.*sol/i,
+    /gpt[- ]?5\.5/i,
+    /gpt[- ]?5\.4(?!.*mini|.*nano)/i,
+    /gpt[- ]?5\.6.*luna/i,
+    /gpt[- ]?5\.4.*mini/i,
+    /gpt[- ]?5.*mini/i,
+    /claude.*haiku.*4\.5/i,
+  ],
+  'fast-b': [
+    /gpt[- ]?5\.4.*mini/i,
+    /gpt[- ]?5.*mini/i,
+    /gpt[- ]?5\.6.*luna/i,
+    /gpt[- ]?5\.6.*terra/i,
+    /claude.*sonnet.*5/i,
+    /gemini.*\b3(?:\.0)?\b(?!\.\d).*flash/i,
+    /claude.*haiku.*4\.5/i,
+  ],
   'high-risk-a': [
     /gpt[- ]?5\.6.*terra/i,
     /claude.*sonnet.*5/i,
@@ -143,10 +163,12 @@ function resolveModel(selector, models = [], options = {}) {
   return { id: 'auto', reason: `configured selector "${selector}" was unavailable; falling back to auto` };
 }
 
-function adaptivePreset(worker, route = 'standard', risk = 'medium') {
+function adaptivePreset(worker, route = 'standard', risk = 'medium', flowMode = 'auto') {
   const role = String(worker ?? 'A').toUpperCase() === 'B' ? 'b' : 'a';
+  const flow = String(flowMode ?? 'auto').toLowerCase();
   if (route === 'high_risk' || risk === 'high') return `high-risk-${role}`;
   if (route === 'trivial' && risk === 'low') return `cheap-${role}`;
+  if (flow === 'fast') return `fast-${role}`;
   return `balanced-${role}`;
 }
 
@@ -162,11 +184,11 @@ function resolveWorkerModel(selector, models = [], options = {}) {
     return resolveModel(selector, models, { excludeIds: options.excludeIds });
   }
 
-  const preset = adaptivePreset(worker, options.route, options.risk);
+  const preset = adaptivePreset(worker, options.route, options.risk, options.flowMode);
   const result = resolveModel(preset, models, { excludeIds: options.excludeIds });
   return {
     ...result,
-    reason: `adaptive Worker ${worker}: route=${options.route ?? 'standard'}, risk=${options.risk ?? 'medium'} -> ${preset}; ${result.reason}`,
+    reason: `adaptive Worker ${worker}: flow=${options.flowMode ?? 'auto'}, route=${options.route ?? 'standard'}, risk=${options.risk ?? 'medium'} -> ${preset}; ${result.reason}`,
   };
 }
 
