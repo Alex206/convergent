@@ -249,3 +249,7 @@ BLOCKED → no approval
 ```
 
 A valid `CHANGED` pass approves its resulting fingerprint immediately; a worker does not need to review its own unchanged output again. If a peer changes the workspace, all approvals/evidence for the previous fingerprint are invalidated. A `BLOCKED` pass never counts as approval even if that pass changed the workspace; after recovery the normal A/B approval invariant still applies.
+
+## Current dev.9 validation
+
+The latest code/package validation before this documentation-only update passed 116/116 tests, `npm run check`, and real VSIX packaging. PR #4 remains draft for live VS Code trajectory testing before merge/release.
