@@ -252,4 +252,4 @@ A valid `CHANGED` pass approves its resulting fingerprint immediately; a worker 
 
 ## Current dev.9 validation
 
-The latest code/package validation before this documentation-only update passed 116/116 tests, `npm run check`, and real VSIX packaging. PR #4 remains draft for live VS Code trajectory testing before merge/release.
+The latest code/package validation passed 116/116 tests, `npm run check`, and real VSIX packaging. PR #4 remains draft for live VS Code trajectory testing before merge/release.
