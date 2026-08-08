@@ -11,6 +11,7 @@ const {
   safeSessionPart,
   SHELL_BUILTINS,
   COORDINATOR_TOOLS,
+  RECOVERY_COORDINATOR_TOOLS,
   WORKER_TOOLS,
   REVIEWER_TOOLS,
 } = require('../src/copilot/session-factory');
@@ -42,7 +43,7 @@ test('worker hook blocks shell file-content editing but allows validation and cl
   assert.equal(shellFileContentMutation({ toolName: 'powershell', toolArgs: { command: 'Remove-Item -Recurse __pycache__' } }), false);
 });
 
-test('role tool allowlists expose purpose-built file tools only to workers', () => {
+test('role tool allowlists expose purpose-built tools and keep recovery coordinator read-only', () => {
   assert.equal(SHELL_BUILTINS.length, 1);
   assert.ok(COORDINATOR_TOOLS.includes('builtin:view'));
   assert.ok(COORDINATOR_TOOLS.includes('builtin:ask_user'));
@@ -50,6 +51,11 @@ test('role tool allowlists expose purpose-built file tools only to workers', () 
   assert.ok(!COORDINATOR_TOOLS.includes('builtin:edit'));
   assert.ok(!COORDINATOR_TOOLS.includes('builtin:create'));
   assert.ok(!COORDINATOR_TOOLS.includes('builtin:apply_patch'));
+
+  assert.ok(RECOVERY_COORDINATOR_TOOLS.includes('builtin:view'));
+  assert.ok(RECOVERY_COORDINATOR_TOOLS.includes('custom:report_recovery'));
+  assert.ok(!RECOVERY_COORDINATOR_TOOLS.includes('builtin:edit'));
+  assert.ok(!RECOVERY_COORDINATOR_TOOLS.includes('builtin:ask_user'));
 
   assert.ok(REVIEWER_TOOLS.includes('custom:report_review'));
   assert.ok(!REVIEWER_TOOLS.includes('builtin:edit'));
@@ -87,4 +93,37 @@ test('session factory promotes high-risk Worker A and keeps Worker B capable and
   assert.equal(a.id, 'gpt-5.5');
   assert.equal(b.id, 'gpt-5.4-mini');
   assert.notEqual(a.id, b.id);
+});
+
+test('guard audits the exact Convergent prompt sent into an agent turn', async () => {
+  const handlers = new Map();
+  const emittedAudit = [];
+  const session = {
+    sessionId: 's1',
+    on(name, handler) {
+      const list = handlers.get(name) ?? [];
+      list.push(handler);
+      handlers.set(name, list);
+      return () => {};
+    },
+    async send() {
+      queueMicrotask(() => {
+        for (const handler of handlers.get('session.idle') ?? []) handler({ data: {} });
+      });
+    },
+    async abort() {},
+    async disconnect() {},
+  };
+  const ui = {
+    auditEvent(event) { emittedAudit.push(event); },
+  };
+  const factory = new SessionFactory({ client: {}, sdk: {}, workspace: '/repo', ui, runId: 'run', models: {} });
+  factory.guard(session, 'Worker A');
+
+  await session.sendAndWait({ prompt: 'exact task/pass prompt', mode: 'normal' });
+
+  const event = emittedAudit.find((item) => item.type === 'prompt_send');
+  assert.equal(event.agent, 'Worker A');
+  assert.equal(event.sessionId, 's1');
+  assert.equal(event.prompt, 'exact task/pass prompt');
 });
