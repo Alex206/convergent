@@ -4,6 +4,8 @@ const crypto = require('node:crypto');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 
+const SENSITIVE_TEXT_KEYS = /^(content|prompt|request|result|output|text|message|intent|arguments|toolArgs|input|systemPrompt|guidance|operatorAnswer|answer|stack)$/i;
+
 function safeName(value) {
   return String(value ?? 'run')
     .replace(/[^a-zA-Z0-9._-]+/g, '-')
@@ -20,25 +22,23 @@ function textInfo(value) {
   };
 }
 
-function compactValue(value, level, maxFullBytes) {
+function compactValue(value, level, maxFullBytes, sensitive = false) {
   if (typeof value === 'string') {
+    if (!sensitive) return value.length <= 500 ? value : `${value.slice(0, 499)}…`;
     if (level === 'full' && Buffer.byteLength(value) <= maxFullBytes) return value;
     return { kind: 'text', ...textInfo(value), truncated: level === 'full' && Buffer.byteLength(value) > maxFullBytes };
   }
-  if (Array.isArray(value)) return value.map((item) => compactValue(item, level, maxFullBytes));
+  if (Array.isArray(value)) return value.map((item) => compactValue(item, level, maxFullBytes, sensitive));
   if (!value || typeof value !== 'object') return value;
   const result = {};
   for (const [key, item] of Object.entries(value)) {
-    if (/^(content|prompt|result|output|text|message|intent|arguments|toolArgs|input)$/i.test(key)) {
-      if (typeof item === 'string') result[key] = compactValue(item, level, maxFullBytes);
-      else if (level === 'full') result[key] = compactValue(item, level, maxFullBytes);
-      else {
-        let encoded = '';
-        try { encoded = JSON.stringify(item); } catch { encoded = String(item); }
-        result[key] = { kind: 'structured', ...textInfo(encoded) };
-      }
+    const childSensitive = sensitive || SENSITIVE_TEXT_KEYS.test(key);
+    if (childSensitive && item && typeof item === 'object' && !Array.isArray(item) && level !== 'full') {
+      let encoded = '';
+      try { encoded = JSON.stringify(item); } catch { encoded = String(item); }
+      result[key] = { kind: 'structured', ...textInfo(encoded) };
     } else {
-      result[key] = compactValue(item, level, maxFullBytes);
+      result[key] = compactValue(item, level, maxFullBytes, childSensitive);
     }
   }
   return result;
@@ -209,12 +209,13 @@ class TrajectoryAudit {
     this.runDir = path.join(this.rootDir, runId);
     this.eventsPath = path.join(this.runDir, 'events.jsonl');
     await fs.mkdir(this.runDir, { recursive: true });
+    const manifestMeta = compactValue(meta, this.level, this.maxFullBytes);
     await fs.writeFile(path.join(this.runDir, 'manifest.json'), `${JSON.stringify({
       version: 1,
       runId,
       startedAt: new Date(this.startedAt).toISOString(),
       level: this.level,
-      ...meta,
+      ...manifestMeta,
     }, null, 2)}\n`, 'utf8');
     await this.record({ type: 'run_start', ...meta });
     return this.runDir;
