@@ -1,5 +1,7 @@
 'use strict';
 
+const path = require('node:path');
+
 function formatDuration(ms) {
   const seconds = Math.max(0, Number(ms) || 0) / 1000;
   if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
@@ -92,8 +94,9 @@ function detailedUsageMarkdown(summary) {
   return lines.join('\n');
 }
 
-function diagnosticsMarkdown(snapshots = []) {
-  const lines = ['**Convergent diagnostics**', ''];
+function diagnosticsMarkdown(snapshots = [], metadata = {}) {
+  const version = metadata.version ? ` ${metadata.version}` : '';
+  const lines = [`**Convergent${version} diagnostics**`, ''];
   if (!snapshots.length) return `${lines.join('\n')}No agent diagnostics are available.`;
   for (const snapshot of snapshots) {
     const current = snapshot.currentTool
@@ -108,10 +111,14 @@ function diagnosticsMarkdown(snapshots = []) {
 }
 
 class VscodeWorkflowUi {
-  constructor(vscode, stream, output) {
+  constructor(vscode, stream, output, options = {}) {
     this.vscode = vscode;
     this.stream = stream;
     this.output = output;
+    this.workspace = options.workspace;
+    this.version = options.version;
+    this.flowMode = options.flowMode;
+    this.eventSink = options.eventSink;
     this.lastUsageLogAt = 0;
     this.lastUsageChatAt = 0;
     this.lastLongToolChatStatusAt = new Map();
@@ -121,12 +128,46 @@ class VscodeWorkflowUi {
     this.heartbeatMs = undefined;
   }
 
+  emit(event) {
+    try { void this.eventSink?.(event); } catch {}
+    // Compatibility for callers/tests from pre-dev.10. The event is frontend-neutral;
+    // trajectory audit is only one possible subscriber.
+    if (this.auditEvent && this.auditEvent !== this.eventSink) {
+      try { void this.auditEvent(event); } catch {}
+    }
+  }
+
   audit(event) {
-    try { void this.auditEvent?.(event); } catch {}
+    this.emit(event);
   }
 
   log(message) {
     this.output.appendLine(`[${new Date().toISOString()}] ${message}`);
+  }
+
+  runStarted({ version = this.version, flowMode = this.flowMode, flowLabel } = {}) {
+    const safeVersion = version || 'unknown';
+    const label = flowLabel || (flowMode ? `${flowMode[0].toUpperCase()}${flowMode.slice(1)}` : 'Auto');
+    this.stream.markdown(`**Convergent ${safeVersion}** · ${label}\n\n`);
+    this.log(`Convergent ${safeVersion} run started; flow=${flowMode ?? 'unknown'}.`);
+    this.emit({ type: 'ui_run_started', convergentVersion: safeVersion, flowMode: flowMode ?? null, flowLabel: label });
+  }
+
+  fileUri(file) {
+    const value = String(file ?? '').trim();
+    if (!value) return null;
+    if (path.isAbsolute(value) || /^[A-Za-z]:[\\/]/.test(value)) return this.vscode.Uri.file(value);
+    if (!this.workspace) return null;
+    return this.vscode.Uri.file(path.join(this.workspace, value));
+  }
+
+  fileReference(file) {
+    const uri = this.fileUri(file);
+    if (!uri || typeof this.stream.anchor !== 'function') {
+      this.stream.markdown(`\`${file}\``);
+      return;
+    }
+    this.stream.anchor(uri, String(file));
   }
 
   phase(name, detail) {
@@ -225,7 +266,12 @@ class VscodeWorkflowUi {
     } else {
       this.stream.markdown(`⚠ Strong reviewer cycle ${cycle}: **${review.verdict.toUpperCase()}**${duration} — ${review.summary}\n`);
       for (const finding of review.findings ?? []) {
-        this.stream.markdown(`  - **${finding.severity}** ${finding.title}${finding.file ? ` — \`${finding.file}\`` : ''}\n`);
+        this.stream.markdown(`  - **${finding.severity}** ${finding.title}`);
+        if (finding.file) {
+          this.stream.markdown(' — ');
+          this.fileReference(finding.file);
+        }
+        this.stream.markdown('\n');
       }
     }
     this.log(`Strong reviewer cycle ${cycle}: ${review.verdict}, duration=${meta.durationMs ?? 0}ms; ${review.summary}`);
