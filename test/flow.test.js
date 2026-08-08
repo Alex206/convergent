@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const {
   normalizeFlowMode,
   flowPolicy,
+  coordinatorFlowInstructions,
   workerFlowInstructions,
   reviewerFlowInstructions,
 } = require('../src/orchestrator/flow');
@@ -17,6 +18,8 @@ test('fast flow allows one automatic remediation delta review before asking', ()
   assert.equal(policy.maxReviewerCycles, 2);
   assert.equal(policy.reviewerScope, 'task-diff');
   assert.match(policy.description, /automatic remediation/i);
+  assert.match(coordinatorFlowInstructions('fast'), /one bounded repository-inspection batch/i);
+  assert.match(coordinatorFlowInstructions('fast'), /editor settings/i);
   assert.match(workerFlowInstructions('fast'), /focused inspection/i);
   assert.match(workerFlowInstructions('fast'), /apply_patch/i);
   assert.match(workerFlowInstructions('fast'), /peer already passed/i);
@@ -28,6 +31,7 @@ test('auto preserves configured soft tranches', () => {
   assert.equal(policy.maxWorkerPasses, 6);
   assert.equal(policy.maxReviewerCycles, 2);
   assert.equal(policy.reviewerScope, 'affected-surfaces');
+  assert.equal(coordinatorFlowInstructions('auto'), '');
 });
 
 test('thorough never shrinks assurance tranches', () => {
