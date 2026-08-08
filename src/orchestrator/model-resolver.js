@@ -168,7 +168,11 @@ function adaptivePreset(worker, route = 'standard', risk = 'medium', flowMode = 
   const flow = String(flowMode ?? 'auto').toLowerCase();
   if (route === 'high_risk' || risk === 'high') return `high-risk-${role}`;
   if (route === 'trivial' && risk === 'low') return `cheap-${role}`;
-  if (flow === 'fast') return `fast-${role}`;
+  // Fast is about shortest accepted-result trajectory, not automatically the
+  // strongest/most expensive worker. Low-risk standard work already has tight
+  // scope and benefits more from fewer agent-loop round trips than model
+  // promotion; medium-risk Fast work can still promote capability.
+  if (flow === 'fast' && risk !== 'low') return `fast-${role}`;
   return `balanced-${role}`;
 }
 
