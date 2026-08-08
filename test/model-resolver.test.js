@@ -38,10 +38,7 @@ test('cheap-b can exclude worker A model and pick another cheap model', () => {
     { id: 'claude-haiku-4.5', name: 'Claude Haiku 4.5' },
     { id: 'gpt-5.4-mini', name: 'GPT-5.4 mini' },
   ];
-  assert.equal(
-    resolveModel('cheap-b', withoutGemini, { excludeIds: ['claude-haiku-4.5'] }).id,
-    'gpt-5.4-mini',
-  );
+  assert.equal(resolveModel('cheap-b', withoutGemini, { excludeIds: ['claude-haiku-4.5'] }).id, 'gpt-5.4-mini');
 });
 
 test('cheap-b reuses the same cheap model instead of auto when no diverse cheap model exists', () => {
@@ -52,10 +49,7 @@ test('cheap-b reuses the same cheap model instead of auto when no diverse cheap 
 });
 
 test('exact model id wins even when it matches an excluded peer model', () => {
-  assert.equal(
-    resolveModel('claude-haiku-4.5', models, { excludeIds: ['claude-haiku-4.5'] }).id,
-    'claude-haiku-4.5',
-  );
+  assert.equal(resolveModel('claude-haiku-4.5', models, { excludeIds: ['claude-haiku-4.5'] }).id, 'claude-haiku-4.5');
 });
 
 test('exact model id wins', () => {
@@ -74,13 +68,15 @@ test('cheap-b does not accidentally select a more expensive Gemini 3.5 Flash mod
   assert.equal(resolveModel('cheap-b', mixed).id, 'gpt-5.4-nano');
 });
 
-test('adaptive worker presets scale with route and risk', () => {
+test('adaptive worker presets scale with route risk and flow', () => {
   assert.equal(adaptivePreset('A', 'trivial', 'low'), 'cheap-a');
   assert.equal(adaptivePreset('B', 'trivial', 'low'), 'cheap-b');
   assert.equal(adaptivePreset('A', 'standard', 'medium'), 'balanced-a');
   assert.equal(adaptivePreset('B', 'standard', 'low'), 'balanced-b');
-  assert.equal(adaptivePreset('A', 'high_risk', 'high'), 'high-risk-a');
-  assert.equal(adaptivePreset('B', 'standard', 'high'), 'high-risk-b');
+  assert.equal(adaptivePreset('A', 'standard', 'medium', 'fast'), 'fast-a');
+  assert.equal(adaptivePreset('B', 'standard', 'medium', 'fast'), 'fast-b');
+  assert.equal(adaptivePreset('A', 'high_risk', 'high', 'fast'), 'high-risk-a');
+  assert.equal(adaptivePreset('B', 'standard', 'high', 'fast'), 'high-risk-b');
 });
 
 test('adaptive Worker A promotes high-risk work to a stronger implementation tier', () => {
@@ -90,19 +86,29 @@ test('adaptive Worker A promotes high-risk work to a stronger implementation tie
     { id: 'gpt-5.5', name: 'GPT-5.5' },
     { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra' },
   ];
-  const result = resolveWorkerModel('adaptive', available, {
-    worker: 'A', route: 'high_risk', risk: 'high',
-  });
+  const result = resolveWorkerModel('adaptive', available, { worker: 'A', route: 'high_risk', risk: 'high' });
   assert.equal(result.id, 'gpt-5.6-terra');
   assert.match(result.reason, /high-risk-a/);
 });
 
 test('adaptive standard Worker A prefers economical capable model over Haiku when Luna is absent', () => {
-  const result = resolveWorkerModel('adaptive', models, {
-    worker: 'A', route: 'standard', risk: 'medium',
-  });
+  const result = resolveWorkerModel('adaptive', models, { worker: 'A', route: 'standard', risk: 'medium' });
   assert.equal(result.id, 'gpt-5.4-mini');
   assert.match(result.reason, /balanced-a/);
+});
+
+test('fast flow promotes adaptive standard Worker A to a stronger implementation tier', () => {
+  const available = [
+    { id: 'gpt-5.4-mini', name: 'GPT-5.4 mini' },
+    { id: 'gpt-5.4', name: 'GPT-5.4' },
+    { id: 'gpt-5.5', name: 'GPT-5.5' },
+    { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra' },
+  ];
+  const result = resolveWorkerModel('adaptive', available, {
+    worker: 'A', route: 'standard', risk: 'medium', flowMode: 'fast',
+  });
+  assert.equal(result.id, 'gpt-5.6-terra');
+  assert.match(result.reason, /fast-a/);
 });
 
 test('adaptive-diverse Worker B avoids the selected high-risk Worker A model when possible', () => {
@@ -118,9 +124,9 @@ test('adaptive-diverse Worker B avoids the selected high-risk Worker A model whe
   assert.match(result.reason, /diversified from peer worker/);
 });
 
-test('explicit worker model remains an override even for high-risk work', () => {
+test('explicit worker model remains an override even for high-risk or fast work', () => {
   const result = resolveWorkerModel('claude-haiku-4.5', models, {
-    worker: 'A', route: 'high_risk', risk: 'high',
+    worker: 'A', route: 'high_risk', risk: 'high', flowMode: 'fast',
   });
   assert.equal(result.id, 'claude-haiku-4.5');
   assert.match(result.reason, /exact configured model/);
