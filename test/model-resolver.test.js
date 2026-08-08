@@ -73,6 +73,8 @@ test('adaptive worker presets scale with route risk and flow', () => {
   assert.equal(adaptivePreset('B', 'trivial', 'low'), 'cheap-b');
   assert.equal(adaptivePreset('A', 'standard', 'medium'), 'balanced-a');
   assert.equal(adaptivePreset('B', 'standard', 'low'), 'balanced-b');
+  assert.equal(adaptivePreset('A', 'standard', 'low', 'fast'), 'balanced-a');
+  assert.equal(adaptivePreset('B', 'standard', 'low', 'fast'), 'balanced-b');
   assert.equal(adaptivePreset('A', 'standard', 'medium', 'fast'), 'fast-a');
   assert.equal(adaptivePreset('B', 'standard', 'medium', 'fast'), 'fast-b');
   assert.equal(adaptivePreset('A', 'high_risk', 'high', 'fast'), 'high-risk-a');
@@ -97,7 +99,21 @@ test('adaptive standard Worker A prefers economical capable model over Haiku whe
   assert.match(result.reason, /balanced-a/);
 });
 
-test('fast flow promotes adaptive standard Worker A to a stronger implementation tier', () => {
+test('fast low-risk standard work stays on balanced tier instead of blindly promoting', () => {
+  const available = [
+    { id: 'gpt-5.4-mini', name: 'GPT-5.4 mini' },
+    { id: 'gpt-5.4', name: 'GPT-5.4' },
+    { id: 'gpt-5.5', name: 'GPT-5.5' },
+    { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra' },
+  ];
+  const result = resolveWorkerModel('adaptive', available, {
+    worker: 'A', route: 'standard', risk: 'low', flowMode: 'fast',
+  });
+  assert.equal(result.id, 'gpt-5.4-mini');
+  assert.match(result.reason, /balanced-a/);
+});
+
+test('fast medium-risk standard work can promote adaptive Worker A', () => {
   const available = [
     { id: 'gpt-5.4-mini', name: 'GPT-5.4 mini' },
     { id: 'gpt-5.4', name: 'GPT-5.4' },
