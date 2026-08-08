@@ -9,6 +9,7 @@ const {
 const { routePolicy, chooseReasoningEffort } = require('../orchestrator/routing');
 const { resolveWorkerModel } = require('../orchestrator/model-resolver');
 const { workerFlowInstructions, reviewerFlowInstructions, normalizeFlowMode } = require('../orchestrator/flow');
+const { captureWorkspaceBaseline, formatWorkspaceBaseline } = require('../orchestrator/workspace-baseline');
 const { createPlanTool, createPassTool, createReviewTool, createRecoveryTool, recoverSerializedReport } = require('./tools');
 const { guardSession, describeToolCall } = require('./session-guard');
 
@@ -141,6 +142,8 @@ class SessionFactory {
     this.client = client; this.sdk = sdk; this.workspace = workspace; this.models = models; this.permissionHandler = permissionHandler; this.userInputHandler = userInputHandler; this.ui = ui; this.usage = usage; this.runId = runId; this.reasoningMode = reasoningMode;
     this.flowMode = normalizeFlowMode(models?.flowMode);
     this.taskWorkerModels = new Map();
+    this.taskBaselines = models?.taskBaselines instanceof Map ? models.taskBaselines : new Map();
+    if (models && !(models.taskBaselines instanceof Map)) models.taskBaselines = this.taskBaselines;
   }
 
   guard(session, agentName) {
@@ -167,6 +170,40 @@ class SessionFactory {
     return model;
   }
 
+  async taskBaseline(taskId) {
+    const safeTaskId = safeSessionPart(taskId);
+    if (this.taskBaselines.has(safeTaskId)) return this.taskBaselines.get(safeTaskId);
+    let baseline;
+    try {
+      baseline = await captureWorkspaceBaseline(this.workspace);
+    } catch (error) {
+      baseline = { clean: false, count: 0, entries: [], sha256: '', error: error.message ?? String(error) };
+    }
+    this.taskBaselines.set(safeTaskId, baseline);
+    audit(this.ui, {
+      type: 'task_workspace_baseline',
+      taskId: safeTaskId,
+      clean: baseline.clean,
+      count: baseline.count,
+      sha256: baseline.sha256,
+      error: baseline.error,
+      text: baseline.entries?.join('\n') ?? '',
+    });
+    return baseline;
+  }
+
+  async taskBaselinePrompt(taskId) {
+    const baseline = await this.taskBaseline(taskId);
+    if (baseline.error) {
+      return [
+        'TASK-START WORKSPACE BASELINE:',
+        `Convergent could not capture the task-start Git status baseline: ${baseline.error}`,
+        'Do not assume unrelated dirty/untracked paths were introduced by this task. Never remove/revert user workspace state merely to make status clean.',
+      ].join('\n');
+    }
+    return formatWorkspaceBaseline(baseline);
+  }
+
   sessionCreated(agent, session, model, effort, systemPrompt, availableTools, extra = {}) {
     audit(this.ui, { type: 'session_create', agent, sessionId: session.sessionId, model: model?.id, modelName: model?.name, reasoningEffort: effort, flowMode: this.flowMode, systemPrompt, availableTools, ...extra });
   }
@@ -187,14 +224,14 @@ class SessionFactory {
   }
 
   async createWorker(taskId, worker, route = 'standard', risk = 'medium') {
-    const safeTaskId = safeSessionPart(taskId); const sink = { value: null }; const tool = createPassTool(this.sdk.defineTool, sink); const isA = worker === 'A'; const role = isA ? 'workerA' : 'workerB'; const model = this.workerModel(taskId, worker, route, risk); const desiredEffort = routePolicy(route, risk).efforts[role]; const effort = chooseReasoningEffort(model, desiredEffort, this.reasoningMode); const systemPrompt = [isA ? WORKER_A_PROMPT : WORKER_B_PROMPT, workerFlowInstructions(this.flowMode)].filter(Boolean).join('\n\n');
+    const safeTaskId = safeSessionPart(taskId); const sink = { value: null }; const tool = createPassTool(this.sdk.defineTool, sink); const isA = worker === 'A'; const role = isA ? 'workerA' : 'workerB'; const model = this.workerModel(taskId, worker, route, risk); const desiredEffort = routePolicy(route, risk).efforts[role]; const effort = chooseReasoningEffort(model, desiredEffort, this.reasoningMode); const baselinePrompt = await this.taskBaselinePrompt(taskId); const systemPrompt = [isA ? WORKER_A_PROMPT : WORKER_B_PROMPT, workerFlowInstructions(this.flowMode), baselinePrompt].filter(Boolean).join('\n\n');
     const session = await this.client.createSession(withReasoning({ sessionId: `${this.runId}-${safeTaskId}-worker-${worker.toLowerCase()}`, clientName: 'convergent-vscode', model: model.id, workingDirectory: this.workspace, streaming: true, tools: [tool], availableTools: WORKER_TOOLS, systemMessage: { mode: 'append', content: systemPrompt }, hooks: { onPreToolUse: workerHook }, onPermissionRequest: this.permissionHandler, onUserInputRequest: this.userInputHandler }, effort));
-    const name = `Worker ${worker}`; const guard = this.guard(session, name); const usageKey = `${safeTaskId}:worker-${worker.toLowerCase()}`; attachEventLogging(session, name, this.ui, this.usage, model, usageKey, { sink, toolName: 'report_pass' }); this.ui.agentTools?.(name, WORKER_TOOLS); this.sessionCreated(name, session, model, effort, systemPrompt, WORKER_TOOLS, { role, taskId: safeTaskId, route, risk });
+    const name = `Worker ${worker}`; const guard = this.guard(session, name); const usageKey = `${safeTaskId}:worker-${worker.toLowerCase()}`; attachEventLogging(session, name, this.ui, this.usage, model, usageKey, { sink, toolName: 'report_pass' }); this.ui.agentTools?.(name, WORKER_TOOLS); this.sessionCreated(name, session, model, effort, systemPrompt, WORKER_TOOLS, { role, taskId: safeTaskId, route, risk, taskBaseline: { clean: !baselinePrompt.includes('user-owned pre-existing state') } });
     return { session, guard, sink, name: worker, usageName: usageKey, model, reasoningEffort: effort };
   }
 
   async createReviewer(taskId, route = 'standard', risk = 'medium') {
-    const safeTaskId = safeSessionPart(taskId); const sink = { value: null }; const tool = createReviewTool(this.sdk.defineTool, sink); const model = this.models.reviewer; const desiredEffort = routePolicy(route, risk).efforts.reviewer; const effort = chooseReasoningEffort(model, desiredEffort, this.reasoningMode); const systemPrompt = [REVIEWER_PROMPT, reviewerFlowInstructions(this.flowMode)].filter(Boolean).join('\n\n');
+    const safeTaskId = safeSessionPart(taskId); const sink = { value: null }; const tool = createReviewTool(this.sdk.defineTool, sink); const model = this.models.reviewer; const desiredEffort = routePolicy(route, risk).efforts.reviewer; const effort = chooseReasoningEffort(model, desiredEffort, this.reasoningMode); const baselinePrompt = await this.taskBaselinePrompt(taskId); const systemPrompt = [REVIEWER_PROMPT, reviewerFlowInstructions(this.flowMode), baselinePrompt].filter(Boolean).join('\n\n');
     const session = await this.client.createSession(withReasoning({ sessionId: `${this.runId}-${safeTaskId}-reviewer`, clientName: 'convergent-vscode', model: model.id, workingDirectory: this.workspace, streaming: true, tools: [tool], availableTools: REVIEWER_TOOLS, systemMessage: { mode: 'append', content: systemPrompt }, hooks: { onPreToolUse: readonlyHook }, onPermissionRequest: this.permissionHandler, onUserInputRequest: this.userInputHandler }, effort));
     const guard = this.guard(session, 'Strong reviewer'); const usageKey = `${safeTaskId}:reviewer`; attachEventLogging(session, 'Strong reviewer', this.ui, this.usage, model, usageKey, { sink, toolName: 'report_review' }); this.ui.agentTools?.('Strong reviewer', REVIEWER_TOOLS); this.sessionCreated('Strong reviewer', session, model, effort, systemPrompt, REVIEWER_TOOLS, { role: 'reviewer', taskId: safeTaskId, route, risk });
     return { session, guard, sink, name: 'Strong reviewer', usageName: usageKey, model, reasoningEffort: effort };
