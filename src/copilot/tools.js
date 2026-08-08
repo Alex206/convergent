@@ -82,6 +82,24 @@ function validateReviewReport(report) {
   return null;
 }
 
+function normalizeRecoveryReport(args = {}) {
+  const allowedActions = new Set(['peer', 'retry', 'ask_user', 'pause']);
+  const action = allowedActions.has(args.action) ? args.action : 'pause';
+  return {
+    action,
+    rationale: toText(args.rationale).trim() || 'No recovery rationale was provided.',
+    question: toText(args.question).trim(),
+    guidance: toText(args.guidance).trim(),
+  };
+}
+
+function validateRecoveryReport(report) {
+  if (report.action === 'ask_user' && !report.question) {
+    return 'ASK_USER requires a concrete question for the operator.';
+  }
+  return null;
+}
+
 function decodeXmlText(value) {
   return String(value ?? '')
     .replace(/&lt;/gi, '<')
@@ -296,15 +314,50 @@ function createReviewTool(defineTool, sink) {
   });
 }
 
+function createRecoveryTool(defineTool, sink) {
+  return defineTool('report_recovery', {
+    description: 'Choose the next deterministic recovery action for a blocked Convergent worker/reviewer. Do not implement or edit the task.',
+    parameters: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['peer', 'retry', 'ask_user', 'pause'] },
+        rationale: { type: 'string' },
+        question: {
+          type: 'string',
+          description: 'Required only for ask_user: one concrete question the operator can answer in free text.',
+        },
+        guidance: {
+          type: 'string',
+          description: 'Concise instruction/context to inject into the selected agent on retry/peer continuation.',
+        },
+      },
+      required: ['action', 'rationale', 'question', 'guidance'],
+      additionalProperties: false,
+    },
+    skipPermission: true,
+    defer: 'never',
+    handler: async (args) => {
+      const report = normalizeRecoveryReport(args);
+      const error = validateRecoveryReport(report);
+      if (error) return { accepted: false, error, retry: true };
+      sink.value = report;
+      return { accepted: true };
+    },
+  });
+}
+
 module.exports = {
   createPlanTool,
   createPassTool,
   createReviewTool,
+  createRecoveryTool,
   normalizeStringList,
   normalizePassReport,
   validatePassReport,
   normalizeReviewReport,
   validateReviewReport,
+  normalizeRecoveryReport,
+  validateRecoveryReport,
   recoverPassReportFromText,
   recoverReviewReportFromText,
   recoverSerializedReport,
