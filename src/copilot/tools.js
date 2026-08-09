@@ -215,6 +215,12 @@ function createPlanTool(defineTool, sink) {
               route: { type: 'string', enum: ['read_only', 'trivial', 'standard', 'high_risk'] },
               risk: { type: 'string', enum: ['low', 'medium', 'high'] },
               routingReason: { type: 'string' },
+              inspectionHints: {
+                type: 'array',
+                maxItems: 12,
+                items: { type: 'string' },
+                description: 'Optional bounded non-authoritative repository-relative files, paths, symbols, or tests already identified during planning. These are Worker A starting hints, not transcript/tool output.',
+              },
               result: {
                 type: 'string',
                 description: 'Required for read_only tasks: the coordinator answer/result after performing the necessary inspection.',
