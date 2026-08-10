@@ -23,3 +23,79 @@ jobs:
       - run: npm run check
       - name: Package VSIX
         run: npm run package -- --out /tmp/convergent-ci.vsix
+
+      - name: Detect headless benchmark request
+        id: headless-benchmark
+        if: github.event_name == 'push' && contains(github.event.head_commit.message, '[benchmark]')
+        shell: bash
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+        run: |
+          if [[ -n "${COPILOT_GITHUB_TOKEN}" ]]; then
+            echo "enabled=true" >> "${GITHUB_OUTPUT}"
+            echo "Headless benchmark requested and COPILOT_GITHUB_TOKEN is available."
+          else
+            echo "enabled=false" >> "${GITHUB_OUTPUT}"
+            echo "::notice::Headless benchmark requested but repository secret COPILOT_GITHUB_TOKEN is not configured; normal CI remains valid."
+          fi
+
+      - name: Checkout benchmark target
+        if: steps.headless-benchmark.outputs.enabled == 'true'
+        uses: actions/checkout@v6
+        with:
+          repository: Alex206/convergent-test-repo
+          ref: main
+          path: benchmark-target
+
+      - name: Run headless Scenario 03
+        id: scenario03
+        if: steps.headless-benchmark.outputs.enabled == 'true'
+        shell: bash
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          COPILOT_PLUGIN_DIR_ONLY: 'true'
+          CONVERGENT_HEADLESS_ANSWERS_JSON: '[]'
+          BENCHMARK_OUTPUT: ${{ runner.temp }}/convergent-benchmark
+        run: |
+          set -o pipefail
+          mkdir -p "${BENCHMARK_OUTPUT}"
+          node src/headless/cli.js \
+            --workspace "${GITHUB_WORKSPACE}/benchmark-target" \
+            --prompt-file "${GITHUB_WORKSPACE}/benchmark-target/benchmarks/03-dependency-ordering.md" \
+            --output-dir "${BENCHMARK_OUTPUT}" \
+            --flow fast \
+            --audit-level full \
+            --limit-policy pause \
+            2>&1 | tee "${BENCHMARK_OUTPUT}/runner.log"
+
+      - name: Independently validate benchmark target
+        if: always() && steps.headless-benchmark.outputs.enabled == 'true'
+        continue-on-error: true
+        shell: bash
+        env:
+          BENCHMARK_OUTPUT: ${{ runner.temp }}/convergent-benchmark
+        run: |
+          mkdir -p "${BENCHMARK_OUTPUT}"
+          set -o pipefail
+          python3 -B -m unittest discover -s benchmark-target/tests -v \
+            2>&1 | tee "${BENCHMARK_OUTPUT}/target-validation.log"
+
+      - name: Capture final target workspace
+        if: always() && steps.headless-benchmark.outputs.enabled == 'true'
+        shell: bash
+        env:
+          BENCHMARK_OUTPUT: ${{ runner.temp }}/convergent-benchmark
+        run: |
+          mkdir -p "${BENCHMARK_OUTPUT}"
+          git -C benchmark-target status --porcelain=v1 --untracked-files=all > "${BENCHMARK_OUTPUT}/final-status.txt" || true
+          git -C benchmark-target diff --binary --no-ext-diff > "${BENCHMARK_OUTPUT}/final-diff.patch" || true
+          tar --exclude=.git -czf "${BENCHMARK_OUTPUT}/workspace.tar.gz" -C benchmark-target .
+
+      - name: Upload headless benchmark evidence
+        if: always() && steps.headless-benchmark.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: convergent-fast-scenario03-${{ github.run_number }}
+          path: ${{ runner.temp }}/convergent-benchmark
+          if-no-files-found: warn
+          retention-days: 14
