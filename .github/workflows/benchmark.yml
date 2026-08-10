@@ -1,0 +1,118 @@
+name: Convergent Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: Benchmark markdown path inside convergent-test-repo
+        required: true
+        default: benchmarks/03-dependency-ordering.md
+        type: string
+      flow:
+        description: Convergent execution flow
+        required: true
+        default: fast
+        type: choice
+        options:
+          - fast
+          - auto
+          - thorough
+      target_ref:
+        description: convergent-test-repo ref to benchmark from
+        required: true
+        default: main
+        type: string
+      limit_policy:
+        description: Behavior at soft worker/reviewer limits
+        required: true
+        default: pause
+        type: choice
+        options:
+          - pause
+          - continue
+      answers_json:
+        description: JSON array of scripted answers for expected headless clarification/recovery prompts
+        required: true
+        default: '[]'
+        type: string
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+      COPILOT_PLUGIN_DIR_ONLY: 'true'
+      CONVERGENT_HEADLESS_ANSWERS_JSON: ${{ inputs.answers_json }}
+      BENCHMARK_OUTPUT: ${{ runner.temp }}/convergent-benchmark
+    steps:
+      - name: Checkout Convergent
+        uses: actions/checkout@v6
+
+      - name: Checkout benchmark target
+        uses: actions/checkout@v6
+        with:
+          repository: Alex206/convergent-test-repo
+          ref: ${{ inputs.target_ref }}
+          path: benchmark-target
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Install Convergent dependencies
+        run: npm install
+
+      - name: Require Copilot credential
+        shell: bash
+        run: |
+          if [[ -z "${COPILOT_GITHUB_TOKEN}" ]]; then
+            echo "Repository secret COPILOT_GITHUB_TOKEN is required for a real headless Copilot SDK benchmark." >&2
+            exit 2
+          fi
+
+      - name: Run Convergent headless benchmark
+        id: benchmark
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p "${BENCHMARK_OUTPUT}"
+          node src/headless/cli.js \
+            --workspace "${GITHUB_WORKSPACE}/benchmark-target" \
+            --prompt-file "${GITHUB_WORKSPACE}/benchmark-target/${{ inputs.scenario }}" \
+            --output-dir "${BENCHMARK_OUTPUT}" \
+            --flow "${{ inputs.flow }}" \
+            --audit-level full \
+            --limit-policy "${{ inputs.limit_policy }}" \
+            2>&1 | tee "${BENCHMARK_OUTPUT}/runner.log"
+
+      - name: Independently validate benchmark target
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          mkdir -p "${BENCHMARK_OUTPUT}"
+          set -o pipefail
+          python3 -B -m unittest discover -s benchmark-target/tests -v \
+            2>&1 | tee "${BENCHMARK_OUTPUT}/target-validation.log"
+
+      - name: Capture final target workspace
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p "${BENCHMARK_OUTPUT}"
+          git -C benchmark-target status --porcelain=v1 --untracked-files=all > "${BENCHMARK_OUTPUT}/final-status.txt" || true
+          git -C benchmark-target diff --binary --no-ext-diff > "${BENCHMARK_OUTPUT}/final-diff.patch" || true
+          tar --exclude=.git -czf "${BENCHMARK_OUTPUT}/workspace.tar.gz" -C benchmark-target .
+
+      - name: Upload benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: convergent-${{ inputs.flow }}-${{ github.run_number }}
+          path: ${{ runner.temp }}/convergent-benchmark
+          if-no-files-found: warn
+          retention-days: 14
