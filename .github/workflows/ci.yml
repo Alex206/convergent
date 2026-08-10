@@ -37,13 +37,23 @@ jobs:
         shell: bash
         env:
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          BENCHMARK_REPO_TOKEN: ${{ secrets.BENCHMARK_REPO_TOKEN }}
         run: |
-          if [[ -n "${COPILOT_GITHUB_TOKEN}" ]]; then
+          missing=0
+          if [[ -z "${COPILOT_GITHUB_TOKEN}" ]]; then
+            echo "::notice::Headless benchmark requested but repository secret COPILOT_GITHUB_TOKEN is not configured."
+            missing=1
+          fi
+          if [[ -z "${BENCHMARK_REPO_TOKEN}" ]]; then
+            echo "::notice::Headless benchmark requested but repository secret BENCHMARK_REPO_TOKEN is not configured. It needs read-only Contents access to Alex206/convergent-test-repo."
+            missing=1
+          fi
+          if [[ "${missing}" == "0" ]]; then
             echo "enabled=true" >> "${GITHUB_OUTPUT}"
-            echo "Headless benchmark requested and COPILOT_GITHUB_TOKEN is available."
+            echo "Headless benchmark requested and both required credentials are available."
           else
             echo "enabled=false" >> "${GITHUB_OUTPUT}"
-            echo "::notice::Headless benchmark requested but repository secret COPILOT_GITHUB_TOKEN is not configured; normal CI remains valid."
+            echo "Normal CI remains valid; benchmark execution is skipped until both credentials are configured."
           fi
 
       - name: Checkout benchmark target
@@ -53,7 +63,7 @@ jobs:
           repository: Alex206/convergent-test-repo
           ref: main
           path: benchmark-target
-          token: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
 
       - name: Run headless Scenario 03
         id: scenario03
