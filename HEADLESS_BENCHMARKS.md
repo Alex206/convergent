@@ -27,7 +27,14 @@ The SDK also recognizes `GH_TOKEN` and `GITHUB_TOKEN`, but `COPILOT_GITHUB_TOKEN
 
 ## GitHub Actions
 
-The `Convergent Benchmark` workflow is manually dispatchable. Add a repository Actions secret named `COPILOT_GITHUB_TOKEN` containing a token for a GitHub identity with Copilot entitlement, then dispatch the workflow with a benchmark path such as `benchmarks/03-dependency-ordering.md`.
+The benchmark workflows deliberately use two separate credentials:
+
+- `COPILOT_GITHUB_TOKEN`: a token for a GitHub identity with Copilot entitlement. It is used only by the Copilot SDK runtime.
+- `BENCHMARK_REPO_TOKEN`: a fine-grained token restricted to `Alex206/convergent-test-repo` with read-only repository **Contents** access. It is used only to check out the private benchmark target.
+
+Keeping these permissions separate avoids broadening the Copilot token merely to cross a private-repository boundary.
+
+The `Convergent Benchmark` workflow is manually dispatchable after both repository Actions secrets are configured. A benchmark path such as `benchmarks/03-dependency-ordering.md` selects the scenario.
 
 The workflow:
 
