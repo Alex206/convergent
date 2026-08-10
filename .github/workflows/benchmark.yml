@@ -57,6 +57,7 @@ jobs:
           repository: Alex206/convergent-test-repo
           ref: ${{ inputs.target_ref }}
           path: benchmark-target
+          token: ${{ secrets.COPILOT_GITHUB_TOKEN }}
 
       - uses: actions/setup-node@v6
         with:
