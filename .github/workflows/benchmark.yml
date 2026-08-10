@@ -48,6 +48,20 @@ jobs:
       CONVERGENT_HEADLESS_ANSWERS_JSON: ${{ inputs.answers_json }}
       BENCHMARK_OUTPUT: ${{ runner.temp }}/convergent-benchmark
     steps:
+      - name: Require benchmark credentials
+        shell: bash
+        env:
+          BENCHMARK_REPO_TOKEN: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+        run: |
+          if [[ -z "${COPILOT_GITHUB_TOKEN}" ]]; then
+            echo "Repository secret COPILOT_GITHUB_TOKEN is required for a real headless Copilot SDK benchmark." >&2
+            exit 2
+          fi
+          if [[ -z "${BENCHMARK_REPO_TOKEN}" ]]; then
+            echo "Repository secret BENCHMARK_REPO_TOKEN is required with read-only Contents access to Alex206/convergent-test-repo." >&2
+            exit 2
+          fi
+
       - name: Checkout Convergent
         uses: actions/checkout@v6
 
@@ -57,7 +71,7 @@ jobs:
           repository: Alex206/convergent-test-repo
           ref: ${{ inputs.target_ref }}
           path: benchmark-target
-          token: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
 
       - uses: actions/setup-node@v6
         with:
@@ -66,14 +80,6 @@ jobs:
 
       - name: Install Convergent dependencies
         run: npm install
-
-      - name: Require Copilot credential
-        shell: bash
-        run: |
-          if [[ -z "${COPILOT_GITHUB_TOKEN}" ]]; then
-            echo "Repository secret COPILOT_GITHUB_TOKEN is required for a real headless Copilot SDK benchmark." >&2
-            exit 2
-          fi
 
       - name: Run Convergent headless benchmark
         id: benchmark
