@@ -53,6 +53,7 @@ jobs:
           repository: Alex206/convergent-test-repo
           ref: main
           path: benchmark-target
+          token: ${{ secrets.COPILOT_GITHUB_TOKEN }}
 
       - name: Run headless Scenario 03
         id: scenario03
