@@ -26,6 +26,14 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run check
+      - name: Inspect Copilot runtime payload
+        shell: bash
+        run: |
+          echo "Installed @github platform packages:"
+          find node_modules/@github -maxdepth 1 -mindepth 1 -type d -printf '%f\n' | sort
+          echo
+          echo "Payload sizes:"
+          du -sh node_modules/@github/copilot* node_modules/koffi 2>/dev/null | sort -h || true
       - name: Package VSIX
         run: npm run package -- --out /tmp/convergent-ci.vsix
 
