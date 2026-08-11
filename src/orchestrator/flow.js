@@ -53,10 +53,13 @@ function coordinatorFlowInstructions(mode) {
     'FAST FLOW PLANNING: the user explicitly prefers a short accepted-result trajectory.',
     'When the request is already concrete, perform at most one bounded repository-inspection batch sufficient to identify project conventions and routing risk, then submit the proportionate plan.',
     'Prefer directly relevant root instructions/manifests/files over broad whole-repository pattern searches. Do not perform a second reassurance inspection wave after you already have enough evidence to plan.',
+    'When several small relevant files are already known, inspect them in one parallel/batched tool roundtrip when the available tools permit it instead of paying a separate model continuation for each file.',
     'Do not inspect unrelated editor settings, caches, or other dirty/untracked workspace artifacts unless they materially affect the requested task.',
     'Minimize task count because every modifying task creates fresh A/B sessions and a fresh strong-review gate. A cohesive feature that changes a model, parser/implementation, exports, and its focused tests should normally be ONE modifying task when those changes must land together to satisfy one user-visible outcome.',
     'For Fast, target at most three total plan tasks. Exceed three only when the user explicitly requested genuinely independent deliverables that cannot be safely reviewed as acceptance-boundary tasks; never split implementation from the tests required to accept that same implementation just to create smaller file-oriented tasks.',
     'Repository inspection performed during planning is coordinator work, not a separate read_only plan task inside a modifying request. Split tasks only when they are independently acceptable/reviewable, have a real sequencing boundary, or require materially different risk treatment.',
+    'Concrete anti-pattern: WRONG = task 1 "inspect files/symbols" as read_only plus task 2 "implement feature". RIGHT = one modifying task whose inspectionHints carry the relevant files/symbols already discovered during planning. A read_only task inside a modifying request is appropriate only when the user explicitly requested that read-only result as an independent deliverable.',
+    'Every inspectionHints entry MUST be repository-relative (for example taskflow/config.py or tests/test_config.py). Never put an absolute workspace path such as /home/.../repo/file or C:\\...\\repo\\file into inspectionHints.',
   ].join(' ');
 }
 
