@@ -24,6 +24,13 @@ jobs:
           node-version: '24'
           package-manager-cache: false
       - run: npm install
+      - name: Capture generated dependency lock
+        uses: actions/upload-artifact@v4
+        with:
+          name: convergent-package-lock-${{ github.run_number }}
+          path: package-lock.json
+          if-no-files-found: error
+          retention-days: 1
       - run: npm test
       - run: npm run check
       - name: Package VSIX
