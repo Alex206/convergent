@@ -22,10 +22,14 @@ test('fast flow allows one automatic remediation delta review before asking', ()
   assert.match(coordinatorFlowInstructions('fast'), /editor settings/i);
   assert.match(coordinatorFlowInstructions('fast'), /Minimize task count/i);
   assert.match(coordinatorFlowInstructions('fast'), /ONE modifying task/i);
+  assert.match(coordinatorFlowInstructions('fast'), /at most three total plan tasks/i);
+  assert.match(coordinatorFlowInstructions('fast'), /never split implementation from the tests/i);
   assert.match(coordinatorFlowInstructions('fast'), /not a separate read_only plan task/i);
   assert.match(workerFlowInstructions('fast'), /focused inspection/i);
   assert.match(workerFlowInstructions('fast'), /apply_patch/i);
   assert.match(workerFlowInstructions('fast'), /peer already passed/i);
+  assert.match(workerFlowInstructions('fast'), /repository-established validation framework/i);
+  assert.match(workerFlowInstructions('fast'), /runtime session-state directories/i);
   assert.match(reviewerFlowInstructions('fast'), /instead of mechanically rerunning/i);
 });
 
