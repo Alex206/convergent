@@ -20,83 +20,115 @@ def check(name, fn):
 from taskflow import ConfigError, TaskSpec, order_tasks, parse_tasks
 
 
+def task(name, depends_on=None):
+    data = {"name": name, "command": ["echo", name]}
+    if depends_on is not None:
+        data["depends_on"] = depends_on
+    return data
+
+
 def assert_default():
-    spec = TaskSpec(id="a", command=("echo", "a"))
+    spec = TaskSpec(name="a", command=("echo", "a"))
     assert hasattr(spec, "depends_on"), "TaskSpec.depends_on is missing"
     assert spec.depends_on == (), f"expected default (), got {spec.depends_on!r}"
+    assert isinstance(spec.depends_on, tuple), type(spec.depends_on).__name__
 
 
 def assert_parse_absent():
-    parsed = parse_tasks([{"id": "a", "command": ["echo", "a"]}])
+    parsed = parse_tasks([task("a")])
     assert parsed[0].depends_on == (), parsed[0].depends_on
 
 
 def assert_parse_dependencies():
-    parsed = parse_tasks([
-        {"id": "a", "command": ["echo", "a"]},
-        {"id": "b", "command": ["echo", "b"], "depends_on": ["a"]},
-    ])
+    parsed = parse_tasks([task("a"), task("b", ["a"])])
     assert parsed[1].depends_on == ("a",), parsed[1].depends_on
+    assert isinstance(parsed[1].depends_on, tuple), type(parsed[1].depends_on).__name__
 
 
 def assert_invalid_dep_shapes():
-    bad_values = ["a", [""], [1], ["a", ""]]
+    bad_values = [None, "a", b"a", [""], ["   "], [1], ["a", ""]]
     for value in bad_values:
+        data = {"name": "b", "command": ["echo", "b"], "depends_on": value}
         try:
-            parse_tasks([{"id": "b", "command": ["echo", "b"], "depends_on": value}])
+            parse_tasks([data])
         except ConfigError:
             continue
         raise AssertionError(f"depends_on={value!r} did not raise ConfigError")
 
 
-def assert_unknown_dependency():
-    tasks = parse_tasks([{"id": "b", "command": ["echo", "b"], "depends_on": ["missing"]}])
+def assert_duplicate_dependencies():
     try:
-        order_tasks(tasks)
+        parse_tasks([task("a"), task("b", ["a", "a"])])
+    except ConfigError as exc:
+        text = str(exc).lower()
+        assert "depend" in text and ("duplicate" in text or "a" in text), text
+        return
+    raise AssertionError("duplicate dependencies did not raise ConfigError")
+
+
+def assert_self_dependency():
+    try:
+        parse_tasks([task("a", ["a"])])
+    except ConfigError as exc:
+        text = str(exc).lower()
+        assert "a" in text and "depend" in text, text
+        return
+    raise AssertionError("self dependency did not raise ConfigError")
+
+
+def assert_unknown_dependency():
+    try:
+        parse_tasks([task("b", ["missing"])])
     except ConfigError as exc:
         text = str(exc)
         assert "b" in text and "missing" in text, text
         return
-    raise AssertionError("unknown dependency did not raise ConfigError")
+    raise AssertionError("parse_tasks accepted an unknown dependency")
 
 
 def assert_cycle():
-    tasks = parse_tasks([
-        {"id": "a", "command": ["echo", "a"], "depends_on": ["b"]},
-        {"id": "b", "command": ["echo", "b"], "depends_on": ["a"]},
-    ])
+    tasks = parse_tasks([task("a", ["b"]), task("b", ["a"])])
     try:
         order_tasks(tasks)
     except ConfigError as exc:
-        text = str(exc)
+        text = str(exc).lower()
+        assert "cycle" in text, text
         assert "a" in text and "b" in text, text
         return
     raise AssertionError("dependency cycle did not raise ConfigError")
 
 
-def ids(items):
-    return [item.id for item in items]
+def names(items):
+    return [item.name for item in items]
 
 
-def assert_stable_order():
+def assert_simple_chain():
+    tasks = parse_tasks([task("build"), task("test", ["build"]), task("publish", ["test"])])
+    assert names(order_tasks(tasks)) == ["build", "test", "publish"]
+
+
+def assert_branching_stability():
     tasks = parse_tasks([
-        {"id": "a", "command": ["echo", "a"]},
-        {"id": "b", "command": ["echo", "b"]},
-        {"id": "c", "command": ["echo", "c"], "depends_on": ["a"]},
-        {"id": "d", "command": ["echo", "d"], "depends_on": ["b"]},
-        {"id": "e", "command": ["echo", "e"], "depends_on": ["c", "d"]},
+        task("a"),
+        task("b"),
+        task("c", ["a"]),
+        task("d", ["b"]),
+        task("e", ["c", "d"]),
     ])
-    ordered = ids(order_tasks(tasks))
+    ordered = names(order_tasks(tasks))
     assert ordered == ["a", "b", "c", "d", "e"], ordered
 
 
-def assert_independent_stability():
+def assert_unconstrained_input_order():
     tasks = parse_tasks([
-        {"id": "z", "command": ["echo", "z"]},
-        {"id": "a", "command": ["echo", "a"]},
-        {"id": "m", "command": ["echo", "m"]},
+        task("z"),
+        task("dependent", ["base"]),
+        task("a"),
+        task("base"),
+        task("m"),
     ])
-    assert ids(order_tasks(tasks)) == ["z", "a", "m"]
+    ordered = names(order_tasks(tasks))
+    assert ordered == ["z", "a", "base", "dependent", "m"], ordered
 
 
 def assert_exports():
@@ -107,14 +139,17 @@ def assert_exports():
     assert taskflow.order_tasks is order_tasks
 
 
-check("TaskSpec.depends_on default", assert_default)
+check("TaskSpec.depends_on immutable tuple default", assert_default)
 check("parse absent depends_on", assert_parse_absent)
-check("parse dependency list", assert_parse_dependencies)
+check("parse dependency sequence to tuple", assert_parse_dependencies)
 check("reject invalid depends_on shapes", assert_invalid_dep_shapes)
-check("unknown dependency error names ids", assert_unknown_dependency)
-check("cycle error names involved ids", assert_cycle)
-check("stable topological ordering", assert_stable_order)
-check("independent tasks preserve input order", assert_independent_stability)
+check("reject duplicate dependencies", assert_duplicate_dependencies)
+check("reject self dependencies", assert_self_dependency)
+check("parse_tasks rejects unknown dependencies", assert_unknown_dependency)
+check("cycle error names involved tasks", assert_cycle)
+check("simple dependency chain", assert_simple_chain)
+check("branching dependency order is deterministic", assert_branching_stability)
+check("unconstrained tasks preserve input order", assert_unconstrained_input_order)
 check("public exports", assert_exports)
 
 result["ok"] = all(item["ok"] for item in result["checks"])
