@@ -219,7 +219,12 @@ function createPlanTool(defineTool, sink) {
                 type: 'array',
                 maxItems: 12,
                 items: { type: 'string' },
-                description: 'Optional bounded non-authoritative repository-relative files, paths, symbols, or tests already identified during planning. These are Worker A starting hints, not transcript/tool output.',
+                description: 'Optional bounded non-authoritative repository-relative EXISTING files, paths, symbols, or tests actually observed during planning. Do not put proposed/new files here; those belong in description or acceptance criteria. These are Worker A starting locators, not transcript/tool output.',
+              },
+              inspectionSummary: {
+                type: 'string',
+                maxLength: 3000,
+                description: 'Optional bounded factual summary of repository structure/content already learned while planning this modifying task. Reuse concrete facts that can save Worker A redundant inspection, but do not paste raw tool transcripts or speculative content.',
               },
               result: {
                 type: 'string',
