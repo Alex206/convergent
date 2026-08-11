@@ -11,6 +11,7 @@ const { resolveHeadlessRoleModels, assertHeadlessRoleModels } = require('./model
 
 const execFileAsync = promisify(execFile);
 const VALID_FLOWS = new Set(['fast', 'auto', 'thorough']);
+const STRUCTURED_REPORT_TOOLS = new Set(['report_plan', 'report_pass', 'report_review', 'report_recovery']);
 
 function extractBenchmarkPrompt(text) {
   const source = String(text ?? '');
@@ -37,7 +38,24 @@ function defaultMaxChatRequests(flow) {
   return 24;
 }
 
-function createModelCallBudget({ maxTotalCalls, maxCallsPerTurn, maxChatRequests, onExceeded } = {}) {
+function eventToolKey(event = {}) {
+  const sessionId = String(event.sessionId ?? '');
+  const toolCallId = String(event?.data?.toolCallId ?? '');
+  return sessionId && toolCallId ? `${sessionId}\0${toolCallId}` : '';
+}
+
+function acceptedStructuredToolResult(event = {}) {
+  const raw = event?.data?.result?.content ?? event?.data?.result?.detailedContent;
+  if (raw && typeof raw === 'object') return raw.accepted === true;
+  if (typeof raw !== 'string' || !raw.trim()) return false;
+  try {
+    return JSON.parse(raw).accepted === true;
+  } catch {
+    return false;
+  }
+}
+
+function createModelCallBudget({ maxTotalCalls, maxCallsPerTurn, maxChatRequests, onExceeded, onTurnLimit } = {}) {
   const totalLimit = Math.max(1, Math.floor(Number(maxTotalCalls) || 1));
   const turnLimit = Math.max(1, Math.floor(Number(maxCallsPerTurn) || 1));
   const configuredChatLimit = Number(maxChatRequests);
@@ -45,16 +63,48 @@ function createModelCallBudget({ maxTotalCalls, maxCallsPerTurn, maxChatRequests
     ? Math.max(1, Math.floor(configuredChatLimit))
     : Number.POSITIVE_INFINITY;
   const turnCalls = new Map();
+  const pendingTurnLimits = new Map();
+  const gracefulTurnStops = new Map();
+  const activeTools = new Map();
+  const turnLimitStops = [];
   let totalCalls = 0;
   let chatStartUsed = null;
   let chatLastUsed = null;
   let chatRequestsUsed = 0;
+  let pendingHardLimit = null;
   let breach = null;
 
   const exceed = (next) => {
     if (breach) return;
     breach = next;
+    pendingHardLimit = null;
+    pendingTurnLimits.clear();
     onExceeded?.(next);
+  };
+
+  const hardBoundary = (event, boundary) => {
+    if (!pendingHardLimit || breach) return false;
+    exceed({
+      ...pendingHardLimit,
+      boundary,
+      sessionId: event.sessionId ?? pendingHardLimit.sessionId,
+    });
+    return true;
+  };
+
+  const turnBoundary = (event, boundary, toolName = null) => {
+    if (breach) return false;
+    const agent = String(event.agent ?? 'unknown');
+    const pending = pendingTurnLimits.get(agent);
+    if (!pending) return false;
+    pendingTurnLimits.delete(agent);
+    exceed({
+      ...pending,
+      boundary,
+      sessionId: event.sessionId ?? pending.sessionId,
+      ...(toolName ? { toolName } : {}),
+    });
+    return true;
   };
 
   return {
@@ -62,9 +112,59 @@ function createModelCallBudget({ maxTotalCalls, maxCallsPerTurn, maxChatRequests
       const agent = String(event.agent ?? 'unknown');
       if (event.type === 'prompt_send') {
         turnCalls.set(agent, 0);
+        pendingTurnLimits.delete(agent);
+        gracefulTurnStops.delete(agent);
         return;
       }
-      if (event.type !== 'assistant_usage' || breach) return;
+      if (breach) return;
+
+      if (event.type === 'tool_start') {
+        const key = eventToolKey(event);
+        if (key) activeTools.set(key, String(event.tool ?? event?.data?.toolName ?? '').split(':').pop());
+        return;
+      }
+
+      if (event.type === 'tool_complete') {
+        const key = eventToolKey(event);
+        const toolName = key ? activeTools.get(key) : null;
+        if (key) activeTools.delete(key);
+
+        if (hardBoundary(event, 'tool_complete')) return;
+
+        const pending = pendingTurnLimits.get(agent);
+        if (!pending) return;
+        if (STRUCTURED_REPORT_TOOLS.has(toolName) && acceptedStructuredToolResult(event)) {
+          pendingTurnLimits.delete(agent);
+          const stop = {
+            ...pending,
+            boundary: 'accepted_report',
+            sessionId: event.sessionId ?? pending.sessionId,
+            toolName,
+          };
+          gracefulTurnStops.set(agent, stop);
+          turnLimitStops.push(stop);
+          onTurnLimit?.(stop);
+          return;
+        }
+        turnBoundary(event, 'tool_complete', toolName);
+        return;
+      }
+
+      if (event.type === 'assistant_turn_end') {
+        if (hardBoundary(event, 'assistant_turn_end')) return;
+        turnBoundary(event, 'assistant_turn_end');
+        return;
+      }
+
+      if (event.type === 'assistant_turn_start') {
+        const graceful = gracefulTurnStops.get(agent);
+        if (graceful) {
+          onTurnLimit?.({ ...graceful, boundary: 'post_report_turn_start' });
+        }
+        return;
+      }
+
+      if (event.type !== 'assistant_usage') return;
 
       totalCalls += 1;
       const currentTurnCalls = (turnCalls.get(agent) ?? 0) + 1;
@@ -75,26 +175,82 @@ function createModelCallBudget({ maxTotalCalls, maxCallsPerTurn, maxChatRequests
         if (chatStartUsed === null || quotaUsed < chatStartUsed) chatStartUsed = quotaUsed;
         chatLastUsed = quotaUsed;
         chatRequestsUsed = Math.max(0, quotaUsed - chatStartUsed);
-        if (chatRequestsUsed >= chatLimit) {
-          exceed({
-            kind: 'chat_requests',
-            agent,
-            calls: chatRequestsUsed,
-            limit: chatLimit,
-            totalCalls,
-            accountUsedRequests: quotaUsed,
-            accountStartUsedRequests: chatStartUsed,
-          });
-          return;
-        }
       }
 
-      if (totalCalls >= totalLimit) {
-        exceed({ kind: 'run', agent, calls: totalCalls, limit: totalLimit, turnCalls: currentTurnCalls, chatRequestsUsed });
+      if (Number.isFinite(chatLimit) && chatRequestsUsed > chatLimit) {
+        exceed({
+          kind: 'chat_requests',
+          agent,
+          calls: chatRequestsUsed,
+          limit: chatLimit,
+          totalCalls,
+          accountUsedRequests: quotaUsed,
+          accountStartUsedRequests: chatStartUsed,
+          boundary: 'assistant_usage_overrun',
+          sessionId: event.sessionId,
+        });
         return;
       }
-      if (currentTurnCalls >= turnLimit) {
-        exceed({ kind: 'turn', agent, calls: currentTurnCalls, limit: turnLimit, totalCalls, chatRequestsUsed });
+      if (totalCalls > totalLimit) {
+        exceed({
+          kind: 'run',
+          agent,
+          calls: totalCalls,
+          limit: totalLimit,
+          turnCalls: currentTurnCalls,
+          chatRequestsUsed,
+          boundary: 'assistant_usage_overrun',
+          sessionId: event.sessionId,
+        });
+        return;
+      }
+      if (currentTurnCalls > turnLimit) {
+        exceed({
+          kind: 'turn',
+          agent,
+          calls: currentTurnCalls,
+          limit: turnLimit,
+          totalCalls,
+          chatRequestsUsed,
+          boundary: 'assistant_usage_overrun',
+          sessionId: event.sessionId,
+        });
+        return;
+      }
+
+      if (!pendingHardLimit && Number.isFinite(chatLimit) && chatRequestsUsed === chatLimit) {
+        pendingHardLimit = {
+          kind: 'chat_requests',
+          agent,
+          calls: chatRequestsUsed,
+          limit: chatLimit,
+          totalCalls,
+          accountUsedRequests: quotaUsed,
+          accountStartUsedRequests: chatStartUsed,
+          sessionId: event.sessionId,
+        };
+      }
+      if (!pendingHardLimit && totalCalls === totalLimit) {
+        pendingHardLimit = {
+          kind: 'run',
+          agent,
+          calls: totalCalls,
+          limit: totalLimit,
+          turnCalls: currentTurnCalls,
+          chatRequestsUsed,
+          sessionId: event.sessionId,
+        };
+      }
+      if (currentTurnCalls === turnLimit) {
+        pendingTurnLimits.set(agent, {
+          kind: 'turn',
+          agent,
+          calls: currentTurnCalls,
+          limit: turnLimit,
+          totalCalls,
+          chatRequestsUsed,
+          sessionId: event.sessionId,
+        });
       }
     },
     snapshot() {
@@ -107,6 +263,9 @@ function createModelCallBudget({ maxTotalCalls, maxCallsPerTurn, maxChatRequests
         chatLastUsed,
         chatRequestsUsed,
         turnCalls: Object.fromEntries(turnCalls),
+        pendingHardLimit,
+        pendingTurnLimits: Object.fromEntries(pendingTurnLimits),
+        turnLimitStops,
         breach,
       };
     },
@@ -289,6 +448,13 @@ async function runHeadless(options, dependencies = {}) {
     maxTotalCalls: options.maxModelCalls,
     maxCallsPerTurn: options.maxModelCallsPerTurn,
     maxChatRequests: options.maxChatRequests,
+    onTurnLimit: (stop) => {
+      const message = `Headless ${stop.agent} turn reached its ${stop.limit}-call cap with an accepted ${stop.toolName}; cancelling only post-report SDK continuation.`;
+      console.error(message);
+      void audit.record({ type: 'headless_turn_limit_report_complete', ...stop, message });
+      const session = engine?.sessions?.find((candidate) => candidate?.sessionId === stop.sessionId);
+      void session?.abort?.().catch(() => {});
+    },
     onExceeded: (breach) => {
       budgetExceeded = breach;
       const scope = breach.kind === 'turn'
@@ -296,7 +462,7 @@ async function runHeadless(options, dependencies = {}) {
         : breach.kind === 'chat_requests'
           ? 'Copilot chat-request quota delta'
           : 'headless run';
-      const message = `Headless budget reached for ${scope} (${breach.calls}/${breach.limit}); aborting active Copilot sessions before further quota is consumed.`;
+      const message = `Headless budget reached for ${scope} (${breach.calls}/${breach.limit}) after the limit call finished its selected action; aborting active Copilot sessions before another model continuation.`;
       console.error(message);
       void audit.record({ type: 'headless_budget_exceeded', ...breach, message });
       controller.abort();
@@ -374,10 +540,13 @@ async function runHeadless(options, dependencies = {}) {
 
 module.exports = {
   VALID_FLOWS,
+  STRUCTURED_REPORT_TOOLS,
   extractBenchmarkPrompt,
   defaultMaxModelCalls,
   defaultMaxModelCallsPerTurn,
   defaultMaxChatRequests,
+  eventToolKey,
+  acceptedStructuredToolResult,
   createModelCallBudget,
   parseArgs,
   readPrompt,
