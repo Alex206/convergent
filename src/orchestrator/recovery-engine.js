@@ -2,6 +2,7 @@
 
 const { ResumableConvergentEngine } = require('./resumable-engine');
 const { requireReport, taskPrompt, formatValidationEvidence } = require('./engine');
+const { formatTaskChangeManifest } = require('./task-change-manifest');
 const { pauseWorkflow } = require('./control');
 const { SessionFactory } = require('../copilot/session-factory');
 
@@ -36,7 +37,22 @@ function queueRecoveryInstruction(session, guidance) {
   return true;
 }
 
+function appendTaskChangeManifestPrompt(prompt, manifest) {
+  if (!manifest) return String(prompt ?? '');
+  return [
+    String(prompt ?? ''),
+    '',
+    formatTaskChangeManifest(manifest, 'Deterministic task change manifest for this review'),
+    'Start with these exact task-change paths instead of rediscovering file locations from Git status or broad repository searches.',
+  ].join('\n');
+}
+
 class RecoveryConvergentEngine extends ResumableConvergentEngine {
+  constructor(options) {
+    super(options);
+    this.activeTaskChangeContext = null;
+  }
+
   recoveryFactory() {
     return new SessionFactory({
       client: this.client,
@@ -50,6 +66,28 @@ class RecoveryConvergentEngine extends ResumableConvergentEngine {
       runId: this.runId,
       reasoningMode: this.reasoningMode,
     });
+  }
+
+  async runTask(factory, task, taskSessionKey, routing, taskResumeState = null) {
+    const previousContext = this.activeTaskChangeContext;
+    const taskContext = await this.createTaskContext(factory);
+    this.activeTaskChangeContext = taskContext;
+    try {
+      return await super.runTask(factory, task, taskSessionKey, routing, taskResumeState);
+    } finally {
+      this.activeTaskChangeContext = previousContext;
+    }
+  }
+
+  async runWorkerPass(worker, task, mode, findings, peerPass = null, taskContext = null) {
+    return super.runWorkerPass(
+      worker,
+      task,
+      mode,
+      findings,
+      peerPass,
+      taskContext ?? this.activeTaskChangeContext,
+    );
   }
 
   async consultRecoveryCoordinator(task, kind, detail, { allowPeer = false } = {}) {
@@ -205,12 +243,32 @@ class RecoveryConvergentEngine extends ResumableConvergentEngine {
 
   async runStrongReview(task, workerA, workerB, reviewer, ...rest) {
     this.activeReviewerForRecovery = reviewer;
+    const session = reviewer?.session;
+    const previousSendAndWait = typeof session?.sendAndWait === 'function'
+      ? session.sendAndWait.bind(session)
+      : null;
+
+    if (previousSendAndWait && this.activeTaskChangeContext) {
+      session.sendAndWait = async (options, timeoutMs) => {
+        const manifest = await this.currentTaskChangeManifest(this.activeTaskChangeContext);
+        return previousSendAndWait({
+          ...options,
+          prompt: appendTaskChangeManifestPrompt(options?.prompt, manifest),
+        }, timeoutMs);
+      };
+    }
+
     try {
       return await super.runStrongReview(task, workerA, workerB, reviewer, ...rest);
     } finally {
+      if (previousSendAndWait) session.sendAndWait = previousSendAndWait;
       if (this.activeReviewerForRecovery === reviewer) this.activeReviewerForRecovery = null;
     }
   }
 }
 
-module.exports = { RecoveryConvergentEngine, queueRecoveryInstruction };
+module.exports = {
+  RecoveryConvergentEngine,
+  queueRecoveryInstruction,
+  appendTaskChangeManifestPrompt,
+};
