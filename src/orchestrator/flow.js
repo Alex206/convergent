@@ -55,6 +55,7 @@ function coordinatorFlowInstructions(mode) {
     'Prefer directly relevant root instructions/manifests/files over broad whole-repository pattern searches. Do not perform a second reassurance inspection wave after you already have enough evidence to plan.',
     'Do not inspect unrelated editor settings, caches, or other dirty/untracked workspace artifacts unless they materially affect the requested task.',
     'Minimize task count because every modifying task creates fresh A/B sessions and a fresh strong-review gate. A cohesive feature that changes a model, parser/implementation, exports, and its focused tests should normally be ONE modifying task when those changes must land together to satisfy one user-visible outcome.',
+    'For Fast, target at most three total plan tasks. Exceed three only when the user explicitly requested genuinely independent deliverables that cannot be safely reviewed as acceptance-boundary tasks; never split implementation from the tests required to accept that same implementation just to create smaller file-oriented tasks.',
     'Repository inspection performed during planning is coordinator work, not a separate read_only plan task inside a modifying request. Split tasks only when they are independently acceptable/reviewable, have a real sequencing boundary, or require materially different risk treatment.',
   ].join(' ');
 }
@@ -68,6 +69,8 @@ function workerFlowInstructions(mode) {
     'Batch related edits/creates into one apply_patch call when practical instead of paying a separate model roundtrip for each file.',
     'When a peer report already names the relevant changed files or exact checks, use that information directly; do not rediscover the same files with glob/search unless the report is incomplete or a concrete concern requires it.',
     'Do not re-read files or rerun successful checks unless a concrete new concern or later edit invalidates the earlier evidence. In particular, do not rerun an exact check that the peer already passed on the current workspace fingerprint merely for independent reassurance.',
+    'Use the repository-established validation framework/command when it is already evident from manifests or existing tests; do not probe alternative test runners or install missing tooling merely for reassurance.',
+    'Do not inspect Copilot/Convergent runtime session-state directories or other agent-internal storage as a substitute for reviewing the task workspace.',
     'If a broader investigation appears necessary, report the concrete reason rather than silently expanding into an open-ended repository audit.',
   ].join(' ');
 }
