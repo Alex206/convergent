@@ -4,19 +4,24 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const { HeadlessWorkflowUi } = require('../src/headless/ui');
-const { extractBenchmarkPrompt, parseArgs, createHeadlessPermissionHandler, createScriptedUserInputHandler, answersFromEnvironment } = require('../src/headless/runner');
+const { extractBenchmarkPrompt, defaultMaxModelCalls, parseArgs, createHeadlessPermissionHandler, createScriptedUserInputHandler, answersFromEnvironment } = require('../src/headless/runner');
 
 test('benchmark prompt extraction uses only the Prompt fenced block', () => {
   const text = '# Scenario\n\n## Prompt\n\n```text\nImplement dependency ordering.\n```\n\n## Expected scope\nIgnore me.';
   assert.equal(extractBenchmarkPrompt(text), 'Implement dependency ordering.');
 });
 
-test('headless arguments require output outside target workspace', () => {
+test('headless arguments require output outside target workspace and bound model calls by flow', () => {
   const workspace = path.resolve('/tmp/target');
   assert.throws(() => parseArgs(['--workspace', workspace, '--prompt', 'x', '--output-dir', path.join(workspace, 'audit')]), /outside --workspace/);
   assert.throws(() => parseArgs(['--workspace', workspace, '--prompt-file', '/tmp/outside.md', '--output-dir', '/tmp/results']), /prompt-file must be inside/);
   const parsed = parseArgs(['--workspace', workspace, '--prompt', 'x', '--output-dir', '/tmp/results', '--flow', 'fast']);
   assert.equal(parsed.flow, 'fast');
+  assert.equal(parsed.maxModelCalls, 24);
+  assert.equal(defaultMaxModelCalls('auto'), 60);
+  assert.equal(defaultMaxModelCalls('thorough'), 120);
+  const explicit = parseArgs(['--workspace', workspace, '--prompt', 'x', '--output-dir', '/tmp/results', '--flow', 'fast', '--max-model-calls', '17']);
+  assert.equal(explicit.maxModelCalls, 17);
 });
 
 test('headless permissions allow workspace work but deny risky shell and outside writes', async () => {
