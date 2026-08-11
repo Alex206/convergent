@@ -6,11 +6,17 @@ function oneLine(value, max = 500) {
 }
 
 class HeadlessWorkflowUi {
-  constructor({ eventSink, logger = console, limitPolicy = 'pause' } = {}) {
+  constructor({
+    eventSink,
+    logger = console,
+    limitPolicy = 'pause',
+    stopAfterPlan = process.env.CONVERGENT_HEADLESS_STOP_AFTER_PLAN === '1',
+  } = {}) {
     this.eventSink = eventSink;
     this.auditEvent = eventSink;
     this.logger = logger;
     this.limitPolicy = limitPolicy === 'continue' ? 'continue' : 'pause';
+    this.stopAfterPlan = Boolean(stopAfterPlan);
     this.flowMode = 'auto';
     this.agentInactivityTimeoutMs = undefined;
     this.toolStallTimeoutMs = undefined;
@@ -37,6 +43,16 @@ class HeadlessWorkflowUi {
       this.audit({ type: 'headless_plan_budget_exceeded', taskCount, limit: 3, message });
       const error = new Error(message);
       error.code = 'CONVERGENT_HEADLESS_PLAN_BUDGET';
+      error.plan = plan;
+      error.routes = routes;
+      throw error;
+    }
+    if (this.stopAfterPlan) {
+      const message = `Headless plan-only diagnostic completed with ${taskCount} accepted task(s); stopping before task execution.`;
+      this.log(message);
+      this.audit({ type: 'headless_plan_diagnostic_complete', taskCount, plan, routes, message });
+      const error = new Error(message);
+      error.code = 'CONVERGENT_HEADLESS_PLAN_DIAGNOSTIC_COMPLETE';
       error.plan = plan;
       error.routes = routes;
       throw error;
