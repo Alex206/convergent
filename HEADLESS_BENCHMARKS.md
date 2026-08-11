@@ -68,14 +68,15 @@ The offline efficiency summary reports Convergent prompt count versus underlying
 
 Headless runs fail closed for unexpected operator questions unless scripted answers are supplied through `CONVERGENT_HEADLESS_ANSWERS_JSON`. Risky shell commands such as `git push`, `git reset --hard`, and forced Git clean are denied by the headless permission adapter. Tool or agent inactivity decisions abort the affected turn rather than waiting indefinitely.
 
-Fast headless benchmarks use independent limits so one pathological agent loop cannot consume an account before a task boundary is reached:
+Fast headless benchmarks use independent limits so a bad plan or one pathological agent loop cannot consume an account before a useful workflow boundary is reached:
 
+- **3 planned tasks maximum** before implementation begins; a larger Fast plan records the accepted plan and stops before Worker A is started,
 - **24 total underlying model calls** per run by default,
 - **10 underlying model calls in one Convergent agent prompt/turn** by default,
 - **8 Copilot chat requests of observed account-quota delta** by default,
 - **12 reported AI credits** as a soft safe-boundary budget in the supplied GitHub workflows,
 - **15 minutes** as the outer manual workflow timeout.
 
-The first three are hard headless fuses: when breached, Convergent aborts active sessions immediately and records the budget breach. The AI-credit limit is different: it is checked at safe workflow boundaries because reported credit data can lag the active agent loop.
+The plan-size guard is intentionally headless/Fast-specific: it protects benchmark quota from pathological over-decomposition without changing normal VS Code orchestration. The three call/quota limits are hard headless fuses; when breached, Convergent aborts active sessions immediately and records the budget breach. The AI-credit limit is different: it is checked at safe workflow boundaries because reported credit data can lag the active agent loop.
 
 Soft worker/reviewer limits default to `pause`. The workflow exposes a `limit_policy` input when an intentionally more autonomous benchmark is desired. A benchmark account with scarce quota should keep `pause` and conservative hard fuses.
