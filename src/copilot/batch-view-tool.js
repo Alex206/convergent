@@ -239,6 +239,7 @@ function createBatchViewTool(defineTool, workspace) {
           truncated: entry.truncated || content.length < entry.content.length,
         };
       });
+      const totalChars = MAX_BATCH_VIEW_TOTAL_CHARS - remaining;
 
       return {
         searches: discovery.searches,
@@ -253,7 +254,9 @@ function createBatchViewTool(defineTool, workspace) {
           maxCharsPerFile: MAX_BATCH_VIEW_CHARS_PER_FILE,
           maxFileCharsTotal: MAX_BATCH_VIEW_TOTAL_CHARS,
         },
-        totalFileChars: MAX_BATCH_VIEW_TOTAL_CHARS - remaining,
+        // Preserve the original field for existing consumers while making its scope explicit.
+        totalChars,
+        totalFileChars: totalChars,
       };
     },
   });
