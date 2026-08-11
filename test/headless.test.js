@@ -4,7 +4,20 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const { HeadlessWorkflowUi } = require('../src/headless/ui');
-const { extractBenchmarkPrompt, defaultMaxModelCalls, parseArgs, createHeadlessPermissionHandler, createScriptedUserInputHandler, answersFromEnvironment } = require('../src/headless/runner');
+const {
+  extractBenchmarkPrompt,
+  defaultMaxModelCalls,
+  defaultMaxModelCallsPerTurn,
+  createModelCallBudget,
+  parseArgs,
+  createHeadlessPermissionHandler,
+  createScriptedUserInputHandler,
+  answersFromEnvironment,
+} = require('../src/headless/runner');
+const {
+  resolveHeadlessRoleModels,
+  assertHeadlessRoleModels,
+} = require('../src/headless/model-policy');
 
 test('benchmark prompt extraction uses only the Prompt fenced block', () => {
   const text = '# Scenario\n\n## Prompt\n\n```text\nImplement dependency ordering.\n```\n\n## Expected scope\nIgnore me.';
@@ -18,10 +31,69 @@ test('headless arguments require output outside target workspace and bound model
   const parsed = parseArgs(['--workspace', workspace, '--prompt', 'x', '--output-dir', '/tmp/results', '--flow', 'fast']);
   assert.equal(parsed.flow, 'fast');
   assert.equal(parsed.maxModelCalls, 24);
+  assert.equal(parsed.maxModelCallsPerTurn, 10);
   assert.equal(defaultMaxModelCalls('auto'), 60);
-  assert.equal(defaultMaxModelCalls('thorough'), 120);
-  const explicit = parseArgs(['--workspace', workspace, '--prompt', 'x', '--output-dir', '/tmp/results', '--flow', 'fast', '--max-model-calls', '17']);
-  assert.equal(explicit.maxModelCalls, 17);
+  assert.equal(defaultMaxModelCallsPerTurn('auto'), 20);
+  const overridden = parseArgs(['--workspace', workspace, '--prompt', 'x', '--output-dir', '/tmp/results', '--max-model-calls', '17', '--max-model-calls-per-turn', '6']);
+  assert.equal(overridden.maxModelCalls, 17);
+  assert.equal(overridden.maxModelCallsPerTurn, 6);
+});
+
+test('headless model-call budget aborts one runaway agent turn before the whole-run fuse', () => {
+  const breaches = [];
+  const budget = createModelCallBudget({ maxTotalCalls: 24, maxCallsPerTurn: 10, onExceeded: (breach) => breaches.push(breach) });
+  budget.handle({ type: 'prompt_send', agent: 'Worker A' });
+  for (let index = 0; index < 9; index += 1) budget.handle({ type: 'assistant_usage', agent: 'Worker A' });
+  assert.equal(breaches.length, 0);
+  budget.handle({ type: 'assistant_usage', agent: 'Worker A' });
+  assert.equal(breaches.length, 1);
+  assert.equal(breaches[0].kind, 'turn');
+  assert.equal(breaches[0].agent, 'Worker A');
+  assert.equal(breaches[0].calls, 10);
+  assert.equal(budget.snapshot().totalCalls, 10);
+});
+
+test('headless model-call budget resets per-agent turn count but preserves total run count', () => {
+  const breaches = [];
+  const budget = createModelCallBudget({ maxTotalCalls: 5, maxCallsPerTurn: 4, onExceeded: (breach) => breaches.push(breach) });
+  budget.handle({ type: 'prompt_send', agent: 'Worker A' });
+  budget.handle({ type: 'assistant_usage', agent: 'Worker A' });
+  budget.handle({ type: 'assistant_usage', agent: 'Worker A' });
+  budget.handle({ type: 'prompt_send', agent: 'Worker A' });
+  budget.handle({ type: 'assistant_usage', agent: 'Worker A' });
+  budget.handle({ type: 'assistant_usage', agent: 'Worker A' });
+  assert.equal(breaches.length, 0);
+  budget.handle({ type: 'assistant_usage', agent: 'Worker B' });
+  assert.equal(breaches.length, 1);
+  assert.equal(breaches[0].kind, 'run');
+  assert.equal(breaches[0].calls, 5);
+});
+
+test('headless benchmark refuses silent auto fallback for required strong roles', () => {
+  const available = [{ id: 'auto', name: 'Auto' }];
+  const resolution = resolveHeadlessRoleModels({ coordinator: 'strong', reviewer: 'strong' }, available);
+  assert.equal(resolution.coordinator.id, 'auto');
+  assert.equal(resolution.reviewer.id, 'auto');
+  assert.equal(resolution.issues.length, 2);
+  assert.throws(
+    () => assertHeadlessRoleModels(resolution),
+    (error) => error.code === 'CONVERGENT_HEADLESS_MODEL_POLICY' && /degraded to Copilot auto/i.test(error.message),
+  );
+
+  const intentionalAuto = resolveHeadlessRoleModels({ coordinator: 'auto', reviewer: 'auto' }, available);
+  assert.equal(intentionalAuto.issues.length, 0);
+  assert.doesNotThrow(() => assertHeadlessRoleModels(intentionalAuto));
+});
+
+test('headless strong role preflight resolves an available strong model explicitly', () => {
+  const available = [
+    { id: 'gpt-5-mini', name: 'GPT-5 mini' },
+    { id: 'gpt-5.4', name: 'GPT-5.4', supportedReasoningEfforts: ['low', 'medium', 'high'] },
+  ];
+  const resolution = resolveHeadlessRoleModels({ coordinator: 'strong', reviewer: 'strong' }, available);
+  assert.equal(resolution.issues.length, 0);
+  assert.equal(resolution.coordinator.id, 'gpt-5.4');
+  assert.equal(resolution.reviewer.id, 'gpt-5.4');
 });
 
 test('headless permissions allow workspace work but deny risky shell and outside writes', async () => {
