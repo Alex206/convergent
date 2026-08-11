@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { RecoveryConvergentEngine, queueRecoveryInstruction } = require('../src/orchestrator/recovery-engine');
+const { RecoveryConvergentEngine, queueRecoveryInstruction, appendTaskChangeManifestPrompt } = require('../src/orchestrator/recovery-engine');
 const { normalizeRecoveryReport, validateRecoveryReport } = require('../src/copilot/tools');
 
 function fakeUi() {
@@ -43,6 +43,22 @@ test('queued recovery guidance is injected exactly once into the next normal age
   assert.match(session.calls[0].prompt, /RECOVERY GUIDANCE/i);
   assert.match(session.calls[0].prompt, /CI-only compiler/i);
   assert.equal(session.calls[1].prompt, 'later pass');
+});
+
+test('recovery reviewer prompt carries deterministic task-change paths', () => {
+  const prompt = appendTaskChangeManifestPrompt('review task', {
+    baselineHead: 'A',
+    currentHead: 'A',
+    count: 2,
+    entries: [
+      { path: 'taskflow/config.py', status: ' M', kind: 'changed_since_task_start' },
+      { path: 'tests/test_config.py', status: ' M', kind: 'changed_since_task_start' },
+    ],
+  });
+  assert.match(prompt, /Deterministic task change manifest/i);
+  assert.match(prompt, /taskflow\/config\.py/);
+  assert.match(prompt, /tests\/test_config\.py/);
+  assert.match(prompt, /instead of rediscovering file locations/i);
 });
 
 test('worker blocker follows strong recovery coordinator retry and preserves approval semantics', async () => {
