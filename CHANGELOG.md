@@ -14,6 +14,7 @@ All notable Convergent changes are documented here. The 0.2.0 section is still u
 - Added deterministic task-change manifests and coordinator inspection hints so Worker B and the strong reviewer can begin from exact task-local changed paths.
 - Corrected resumable/recovery execution so the live `RecoveryConvergentEngine` path receives the same deterministic task-change context as the base engine.
 - Added structured worker/reviewer verdict reconciliation so unexplained workspace writes fail closed and valid writes cannot be mislabeled CLEAN.
+- Added Convergent-side semantic validation for `report_plan`; malformed SDK/custom-tool payloads are rejected with a structured retry instead of entering orchestration state and crashing later task execution.
 
 ### Recovery, resume, and control
 
@@ -30,6 +31,8 @@ All notable Convergent changes are documented here. The 0.2.0 section is still u
 - Fast planning now minimizes task count and keeps cohesive implementation plus its acceptance tests together.
 - Headless Fast stops a plan with more than three tasks before Worker A starts, preventing pathological task multiplication from consuming worker/reviewer quota.
 - Tightened Fast worker guidance against redundant file reads, alternate-test-runner probing, and inspection of Copilot/Convergent runtime state for reassurance.
+- Added a workspace-confined `batch_view` inspection tool that can search several literal symbols, match tracked-file globs, and read the resulting text files in one model-selected tool action. It bounds output, rejects `.git`/outside/symlink escapes and binary files, and canonicalizes absolute paths only when they remain inside the workspace.
+- Live bounded Scenario 03 diagnostics reduced the observed path from the historical 108-call runaway to a coordinator + Worker-A diagnostic using 9 total underlying model calls (4 coordinator, 5 Worker A), with no Worker B/reviewer prompt sent.
 
 ### Observability
 
@@ -44,6 +47,9 @@ All notable Convergent changes are documented here. The 0.2.0 section is still u
 - Added models-only `listModels()` preflight that creates no agent session and sends no prompt.
 - Headless benchmarks fail closed before inference when configured non-auto strong/adaptive roles would silently degrade to Copilot `auto`.
 - Added hard Fast safeguards for total underlying model calls, underlying model calls per Convergent prompt, and observed Copilot chat-request quota growth, plus a soft AI-credit boundary and outer workflow timeout.
+- Made hard model/request fuses phase-aware: an already-billed limit-th call may finish its selected tool action; accepted structured reports at a per-turn cap are preserved while only the session's post-report SDK continuation is cancelled; non-terminal cap hits stop before another model continuation; extra observed calls still fail closed immediately.
+- Added non-authoritative bounded `auto` diagnostics for plan-only and Worker-A-only live-path measurement when the benchmark credential is ineligible for the configured strong/adaptive model policy.
+- Added a deterministic Scenario 03 acceptance oracle that checks the dependency-ordering contract independently of the target repository's generated tests, including explicit invalid `depends_on` values, duplicate/self/unknown dependencies, stable topological ordering, cycles, and exports.
 - Cancelled the first genuine headless Scenario 03 run after it exposed a pathological 10 Convergent prompts → 108 underlying model-call trajectory; the resulting findings drove the current planning/model/budget safeguards.
 
 ### Packaging and reproducibility
