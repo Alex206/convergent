@@ -175,6 +175,9 @@ jobs:
             cd benchmark-target
             python3 -B -m unittest discover -s tests -v
           ) 2>&1 | tee "${BENCHMARK_OUTPUT}/target-validation.log"
+          node "${GITHUB_WORKSPACE}/src/headless/scenario03-acceptance.js" \
+            "${GITHUB_WORKSPACE}/benchmark-target" \
+            "${BENCHMARK_OUTPUT}/scenario03-acceptance.json"
 
       - name: Capture final target workspace
         if: always() && steps.headless-benchmark.outputs.enabled == 'true'
@@ -454,7 +457,7 @@ jobs:
           const accepted = events.find((event) => event.type === 'plan_accepted');
           const completed = events.find((event) => event.type === 'headless_worker_a_diagnostic_complete');
           const workerA = events.find((event) => event.type === 'worker_pass_result' && event.worker === 'A');
-          const laterPrompts = events.filter((event) => event.type === 'prompt_send' && event.agent !== 'Coordinator' && event.agent !== 'A');
+          const laterPrompts = events.filter((event) => event.type === 'prompt_send' && event.agent !== 'Coordinator' && event.agent !== 'Worker A');
           if (!accepted || !completed || !workerA) {
             console.error('Expected accepted plan plus Worker A report and diagnostic completion event.');
             process.exit(2);
@@ -515,6 +518,9 @@ jobs:
             cd worker-a-smoke-target
             python3 -B -m unittest discover -s tests -v
           ) 2>&1 | tee "${WORKER_A_OUTPUT}/target-validation.log"
+          node "${GITHUB_WORKSPACE}/src/headless/scenario03-acceptance.js" \
+            "${GITHUB_WORKSPACE}/worker-a-smoke-target" \
+            "${WORKER_A_OUTPUT}/scenario03-acceptance.json"
 
       - name: Capture final Worker A workspace
         if: always() && steps.worker-a-smoke.outputs.enabled == 'true'
