@@ -128,6 +128,10 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p "${BENCHMARK_OUTPUT}"
+          node - <<'NODE' > "${BENCHMARK_OUTPUT}/runtime-versions.json"
+          const { runtimeVersionInfo } = require('./src/copilot/version-info');
+          process.stdout.write(`${JSON.stringify(runtimeVersionInfo(), null, 2)}\n`);
+          NODE
           node src/headless/cli.js \
             --workspace "${GITHUB_WORKSPACE}/benchmark-target" \
             --prompt-file "${GITHUB_WORKSPACE}/benchmark-target/benchmarks/03-dependency-ordering.md" \
@@ -200,6 +204,8 @@ jobs:
           node-version: '24'
           package-manager-cache: false
       - run: npm ci
+      - run: npm test
+      - run: npm run check
       - name: Verify Windows x64 Copilot runtime dependency
         shell: pwsh
         run: |
