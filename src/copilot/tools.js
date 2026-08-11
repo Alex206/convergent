@@ -25,6 +25,63 @@ function normalizeStringList(value) {
   return values.map(toText).map((item) => item.trim()).filter(Boolean);
 }
 
+function normalizePlanTask(value = {}) {
+  const task = value && typeof value === 'object' ? value : {};
+  return {
+    id: toText(task.id).trim(),
+    title: toText(task.title).trim(),
+    description: toText(task.description).trim(),
+    acceptanceCriteria: normalizeStringList(task.acceptanceCriteria),
+    route: toText(task.route).trim(),
+    risk: toText(task.risk).trim(),
+    routingReason: toText(task.routingReason).trim(),
+    inspectionHints: normalizeStringList(task.inspectionHints).slice(0, 12),
+    result: toText(task.result).trim(),
+  };
+}
+
+function normalizePlan(args = {}) {
+  const rawTasks = Array.isArray(args.tasks) ? args.tasks : [];
+  return {
+    summary: toText(args.summary).trim(),
+    tasks: rawTasks.map(normalizePlanTask),
+  };
+}
+
+function validatePlan(plan) {
+  const routes = new Set(['read_only', 'trivial', 'standard', 'high_risk']);
+  const risks = new Set(['low', 'medium', 'high']);
+  if (!plan.summary) return 'Plan summary is required.';
+  if (!plan.tasks.length) return 'Plan requires at least one task.';
+
+  const seenIds = new Set();
+  for (let index = 0; index < plan.tasks.length; index += 1) {
+    const task = plan.tasks[index];
+    const label = task.id || `task ${index + 1}`;
+    if (!task.id) return `Task ${index + 1} requires a non-empty id.`;
+    if (seenIds.has(task.id)) return `Task id '${task.id}' is duplicated.`;
+    seenIds.add(task.id);
+    if (!task.title) return `Task '${label}' requires a non-empty title.`;
+    if (!task.description) return `Task '${label}' requires a non-empty description.`;
+    if (!task.acceptanceCriteria.length) {
+      return `Task '${label}' requires acceptanceCriteria as a non-empty top-level array. Do not embed AcceptanceCriteria text inside description.`;
+    }
+    if (!routes.has(task.route)) {
+      return `Task '${label}' requires top-level route to be one of read_only, trivial, standard, high_risk.`;
+    }
+    if (!risks.has(task.risk)) {
+      return `Task '${label}' requires top-level risk to be one of low, medium, high.`;
+    }
+    if (!task.routingReason) {
+      return `Task '${label}' requires a non-empty top-level routingReason.`;
+    }
+    if (task.route === 'read_only' && !task.result) {
+      return `Read-only task '${label}' requires a completed top-level result; planning inspection must not be deferred as a later task.`;
+    }
+  }
+  return null;
+}
+
 function normalizePassReport(args = {}) {
   const allowedVerdicts = new Set(['clean', 'changed', 'blocked']);
   const verdict = allowedVerdicts.has(args.verdict) ? args.verdict : 'blocked';
@@ -197,7 +254,7 @@ function recoverSerializedReport(content, toolName) {
 
 function createPlanTool(defineTool, sink) {
   return defineTool('report_plan', {
-    description: 'Submit the final structured plan and per-task workflow classification to the Convergent orchestrator. Call exactly once.',
+    description: 'Submit the final structured plan and per-task workflow classification to the Convergent orchestrator. Call exactly once with every required task field as a real top-level JSON property, not embedded in description text.',
     parameters: {
       type: 'object',
       properties: {
@@ -237,8 +294,11 @@ function createPlanTool(defineTool, sink) {
     skipPermission: true,
     defer: 'never',
     handler: async (args) => {
-      sink.value = args;
-      return { accepted: true, taskCount: Array.isArray(args?.tasks) ? args.tasks.length : 0 };
+      const plan = normalizePlan(args);
+      const error = validatePlan(plan);
+      if (error) return { accepted: false, error, retry: true };
+      sink.value = plan;
+      return { accepted: true, taskCount: plan.tasks.length };
     },
   });
 }
@@ -358,6 +418,9 @@ module.exports = {
   createReviewTool,
   createRecoveryTool,
   normalizeStringList,
+  normalizePlanTask,
+  normalizePlan,
+  validatePlan,
   normalizePassReport,
   validatePassReport,
   normalizeReviewReport,
