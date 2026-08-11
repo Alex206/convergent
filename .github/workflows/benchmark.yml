@@ -40,6 +40,11 @@ on:
         required: true
         default: '10'
         type: string
+      max_chat_requests:
+        description: Hard Copilot chat-request quota delta allowed during this benchmark
+        required: true
+        default: '8'
+        type: string
       max_ai_credits:
         description: Soft reported AI-credit boundary checked at safe workflow boundaries
         required: true
@@ -111,6 +116,7 @@ jobs:
             --limit-policy "${{ inputs.limit_policy }}" \
             --max-model-calls "${{ inputs.max_model_calls }}" \
             --max-model-calls-per-turn "${{ inputs.max_model_calls_per_turn }}" \
+            --max-chat-requests "${{ inputs.max_chat_requests }}" \
             --max-ai-credits "${{ inputs.max_ai_credits }}" \
             2>&1 | tee "${BENCHMARK_OUTPUT}/runner.log"
 
