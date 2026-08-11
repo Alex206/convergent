@@ -9,8 +9,8 @@ const { resolveHeadlessRoleModels } = require('./model-policy');
 async function inspectModels({
   outputFile,
   coordinator = 'strong',
-  workerA = 'adaptive',
-  workerB = 'adaptive-diverse',
+  workerA,
+  workerB,
   reviewer = 'strong',
 } = {}, dependencies = {}) {
   const sdk = dependencies.sdk ?? await import('@github/copilot-sdk');
@@ -54,7 +54,11 @@ async function inspectModels({
 async function main() {
   const outputFile = process.argv[2];
   if (!outputFile) throw new Error('Usage: node src/headless/model-preflight.js <output-json>');
-  await inspectModels({ outputFile });
+  await inspectModels({
+    outputFile,
+    workerA: 'adaptive',
+    workerB: 'adaptive-diverse',
+  });
 }
 
 if (require.main === module) {
