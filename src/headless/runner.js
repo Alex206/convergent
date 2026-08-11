@@ -31,11 +31,24 @@ function defaultMaxModelCallsPerTurn(flow) {
   return 20;
 }
 
-function createModelCallBudget({ maxTotalCalls, maxCallsPerTurn, onExceeded } = {}) {
+function defaultMaxChatRequests(flow) {
+  if (flow === 'fast') return 8;
+  if (flow === 'thorough') return 48;
+  return 24;
+}
+
+function createModelCallBudget({ maxTotalCalls, maxCallsPerTurn, maxChatRequests, onExceeded } = {}) {
   const totalLimit = Math.max(1, Math.floor(Number(maxTotalCalls) || 1));
   const turnLimit = Math.max(1, Math.floor(Number(maxCallsPerTurn) || 1));
+  const configuredChatLimit = Number(maxChatRequests);
+  const chatLimit = Number.isFinite(configuredChatLimit) && configuredChatLimit > 0
+    ? Math.max(1, Math.floor(configuredChatLimit))
+    : Number.POSITIVE_INFINITY;
   const turnCalls = new Map();
   let totalCalls = 0;
+  let chatStartUsed = null;
+  let chatLastUsed = null;
+  let chatRequestsUsed = 0;
   let breach = null;
 
   const exceed = (next) => {
@@ -57,12 +70,31 @@ function createModelCallBudget({ maxTotalCalls, maxCallsPerTurn, onExceeded } = 
       const currentTurnCalls = (turnCalls.get(agent) ?? 0) + 1;
       turnCalls.set(agent, currentTurnCalls);
 
+      const quotaUsed = Number(event?.data?.quotaSnapshots?.chat?.usedRequests);
+      if (Number.isFinite(quotaUsed)) {
+        if (chatStartUsed === null || quotaUsed < chatStartUsed) chatStartUsed = quotaUsed;
+        chatLastUsed = quotaUsed;
+        chatRequestsUsed = Math.max(0, quotaUsed - chatStartUsed);
+        if (chatRequestsUsed >= chatLimit) {
+          exceed({
+            kind: 'chat_requests',
+            agent,
+            calls: chatRequestsUsed,
+            limit: chatLimit,
+            totalCalls,
+            accountUsedRequests: quotaUsed,
+            accountStartUsedRequests: chatStartUsed,
+          });
+          return;
+        }
+      }
+
       if (totalCalls >= totalLimit) {
-        exceed({ kind: 'run', agent, calls: totalCalls, limit: totalLimit, turnCalls: currentTurnCalls });
+        exceed({ kind: 'run', agent, calls: totalCalls, limit: totalLimit, turnCalls: currentTurnCalls, chatRequestsUsed });
         return;
       }
       if (currentTurnCalls >= turnLimit) {
-        exceed({ kind: 'turn', agent, calls: currentTurnCalls, limit: turnLimit, totalCalls });
+        exceed({ kind: 'turn', agent, calls: currentTurnCalls, limit: turnLimit, totalCalls, chatRequestsUsed });
       }
     },
     snapshot() {
@@ -70,6 +102,10 @@ function createModelCallBudget({ maxTotalCalls, maxCallsPerTurn, onExceeded } = 
         totalCalls,
         maxTotalCalls: totalLimit,
         maxCallsPerTurn: turnLimit,
+        maxChatRequests: Number.isFinite(chatLimit) ? chatLimit : null,
+        chatStartUsed,
+        chatLastUsed,
+        chatRequestsUsed,
         turnCalls: Object.fromEntries(turnCalls),
         breach,
       };
@@ -116,6 +152,10 @@ function parseArgs(argv = []) {
   result.maxModelCallsPerTurn = Number.isFinite(configuredTurnCalls) && configuredTurnCalls > 0
     ? Math.max(1, Math.floor(configuredTurnCalls))
     : defaultMaxModelCallsPerTurn(result.flow);
+  const configuredChatRequests = Number(result.maxChatRequests);
+  result.maxChatRequests = Number.isFinite(configuredChatRequests) && configuredChatRequests > 0
+    ? Math.max(1, Math.floor(configuredChatRequests))
+    : defaultMaxChatRequests(result.flow);
   if (!result.workspace) throw new Error('--workspace is required.');
   if (!result.prompt && !result.promptFile) throw new Error('--prompt or --prompt-file is required.');
   if (result.promptFile && !isWithin(result.workspace, result.promptFile)) throw new Error('--prompt-file must be inside --workspace for a reproducible benchmark run.');
@@ -239,7 +279,7 @@ async function runHeadless(options, dependencies = {}) {
   };
   const audit = new TrajectoryAudit({ rootDir: path.join(options.outputDir, 'audit'), enabled: true, level: options.auditLevel, maxRuns: 4, maxSizeMB: 500, maxAgeDays: 30 });
   const runId = `${new Date().toISOString().replace(/[:.]/g, '-')}-headless`;
-  const auditDir = await audit.start({ runId, convergentVersion: packageJson.version, workspace: options.workspace, flowMode: flow.mode, flowPolicy: flow, request: prompt, runtimeTransport: runtime.transport, modelSelectors: { coordinator: options.coordinator, workerA: options.workerA, workerB: options.workerB, reviewer: options.reviewer }, resolvedRoleModels: { coordinator: resolution.coordinator, reviewer: resolution.reviewer }, headless: true, maxModelCalls: options.maxModelCalls, maxModelCallsPerTurn: options.maxModelCallsPerTurn });
+  const auditDir = await audit.start({ runId, convergentVersion: packageJson.version, workspace: options.workspace, flowMode: flow.mode, flowPolicy: flow, request: prompt, runtimeTransport: runtime.transport, modelSelectors: { coordinator: options.coordinator, workerA: options.workerA, workerB: options.workerB, reviewer: options.reviewer }, resolvedRoleModels: { coordinator: resolution.coordinator, reviewer: resolution.reviewer }, headless: true, maxModelCalls: options.maxModelCalls, maxModelCallsPerTurn: options.maxModelCallsPerTurn, maxChatRequests: options.maxChatRequests });
   const checkpointPath = path.join(options.outputDir, 'checkpoint.json');
   const controller = new AbortController();
   let engine = null;
@@ -248,14 +288,17 @@ async function runHeadless(options, dependencies = {}) {
   const budget = createModelCallBudget({
     maxTotalCalls: options.maxModelCalls,
     maxCallsPerTurn: options.maxModelCallsPerTurn,
+    maxChatRequests: options.maxChatRequests,
     onExceeded: (breach) => {
       budgetExceeded = breach;
       const scope = breach.kind === 'turn'
         ? `${breach.agent} agent turn`
-        : 'headless run';
-      const message = `Headless model-call budget reached for ${scope} (${breach.calls}/${breach.limit}); aborting active Copilot sessions before further quota is consumed.`;
+        : breach.kind === 'chat_requests'
+          ? 'Copilot chat-request quota delta'
+          : 'headless run';
+      const message = `Headless budget reached for ${scope} (${breach.calls}/${breach.limit}); aborting active Copilot sessions before further quota is consumed.`;
       console.error(message);
-      void audit.record({ type: 'headless_model_call_budget_exceeded', ...breach, message });
+      void audit.record({ type: 'headless_budget_exceeded', ...breach, message });
       controller.abort();
       void engine?.stop?.();
     },
@@ -304,10 +347,14 @@ async function runHeadless(options, dependencies = {}) {
       status = 'budget_exceeded';
       const scope = budgetExceeded.kind === 'turn'
         ? `${budgetExceeded.agent} turn`
-        : 'run';
-      errorText = `Headless model-call budget was reached for ${scope} (${budgetExceeded.calls}/${budgetExceeded.limit}).`;
+        : budgetExceeded.kind === 'chat_requests'
+          ? 'Copilot chat-request quota delta'
+          : 'run';
+      errorText = `Headless budget was reached for ${scope} (${budgetExceeded.calls}/${budgetExceeded.limit}).`;
       const budgetError = new Error(errorText);
-      budgetError.code = 'CONVERGENT_HEADLESS_MODEL_CALL_BUDGET';
+      budgetError.code = budgetExceeded.kind === 'chat_requests'
+        ? 'CONVERGENT_HEADLESS_CHAT_REQUEST_BUDGET'
+        : 'CONVERGENT_HEADLESS_MODEL_CALL_BUDGET';
       budgetError.budget = budgetExceeded;
       throw budgetError;
     }
@@ -319,7 +366,7 @@ async function runHeadless(options, dependencies = {}) {
     const workspace = await gitSnapshot(options.workspace, options.outputDir).catch((error) => ({ error: error.message }));
     const budgetState = budget.snapshot();
     await audit.finish({ status, usage, stats: engine.stats, error: errorText, budget: budgetState });
-    await fs.writeFile(path.join(options.outputDir, 'result.json'), `${JSON.stringify({ convergentVersion: packageJson.version, status, flow: flow.mode, promptFile: options.promptFile ?? null, auditDir, usage, stats: engine.stats, workspace, plan: result?.plan ?? null, error: errorText, maxModelCalls: options.maxModelCalls, maxModelCallsPerTurn: options.maxModelCallsPerTurn, budget: budgetState }, null, 2)}\n`, 'utf8');
+    await fs.writeFile(path.join(options.outputDir, 'result.json'), `${JSON.stringify({ convergentVersion: packageJson.version, status, flow: flow.mode, promptFile: options.promptFile ?? null, auditDir, usage, stats: engine.stats, workspace, plan: result?.plan ?? null, error: errorText, maxModelCalls: options.maxModelCalls, maxModelCallsPerTurn: options.maxModelCallsPerTurn, maxChatRequests: options.maxChatRequests, budget: budgetState }, null, 2)}\n`, 'utf8');
     await engine.stop().catch(() => {});
     if (ownsClient) await client.stop().catch(() => {});
   }
@@ -330,6 +377,7 @@ module.exports = {
   extractBenchmarkPrompt,
   defaultMaxModelCalls,
   defaultMaxModelCallsPerTurn,
+  defaultMaxChatRequests,
   createModelCallBudget,
   parseArgs,
   readPrompt,
