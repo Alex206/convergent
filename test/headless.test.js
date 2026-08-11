@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const { HeadlessWorkflowUi } = require('../src/headless/ui');
+const { inspectModels } = require('../src/headless/model-preflight');
 const {
   extractBenchmarkPrompt,
   defaultMaxModelCalls,
@@ -120,6 +121,26 @@ test('headless strong role preflight resolves an available strong model explicit
   assert.equal(resolution.issues.length, 0);
   assert.equal(resolution.coordinator.id, 'gpt-5.4');
   assert.equal(resolution.reviewer.id, 'gpt-5.4');
+});
+
+test('models-only preflight only lists models and does not create an agent session', async () => {
+  let listCalls = 0;
+  let createSessionCalls = 0;
+  const client = {
+    async listModels() {
+      listCalls += 1;
+      return [{ id: 'auto', name: 'Auto' }];
+    },
+    async createSession() {
+      createSessionCalls += 1;
+      throw new Error('model preflight must never create a session');
+    },
+  };
+  const report = await inspectModels({ coordinator: 'strong', reviewer: 'strong' }, { sdk: {}, client });
+  assert.equal(listCalls, 1);
+  assert.equal(createSessionCalls, 0);
+  assert.equal(report.sendsAgentPrompts, false);
+  assert.equal(report.issues.length, 2);
 });
 
 test('headless permissions allow workspace work but deny risky shell and outside writes', async () => {
