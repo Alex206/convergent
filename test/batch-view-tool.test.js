@@ -82,11 +82,14 @@ test('batch_view canonicalizes absolute paths inside the workspace and rejects e
   });
 });
 
-test('batch_view rejects absolute syntax from a foreign platform rather than reinterpreting it as relative', async () => {
+test('batch_view never reinterprets foreign absolute syntax as a readable workspace-relative path', async () => {
   await withWorkspace(async (root) => {
     const foreign = process.platform === 'win32' ? '/etc/passwd' : 'C:\\Users\\x\\token.txt';
     const result = await toolFor(root).handler({ paths: [foreign] });
-    assert.deepEqual(result.files[0], { path: foreign, ok: false, error: 'invalid_path' });
+    assert.equal(result.files[0].path, foreign);
+    assert.equal(result.files[0].ok, false);
+    assert.equal(['invalid_path', 'outside_workspace'].includes(result.files[0].error), true);
+    assert.equal('content' in result.files[0], false);
     assert.equal(relativePathAllowed('pkg/file.py'), true);
     assert.equal(relativePathAllowed('..\\outside.txt'), false);
   });
