@@ -13,13 +13,8 @@ on:
 
 jobs:
   test:
-    if: >-
-      github.event_name != 'pull_request' ||
-      github.event.action != 'labeled' ||
-      (github.event.label.name != 'headless-model-preflight' &&
-       github.event.label.name != 'headless-benchmark' &&
-       github.event.label.name != 'headless-auto-smoke')
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -49,14 +44,278 @@ jobs:
             exit 1
           fi
 
+      - name: Detect models-only preflight request
+        id: model-preflight
+        if: >-
+          github.event_name == 'pull_request' &&
+          contains(github.event.pull_request.labels.*.name, 'headless-model-preflight')
+        shell: bash
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+        run: |
+          if [[ -z "${COPILOT_GITHUB_TOKEN}" ]]; then
+            echo "::notice::Models-only preflight requested but repository secret COPILOT_GITHUB_TOKEN is not configured."
+            echo "enabled=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "enabled=true" >> "${GITHUB_OUTPUT}"
+            echo "Models-only preflight requested. This calls listModels() only and sends no agent prompt."
+          fi
+
+      - name: Run models-only Copilot preflight
+        if: steps.model-preflight.outputs.enabled == 'true'
+        timeout-minutes: 2
+        shell: bash
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          COPILOT_PLUGIN_DIR_ONLY: 'true'
+          MODEL_PREFLIGHT_OUTPUT: ${{ runner.temp }}/convergent-model-preflight/models.json
+        run: |
+          mkdir -p "$(dirname "${MODEL_PREFLIGHT_OUTPUT}")"
+          node src/headless/model-preflight.js "${MODEL_PREFLIGHT_OUTPUT}"
+
+      - name: Upload models-only preflight
+        if: always() && steps.model-preflight.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: convergent-model-preflight-${{ github.run_number }}
+          path: ${{ runner.temp }}/convergent-model-preflight
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Detect headless benchmark request
+        id: headless-benchmark
+        if: >-
+          github.event_name == 'pull_request' &&
+          contains(github.event.pull_request.labels.*.name, 'headless-benchmark')
+        shell: bash
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          BENCHMARK_REPO_TOKEN: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+        run: |
+          missing=0
+          if [[ -z "${COPILOT_GITHUB_TOKEN}" ]]; then
+            echo "::notice::Headless benchmark requested but repository secret COPILOT_GITHUB_TOKEN is not configured."
+            missing=1
+          fi
+          if [[ -z "${BENCHMARK_REPO_TOKEN}" ]]; then
+            echo "::notice::Headless benchmark requested but repository secret BENCHMARK_REPO_TOKEN is not configured. It needs read-only Contents access to Alex206/convergent-test-repo."
+            missing=1
+          fi
+          if [[ "${missing}" == "0" ]]; then
+            echo "enabled=true" >> "${GITHUB_OUTPUT}"
+            echo "Headless benchmark requested and both required credentials are available."
+          else
+            echo "enabled=false" >> "${GITHUB_OUTPUT}"
+            echo "Normal CI remains valid; benchmark execution is skipped until both credentials are configured."
+          fi
+
+      - name: Checkout benchmark target
+        if: steps.headless-benchmark.outputs.enabled == 'true'
+        uses: actions/checkout@v6
+        with:
+          repository: Alex206/convergent-test-repo
+          ref: main
+          path: benchmark-target
+          token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+
+      - name: Run headless Scenario 03
+        id: scenario03
+        if: steps.headless-benchmark.outputs.enabled == 'true'
+        timeout-minutes: 9
+        shell: bash
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          COPILOT_PLUGIN_DIR_ONLY: 'true'
+          CONVERGENT_HEADLESS_ANSWERS_JSON: '[]'
+          BENCHMARK_OUTPUT: ${{ runner.temp }}/convergent-benchmark
+        run: |
+          set -o pipefail
+          mkdir -p "${BENCHMARK_OUTPUT}"
+          node - <<'NODE' > "${BENCHMARK_OUTPUT}/runtime-versions.json"
+          const { runtimeVersionInfo } = require('./src/copilot/version-info');
+          process.stdout.write(`${JSON.stringify(runtimeVersionInfo(), null, 2)}\n`);
+          NODE
+          node src/headless/cli.js \
+            --workspace "${GITHUB_WORKSPACE}/benchmark-target" \
+            --prompt-file "${GITHUB_WORKSPACE}/benchmark-target/benchmarks/03-dependency-ordering.md" \
+            --output-dir "${BENCHMARK_OUTPUT}" \
+            --flow fast \
+            --audit-level full \
+            --limit-policy pause \
+            --max-model-calls 24 \
+            --max-model-calls-per-turn 10 \
+            --max-chat-requests 8 \
+            --max-ai-credits 12 \
+            2>&1 | tee "${BENCHMARK_OUTPUT}/runner.log"
+
+      - name: Summarize benchmark efficiency
+        if: always() && steps.headless-benchmark.outputs.enabled == 'true'
+        continue-on-error: true
+        shell: bash
+        env:
+          BENCHMARK_OUTPUT: ${{ runner.temp }}/convergent-benchmark
+        run: |
+          events="$(find "${BENCHMARK_OUTPUT}/audit" -name events.jsonl -type f 2>/dev/null | head -n 1)"
+          if [[ -n "${events}" ]]; then
+            node src/headless/efficiency-summary.js "${events}" "${BENCHMARK_OUTPUT}/efficiency-summary.json" > "${BENCHMARK_OUTPUT}/efficiency-summary.log"
+          else
+            echo "No trajectory events available; benchmark may have failed during preflight." > "${BENCHMARK_OUTPUT}/efficiency-summary.log"
+          fi
+
+      - name: Independently validate benchmark target
+        if: always() && steps.headless-benchmark.outputs.enabled == 'true'
+        continue-on-error: true
+        shell: bash
+        env:
+          BENCHMARK_OUTPUT: ${{ runner.temp }}/convergent-benchmark
+        run: |
+          mkdir -p "${BENCHMARK_OUTPUT}"
+          set -o pipefail
+          (
+            cd benchmark-target
+            python3 -B -m unittest discover -s tests -v
+          ) 2>&1 | tee "${BENCHMARK_OUTPUT}/target-validation.log"
+
+      - name: Capture final target workspace
+        if: always() && steps.headless-benchmark.outputs.enabled == 'true'
+        shell: bash
+        env:
+          BENCHMARK_OUTPUT: ${{ runner.temp }}/convergent-benchmark
+        run: |
+          mkdir -p "${BENCHMARK_OUTPUT}"
+          git -C benchmark-target status --porcelain=v1 --untracked-files=all > "${BENCHMARK_OUTPUT}/final-status.txt" || true
+          git -C benchmark-target diff --binary --no-ext-diff > "${BENCHMARK_OUTPUT}/final-diff.patch" || true
+          tar --exclude=.git -czf "${BENCHMARK_OUTPUT}/workspace.tar.gz" -C benchmark-target .
+
+      - name: Upload headless benchmark evidence
+        if: always() && steps.headless-benchmark.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: convergent-fast-scenario03-${{ github.run_number }}
+          path: ${{ runner.temp }}/convergent-benchmark
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Detect bounded auto smoke request
+        id: auto-smoke
+        if: >-
+          github.event_name == 'pull_request' &&
+          contains(github.event.pull_request.labels.*.name, 'headless-auto-smoke')
+        shell: bash
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          BENCHMARK_REPO_TOKEN: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+        run: |
+          missing=0
+          if [[ -z "${COPILOT_GITHUB_TOKEN}" ]]; then
+            echo "::notice::Auto smoke requested but COPILOT_GITHUB_TOKEN is not configured."
+            missing=1
+          fi
+          if [[ -z "${BENCHMARK_REPO_TOKEN}" ]]; then
+            echo "::notice::Auto smoke requested but BENCHMARK_REPO_TOKEN is not configured."
+            missing=1
+          fi
+          if [[ "${missing}" == "0" ]]; then
+            echo "enabled=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "enabled=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Checkout auto-smoke target
+        if: steps.auto-smoke.outputs.enabled == 'true'
+        uses: actions/checkout@v6
+        with:
+          repository: Alex206/convergent-test-repo
+          ref: main
+          path: auto-smoke-target
+          token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+
+      - name: Run bounded non-authoritative auto smoke
+        id: auto-smoke-run
+        if: steps.auto-smoke.outputs.enabled == 'true'
+        timeout-minutes: 6
+        shell: bash
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          COPILOT_PLUGIN_DIR_ONLY: 'true'
+          CONVERGENT_HEADLESS_ANSWERS_JSON: '[]'
+          SMOKE_OUTPUT: ${{ runner.temp }}/convergent-auto-smoke
+        run: |
+          set -o pipefail
+          mkdir -p "${SMOKE_OUTPUT}"
+          echo "NON-AUTHORITATIVE DIAGNOSTIC: every role intentionally uses Copilot auto." | tee "${SMOKE_OUTPUT}/diagnostic-scope.txt"
+          node - <<'NODE' > "${SMOKE_OUTPUT}/runtime-versions.json"
+          const { runtimeVersionInfo } = require('./src/copilot/version-info');
+          process.stdout.write(`${JSON.stringify(runtimeVersionInfo(), null, 2)}\n`);
+          NODE
+          node src/headless/cli.js \
+            --workspace "${GITHUB_WORKSPACE}/auto-smoke-target" \
+            --prompt-file "${GITHUB_WORKSPACE}/auto-smoke-target/benchmarks/03-dependency-ordering.md" \
+            --output-dir "${SMOKE_OUTPUT}" \
+            --flow fast \
+            --coordinator auto \
+            --worker-a auto \
+            --worker-b auto \
+            --reviewer auto \
+            --audit-level full \
+            --limit-policy pause \
+            --max-model-calls 12 \
+            --max-model-calls-per-turn 5 \
+            --max-chat-requests 5 \
+            --max-ai-credits 6 \
+            2>&1 | tee "${SMOKE_OUTPUT}/runner.log"
+
+      - name: Summarize auto-smoke efficiency
+        if: always() && steps.auto-smoke.outputs.enabled == 'true'
+        continue-on-error: true
+        shell: bash
+        env:
+          SMOKE_OUTPUT: ${{ runner.temp }}/convergent-auto-smoke
+        run: |
+          events="$(find "${SMOKE_OUTPUT}/audit" -name events.jsonl -type f 2>/dev/null | head -n 1)"
+          if [[ -n "${events}" ]]; then
+            node src/headless/efficiency-summary.js "${events}" "${SMOKE_OUTPUT}/efficiency-summary.json" > "${SMOKE_OUTPUT}/efficiency-summary.log"
+          else
+            echo "No trajectory events available." > "${SMOKE_OUTPUT}/efficiency-summary.log"
+          fi
+
+      - name: Independently validate auto-smoke target
+        if: always() && steps.auto-smoke.outputs.enabled == 'true'
+        continue-on-error: true
+        shell: bash
+        env:
+          SMOKE_OUTPUT: ${{ runner.temp }}/convergent-auto-smoke
+        run: |
+          mkdir -p "${SMOKE_OUTPUT}"
+          set -o pipefail
+          (
+            cd auto-smoke-target
+            python3 -B -m unittest discover -s tests -v
+          ) 2>&1 | tee "${SMOKE_OUTPUT}/target-validation.log"
+
+      - name: Capture final auto-smoke workspace
+        if: always() && steps.auto-smoke.outputs.enabled == 'true'
+        shell: bash
+        env:
+          SMOKE_OUTPUT: ${{ runner.temp }}/convergent-auto-smoke
+        run: |
+          mkdir -p "${SMOKE_OUTPUT}"
+          git -C auto-smoke-target status --porcelain=v1 --untracked-files=all > "${SMOKE_OUTPUT}/final-status.txt" || true
+          git -C auto-smoke-target diff --binary --no-ext-diff > "${SMOKE_OUTPUT}/final-diff.patch" || true
+          tar --exclude=.git -czf "${SMOKE_OUTPUT}/workspace.tar.gz" -C auto-smoke-target .
+
+      - name: Upload auto-smoke evidence
+        if: always() && steps.auto-smoke.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: convergent-auto-smoke-${{ github.run_number }}
+          path: ${{ runner.temp }}/convergent-auto-smoke
+          if-no-files-found: warn
+          retention-days: 7
+
   package-windows-x64:
-    if: >-
-      github.event_name != 'pull_request' ||
-      github.event.action != 'labeled' ||
-      (github.event.label.name != 'headless-model-preflight' &&
-       github.event.label.name != 'headless-benchmark' &&
-       github.event.label.name != 'headless-auto-smoke')
     runs-on: windows-latest
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -111,246 +370,3 @@ jobs:
           if (Test-Path (Join-Path $expanded 'extension/node_modules/@github/copilot-linux-x64')) {
             throw 'Linux Copilot runtime unexpectedly packaged in Windows VSIX.'
           }
-
-  model-preflight:
-    if: >-
-      github.event_name == 'pull_request' &&
-      github.event.action == 'labeled' &&
-      github.event.label.name == 'headless-model-preflight'
-    runs-on: ubuntu-latest
-    timeout-minutes: 4
-    permissions:
-      contents: read
-    env:
-      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
-      COPILOT_PLUGIN_DIR_ONLY: 'true'
-      MODEL_PREFLIGHT_OUTPUT: ${{ runner.temp }}/convergent-model-preflight/models.json
-    steps:
-      - name: Require Copilot credential
-        shell: bash
-        run: |
-          if [[ -z "${COPILOT_GITHUB_TOKEN}" ]]; then
-            echo "COPILOT_GITHUB_TOKEN is required for the models-only preflight." >&2
-            exit 2
-          fi
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '24'
-          package-manager-cache: false
-      - run: npm ci
-      - name: Run models-only Copilot preflight
-        timeout-minutes: 2
-        shell: bash
-        run: |
-          mkdir -p "$(dirname "${MODEL_PREFLIGHT_OUTPUT}")"
-          node src/headless/model-preflight.js "${MODEL_PREFLIGHT_OUTPUT}"
-      - name: Upload models-only preflight
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: convergent-model-preflight-${{ github.run_number }}
-          path: ${{ runner.temp }}/convergent-model-preflight
-          if-no-files-found: error
-          retention-days: 14
-
-  headless-benchmark:
-    if: >-
-      github.event_name == 'pull_request' &&
-      github.event.action == 'labeled' &&
-      github.event.label.name == 'headless-benchmark'
-    runs-on: ubuntu-latest
-    timeout-minutes: 12
-    permissions:
-      contents: read
-    env:
-      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
-      COPILOT_PLUGIN_DIR_ONLY: 'true'
-      CONVERGENT_HEADLESS_ANSWERS_JSON: '[]'
-      BENCHMARK_OUTPUT: ${{ runner.temp }}/convergent-benchmark
-    steps:
-      - name: Require benchmark credentials
-        shell: bash
-        env:
-          BENCHMARK_REPO_TOKEN: ${{ secrets.BENCHMARK_REPO_TOKEN }}
-        run: |
-          if [[ -z "${COPILOT_GITHUB_TOKEN}" || -z "${BENCHMARK_REPO_TOKEN}" ]]; then
-            echo "COPILOT_GITHUB_TOKEN and BENCHMARK_REPO_TOKEN are required." >&2
-            exit 2
-          fi
-      - uses: actions/checkout@v6
-      - uses: actions/checkout@v6
-        with:
-          repository: Alex206/convergent-test-repo
-          ref: main
-          path: benchmark-target
-          token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '24'
-          package-manager-cache: false
-      - run: npm ci
-      - name: Run deterministic strong-role Scenario 03 benchmark
-        id: benchmark
-        timeout-minutes: 9
-        shell: bash
-        run: |
-          set -o pipefail
-          mkdir -p "${BENCHMARK_OUTPUT}"
-          node - <<'NODE' > "${BENCHMARK_OUTPUT}/runtime-versions.json"
-          const { runtimeVersionInfo } = require('./src/copilot/version-info');
-          process.stdout.write(`${JSON.stringify(runtimeVersionInfo(), null, 2)}\n`);
-          NODE
-          node src/headless/cli.js \
-            --workspace "${GITHUB_WORKSPACE}/benchmark-target" \
-            --prompt-file "${GITHUB_WORKSPACE}/benchmark-target/benchmarks/03-dependency-ordering.md" \
-            --output-dir "${BENCHMARK_OUTPUT}" \
-            --flow fast \
-            --audit-level full \
-            --limit-policy pause \
-            --max-model-calls 24 \
-            --max-model-calls-per-turn 10 \
-            --max-chat-requests 8 \
-            --max-ai-credits 12 \
-            2>&1 | tee "${BENCHMARK_OUTPUT}/runner.log"
-      - name: Summarize benchmark efficiency
-        if: always()
-        continue-on-error: true
-        shell: bash
-        run: |
-          events="$(find "${BENCHMARK_OUTPUT}/audit" -name events.jsonl -type f 2>/dev/null | head -n 1)"
-          if [[ -n "${events}" ]]; then
-            node src/headless/efficiency-summary.js "${events}" "${BENCHMARK_OUTPUT}/efficiency-summary.json" > "${BENCHMARK_OUTPUT}/efficiency-summary.log"
-          else
-            echo "No trajectory events available; benchmark may have failed during preflight." > "${BENCHMARK_OUTPUT}/efficiency-summary.log"
-          fi
-      - name: Independently validate benchmark target
-        if: always()
-        continue-on-error: true
-        shell: bash
-        run: |
-          mkdir -p "${BENCHMARK_OUTPUT}"
-          set -o pipefail
-          (
-            cd benchmark-target
-            python3 -B -m unittest discover -s tests -v
-          ) 2>&1 | tee "${BENCHMARK_OUTPUT}/target-validation.log"
-      - name: Capture final target workspace
-        if: always()
-        shell: bash
-        run: |
-          mkdir -p "${BENCHMARK_OUTPUT}"
-          git -C benchmark-target status --porcelain=v1 --untracked-files=all > "${BENCHMARK_OUTPUT}/final-status.txt" || true
-          git -C benchmark-target diff --binary --no-ext-diff > "${BENCHMARK_OUTPUT}/final-diff.patch" || true
-          tar --exclude=.git -czf "${BENCHMARK_OUTPUT}/workspace.tar.gz" -C benchmark-target .
-      - name: Upload headless benchmark evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: convergent-fast-scenario03-${{ github.run_number }}
-          path: ${{ runner.temp }}/convergent-benchmark
-          if-no-files-found: warn
-          retention-days: 14
-
-  headless-auto-smoke:
-    if: >-
-      github.event_name == 'pull_request' &&
-      github.event.action == 'labeled' &&
-      github.event.label.name == 'headless-auto-smoke'
-    runs-on: ubuntu-latest
-    timeout-minutes: 8
-    permissions:
-      contents: read
-    env:
-      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
-      COPILOT_PLUGIN_DIR_ONLY: 'true'
-      CONVERGENT_HEADLESS_ANSWERS_JSON: '[]'
-      SMOKE_OUTPUT: ${{ runner.temp }}/convergent-auto-smoke
-    steps:
-      - name: Require smoke credentials
-        shell: bash
-        env:
-          BENCHMARK_REPO_TOKEN: ${{ secrets.BENCHMARK_REPO_TOKEN }}
-        run: |
-          if [[ -z "${COPILOT_GITHUB_TOKEN}" || -z "${BENCHMARK_REPO_TOKEN}" ]]; then
-            echo "COPILOT_GITHUB_TOKEN and BENCHMARK_REPO_TOKEN are required." >&2
-            exit 2
-          fi
-      - uses: actions/checkout@v6
-      - uses: actions/checkout@v6
-        with:
-          repository: Alex206/convergent-test-repo
-          ref: main
-          path: benchmark-target
-          token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '24'
-          package-manager-cache: false
-      - run: npm ci
-      - name: Run bounded non-authoritative auto diagnostic
-        id: smoke
-        timeout-minutes: 6
-        shell: bash
-        run: |
-          set -o pipefail
-          mkdir -p "${SMOKE_OUTPUT}"
-          echo "NON-AUTHORITATIVE DIAGNOSTIC: every role intentionally uses Copilot auto." | tee "${SMOKE_OUTPUT}/diagnostic-scope.txt"
-          node - <<'NODE' > "${SMOKE_OUTPUT}/runtime-versions.json"
-          const { runtimeVersionInfo } = require('./src/copilot/version-info');
-          process.stdout.write(`${JSON.stringify(runtimeVersionInfo(), null, 2)}\n`);
-          NODE
-          node src/headless/cli.js \
-            --workspace "${GITHUB_WORKSPACE}/benchmark-target" \
-            --prompt-file "${GITHUB_WORKSPACE}/benchmark-target/benchmarks/03-dependency-ordering.md" \
-            --output-dir "${SMOKE_OUTPUT}" \
-            --flow fast \
-            --coordinator auto \
-            --worker-a auto \
-            --worker-b auto \
-            --reviewer auto \
-            --audit-level full \
-            --limit-policy pause \
-            --max-model-calls 12 \
-            --max-model-calls-per-turn 5 \
-            --max-chat-requests 5 \
-            --max-ai-credits 6 \
-            2>&1 | tee "${SMOKE_OUTPUT}/runner.log"
-      - name: Summarize smoke efficiency
-        if: always()
-        continue-on-error: true
-        shell: bash
-        run: |
-          events="$(find "${SMOKE_OUTPUT}/audit" -name events.jsonl -type f 2>/dev/null | head -n 1)"
-          if [[ -n "${events}" ]]; then
-            node src/headless/efficiency-summary.js "${events}" "${SMOKE_OUTPUT}/efficiency-summary.json" > "${SMOKE_OUTPUT}/efficiency-summary.log"
-          else
-            echo "No trajectory events available." > "${SMOKE_OUTPUT}/efficiency-summary.log"
-          fi
-      - name: Independently validate target
-        if: always()
-        continue-on-error: true
-        shell: bash
-        run: |
-          mkdir -p "${SMOKE_OUTPUT}"
-          set -o pipefail
-          (
-            cd benchmark-target
-            python3 -B -m unittest discover -s tests -v
-          ) 2>&1 | tee "${SMOKE_OUTPUT}/target-validation.log"
-      - name: Capture final target workspace
-        if: always()
-        shell: bash
-        run: |
-          mkdir -p "${SMOKE_OUTPUT}"
-          git -C benchmark-target status --porcelain=v1 --untracked-files=all > "${SMOKE_OUTPUT}/final-status.txt" || true
-          git -C benchmark-target diff --binary --no-ext-diff > "${SMOKE_OUTPUT}/final-diff.patch" || true
-          tar --exclude=.git -czf "${SMOKE_OUTPUT}/workspace.tar.gz" -C benchmark-target .
-      - name: Upload auto-smoke evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: convergent-auto-smoke-${{ github.run_number }}
-          path: ${{ runner.temp }}/convergent-auto-smoke
-          if-no-files-found: warn
-          retention-days: 7
