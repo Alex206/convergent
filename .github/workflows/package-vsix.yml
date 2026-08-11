@@ -1,0 +1,66 @@
+name: Package VSIXes
+
+on:
+  workflow_dispatch:
+
+jobs:
+  package-linux-x64:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - run: npm ci
+      - name: Package Linux x64
+        run: npm run package -- --out "$RUNNER_TEMP/convergent-linux-x64.vsix"
+      - name: Verify Linux x64 package
+        shell: bash
+        run: |
+          unzip -p "$RUNNER_TEMP/convergent-linux-x64.vsix" extension.vsixmanifest | grep -q 'TargetPlatform="linux-x64"'
+          unzip -l "$RUNNER_TEMP/convergent-linux-x64.vsix" | grep -q 'extension/node_modules/@github/copilot-linux-x64/'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: convergent-linux-x64
+          path: ${{ runner.temp }}/convergent-linux-x64.vsix
+          if-no-files-found: error
+          retention-days: 14
+
+  package-windows-x64:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - run: npm ci
+      - name: Package Windows x64
+        shell: pwsh
+        run: npm run package -- --out "$env:RUNNER_TEMP/convergent-win32-x64.vsix"
+      - name: Verify Windows x64 package
+        shell: pwsh
+        run: |
+          $vsix = "$env:RUNNER_TEMP/convergent-win32-x64.vsix"
+          $zip = "$env:RUNNER_TEMP/convergent-win32-x64.zip"
+          $expanded = "$env:RUNNER_TEMP/convergent-win32-x64-expanded"
+          Copy-Item $vsix $zip
+          Expand-Archive -LiteralPath $zip -DestinationPath $expanded
+          $manifest = Get-Content -Raw (Join-Path $expanded 'extension.vsixmanifest')
+          if ($manifest -notmatch 'TargetPlatform="win32-x64"') {
+            throw 'VSIX manifest does not declare TargetPlatform="win32-x64".'
+          }
+          if (-not (Test-Path (Join-Path $expanded 'extension/node_modules/@github/copilot-win32-x64'))) {
+            throw 'Windows Copilot runtime is missing from the Windows VSIX.'
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: convergent-win32-x64
+          path: ${{ runner.temp }}/convergent-win32-x64.vsix
+          if-no-files-found: error
+          retention-days: 14
