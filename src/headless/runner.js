@@ -7,6 +7,7 @@ const { promisify } = require('node:util');
 const packageJson = require('../../package.json');
 const { isWithin, riskyCommand } = require('../copilot/permissions');
 const { HeadlessWorkflowUi } = require('./ui');
+const { resolveHeadlessRoleModels, assertHeadlessRoleModels } = require('./model-policy');
 
 const execFileAsync = promisify(execFile);
 const VALID_FLOWS = new Set(['fast', 'auto', 'thorough']);
@@ -22,6 +23,58 @@ function defaultMaxModelCalls(flow) {
   if (flow === 'fast') return 24;
   if (flow === 'thorough') return 120;
   return 60;
+}
+
+function defaultMaxModelCallsPerTurn(flow) {
+  if (flow === 'fast') return 10;
+  if (flow === 'thorough') return 40;
+  return 20;
+}
+
+function createModelCallBudget({ maxTotalCalls, maxCallsPerTurn, onExceeded } = {}) {
+  const totalLimit = Math.max(1, Math.floor(Number(maxTotalCalls) || 1));
+  const turnLimit = Math.max(1, Math.floor(Number(maxCallsPerTurn) || 1));
+  const turnCalls = new Map();
+  let totalCalls = 0;
+  let breach = null;
+
+  const exceed = (next) => {
+    if (breach) return;
+    breach = next;
+    onExceeded?.(next);
+  };
+
+  return {
+    handle(event = {}) {
+      const agent = String(event.agent ?? 'unknown');
+      if (event.type === 'prompt_send') {
+        turnCalls.set(agent, 0);
+        return;
+      }
+      if (event.type !== 'assistant_usage' || breach) return;
+
+      totalCalls += 1;
+      const currentTurnCalls = (turnCalls.get(agent) ?? 0) + 1;
+      turnCalls.set(agent, currentTurnCalls);
+
+      if (totalCalls >= totalLimit) {
+        exceed({ kind: 'run', agent, calls: totalCalls, limit: totalLimit, turnCalls: currentTurnCalls });
+        return;
+      }
+      if (currentTurnCalls >= turnLimit) {
+        exceed({ kind: 'turn', agent, calls: currentTurnCalls, limit: turnLimit, totalCalls });
+      }
+    },
+    snapshot() {
+      return {
+        totalCalls,
+        maxTotalCalls: totalLimit,
+        maxCallsPerTurn: turnLimit,
+        turnCalls: Object.fromEntries(turnCalls),
+        breach,
+      };
+    },
+  };
 }
 
 function parseArgs(argv = []) {
@@ -59,6 +112,10 @@ function parseArgs(argv = []) {
   result.maxModelCalls = Number.isFinite(configuredModelCalls) && configuredModelCalls > 0
     ? Math.max(1, Math.floor(configuredModelCalls))
     : defaultMaxModelCalls(result.flow);
+  const configuredTurnCalls = Number(result.maxModelCallsPerTurn);
+  result.maxModelCallsPerTurn = Number.isFinite(configuredTurnCalls) && configuredTurnCalls > 0
+    ? Math.max(1, Math.floor(configuredTurnCalls))
+    : defaultMaxModelCallsPerTurn(result.flow);
   if (!result.workspace) throw new Error('--workspace is required.');
   if (!result.prompt && !result.promptFile) throw new Error('--prompt or --prompt-file is required.');
   if (result.promptFile && !isWithin(result.workspace, result.promptFile)) throw new Error('--prompt-file must be inside --workspace for a reproducible benchmark run.');
@@ -134,7 +191,6 @@ async function gitSnapshot(workspace, outputDir) {
 
 async function runHeadless(options, dependencies = {}) {
   const { flowPolicy } = require('../orchestrator/flow');
-  const { resolveModel } = require('../orchestrator/model-resolver');
   const { TrajectoryAudit } = require('../orchestrator/audit');
   const { RecoveryConvergentEngine } = require('../orchestrator/recovery-engine');
   const { createClientOptions } = require('../copilot/runtime');
@@ -151,46 +207,64 @@ async function runHeadless(options, dependencies = {}) {
   if (ownsClient) await client.start();
 
   const flow = flowPolicy(options.flow, options);
-  const available = await client.listModels();
+  let resolution;
+  try {
+    const available = await client.listModels();
+    resolution = resolveHeadlessRoleModels(options, available);
+    await fs.writeFile(
+      path.join(options.outputDir, 'models.json'),
+      `${JSON.stringify({
+        generatedAt: new Date().toISOString(),
+        selectors: { coordinator: options.coordinator, workerA: options.workerA, workerB: options.workerB, reviewer: options.reviewer },
+        availableCount: resolution.available.length,
+        available: resolution.available,
+        resolved: { coordinator: resolution.coordinator, reviewer: resolution.reviewer },
+        issues: resolution.issues,
+      }, null, 2)}\n`,
+      'utf8',
+    );
+    assertHeadlessRoleModels(resolution);
+  } catch (error) {
+    if (ownsClient) await client.stop().catch(() => {});
+    throw error;
+  }
+
   const models = {
-    coordinator: resolveModel(options.coordinator, available),
-    reviewer: resolveModel(options.reviewer, available),
+    coordinator: resolution.coordinator,
+    reviewer: resolution.reviewer,
     workerASelector: options.workerA,
     workerBSelector: options.workerB,
-    available,
+    available: resolution.available,
     flowMode: flow.mode,
   };
   const audit = new TrajectoryAudit({ rootDir: path.join(options.outputDir, 'audit'), enabled: true, level: options.auditLevel, maxRuns: 4, maxSizeMB: 500, maxAgeDays: 30 });
   const runId = `${new Date().toISOString().replace(/[:.]/g, '-')}-headless`;
-  const auditDir = await audit.start({ runId, convergentVersion: packageJson.version, workspace: options.workspace, flowMode: flow.mode, flowPolicy: flow, request: prompt, runtimeTransport: runtime.transport, modelSelectors: { coordinator: options.coordinator, workerA: options.workerA, workerB: options.workerB, reviewer: options.reviewer }, headless: true, maxModelCalls: options.maxModelCalls });
+  const auditDir = await audit.start({ runId, convergentVersion: packageJson.version, workspace: options.workspace, flowMode: flow.mode, flowPolicy: flow, request: prompt, runtimeTransport: runtime.transport, modelSelectors: { coordinator: options.coordinator, workerA: options.workerA, workerB: options.workerB, reviewer: options.reviewer }, resolvedRoleModels: { coordinator: resolution.coordinator, reviewer: resolution.reviewer }, headless: true, maxModelCalls: options.maxModelCalls, maxModelCallsPerTurn: options.maxModelCallsPerTurn });
   const checkpointPath = path.join(options.outputDir, 'checkpoint.json');
   const controller = new AbortController();
   let engine = null;
-  let modelCallBudgetExceeded = false;
+  let budgetExceeded = null;
+
+  const budget = createModelCallBudget({
+    maxTotalCalls: options.maxModelCalls,
+    maxCallsPerTurn: options.maxModelCallsPerTurn,
+    onExceeded: (breach) => {
+      budgetExceeded = breach;
+      const scope = breach.kind === 'turn'
+        ? `${breach.agent} agent turn`
+        : 'headless run';
+      const message = `Headless model-call budget reached for ${scope} (${breach.calls}/${breach.limit}); aborting active Copilot sessions before further quota is consumed.`;
+      console.error(message);
+      void audit.record({ type: 'headless_model_call_budget_exceeded', ...breach, message });
+      controller.abort();
+      void engine?.stop?.();
+    },
+  });
 
   const ui = new HeadlessWorkflowUi({
     eventSink: (event) => {
       void audit.record(event);
-      const calls = Number(event?.usage?.calls);
-      if (
-        event?.type === 'headless_usage_event'
-        && !modelCallBudgetExceeded
-        && Number.isFinite(calls)
-        && calls >= options.maxModelCalls
-      ) {
-        modelCallBudgetExceeded = true;
-        const message = `Headless model-call budget reached (${calls}/${options.maxModelCalls}); aborting active Copilot sessions before further quota is consumed.`;
-        console.error(message);
-        void audit.record({
-          type: 'headless_model_call_budget_exceeded',
-          calls,
-          limit: options.maxModelCalls,
-          agent: event.agent,
-          message,
-        });
-        controller.abort();
-        void engine?.stop?.();
-      }
+      budget.handle(event);
     },
     limitPolicy: options.limitPolicy,
   });
@@ -226,11 +300,15 @@ async function runHeadless(options, dependencies = {}) {
     status = 'complete';
     return result;
   } catch (error) {
-    if (modelCallBudgetExceeded) {
+    if (budgetExceeded) {
       status = 'budget_exceeded';
-      errorText = `Headless model-call budget of ${options.maxModelCalls} was reached.`;
+      const scope = budgetExceeded.kind === 'turn'
+        ? `${budgetExceeded.agent} turn`
+        : 'run';
+      errorText = `Headless model-call budget was reached for ${scope} (${budgetExceeded.calls}/${budgetExceeded.limit}).`;
       const budgetError = new Error(errorText);
       budgetError.code = 'CONVERGENT_HEADLESS_MODEL_CALL_BUDGET';
+      budgetError.budget = budgetExceeded;
       throw budgetError;
     }
     errorText = error?.message ?? String(error);
@@ -239,11 +317,25 @@ async function runHeadless(options, dependencies = {}) {
   } finally {
     const usage = engine.getUsageSummary();
     const workspace = await gitSnapshot(options.workspace, options.outputDir).catch((error) => ({ error: error.message }));
-    await audit.finish({ status, usage, stats: engine.stats, error: errorText });
-    await fs.writeFile(path.join(options.outputDir, 'result.json'), `${JSON.stringify({ convergentVersion: packageJson.version, status, flow: flow.mode, promptFile: options.promptFile ?? null, auditDir, usage, stats: engine.stats, workspace, plan: result?.plan ?? null, error: errorText, maxModelCalls: options.maxModelCalls }, null, 2)}\n`, 'utf8');
+    const budgetState = budget.snapshot();
+    await audit.finish({ status, usage, stats: engine.stats, error: errorText, budget: budgetState });
+    await fs.writeFile(path.join(options.outputDir, 'result.json'), `${JSON.stringify({ convergentVersion: packageJson.version, status, flow: flow.mode, promptFile: options.promptFile ?? null, auditDir, usage, stats: engine.stats, workspace, plan: result?.plan ?? null, error: errorText, maxModelCalls: options.maxModelCalls, maxModelCallsPerTurn: options.maxModelCallsPerTurn, budget: budgetState }, null, 2)}\n`, 'utf8');
     await engine.stop().catch(() => {});
     if (ownsClient) await client.stop().catch(() => {});
   }
 }
 
-module.exports = { VALID_FLOWS, extractBenchmarkPrompt, defaultMaxModelCalls, parseArgs, readPrompt, createHeadlessPermissionHandler, createScriptedUserInputHandler, answersFromEnvironment, gitSnapshot, runHeadless };
+module.exports = {
+  VALID_FLOWS,
+  extractBenchmarkPrompt,
+  defaultMaxModelCalls,
+  defaultMaxModelCallsPerTurn,
+  createModelCallBudget,
+  parseArgs,
+  readPrompt,
+  createHeadlessPermissionHandler,
+  createScriptedUserInputHandler,
+  answersFromEnvironment,
+  gitSnapshot,
+  runHeadless,
+};
