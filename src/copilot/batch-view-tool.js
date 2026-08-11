@@ -9,14 +9,42 @@ const MAX_BATCH_VIEW_CHARS_PER_FILE = 12 * 1024;
 const MAX_BATCH_VIEW_TOTAL_CHARS = 48 * 1024;
 const READ_BYTES_PER_FILE = MAX_BATCH_VIEW_CHARS_PER_FILE * 4;
 
+function containsForbiddenRelativePart(value) {
+  const normalized = String(value ?? '').replace(/\\/g, '/');
+  const lower = normalized.toLowerCase();
+  if (lower === '.git' || lower.startsWith('.git/')) return true;
+  return normalized.split('/').filter(Boolean).includes('..');
+}
+
 function relativePathAllowed(value) {
   const text = String(value ?? '').trim();
   if (!text || path.posix.isAbsolute(text) || path.win32.isAbsolute(text)) return false;
-  const normalized = text.replace(/\\/g, '/');
-  const lower = normalized.toLowerCase();
-  if (lower === '.git' || lower.startsWith('.git/')) return false;
-  const parts = normalized.split('/').filter(Boolean);
-  return !parts.includes('..');
+  return !containsForbiddenRelativePart(text);
+}
+
+function resolveRequestedPath(root, value) {
+  const requested = String(value ?? '').trim();
+  if (!requested) return { ok: false, path: requested, error: 'invalid_path' };
+
+  const looksAbsolute = path.posix.isAbsolute(requested) || path.win32.isAbsolute(requested);
+  if (looksAbsolute && !path.isAbsolute(requested)) {
+    return { ok: false, path: requested, error: 'invalid_path' };
+  }
+
+  if (!looksAbsolute && containsForbiddenRelativePart(requested)) {
+    return { ok: false, path: requested, error: 'invalid_path' };
+  }
+
+  const target = looksAbsolute ? path.resolve(requested) : path.resolve(root, requested);
+  if (!isWithin(root, target)) {
+    return { ok: false, path: requested, error: 'outside_workspace' };
+  }
+
+  const relative = path.relative(root, target).replace(/\\/g, '/');
+  if (!relative || containsForbiddenRelativePart(relative)) {
+    return { ok: false, path: requested, error: 'invalid_path' };
+  }
+  return { ok: true, path: relative, target };
 }
 
 async function readBoundedFile(filePath) {
@@ -62,7 +90,7 @@ function errorCode(error) {
 function createBatchViewTool(defineTool, workspace) {
   const root = path.resolve(workspace);
   return defineTool('batch_view', {
-    description: `Read up to ${MAX_BATCH_VIEW_PATHS} known repository-relative text files in one bounded read-only tool call. Prefer this over serial builtin:view calls when several relevant files are already known. Paths must exist inside the current workspace and may not address .git.`,
+    description: `Read up to ${MAX_BATCH_VIEW_PATHS} known workspace text files in one bounded read-only tool call. Prefer this over serial builtin:view calls when several relevant files are already known. Repository-relative paths are preferred; absolute paths are accepted only when they resolve inside the current workspace. .git and outside-workspace paths are denied.`,
     parameters: {
       type: 'object',
       properties: {
@@ -71,7 +99,7 @@ function createBatchViewTool(defineTool, workspace) {
           minItems: 1,
           maxItems: MAX_BATCH_VIEW_PATHS,
           items: { type: 'string' },
-          description: 'Repository-relative paths to existing text files, in the order their content should be returned.',
+          description: 'Existing workspace text files, preferably as repository-relative paths, in the order their content should be returned.',
         },
       },
       required: ['paths'],
@@ -82,7 +110,7 @@ function createBatchViewTool(defineTool, workspace) {
     handler: async (args = {}) => {
       const requested = Array.isArray(args.paths) ? args.paths.slice(0, MAX_BATCH_VIEW_PATHS) : [];
       if (!requested.length) {
-        return { files: [], error: 'paths must contain at least one repository-relative file path' };
+        return { files: [], error: 'paths must contain at least one workspace file path' };
       }
 
       let rootReal;
@@ -93,35 +121,28 @@ function createBatchViewTool(defineTool, workspace) {
       }
 
       const loaded = await Promise.all(requested.map(async (rawPath) => {
-        const requestedPath = String(rawPath ?? '').trim();
-        if (!relativePathAllowed(requestedPath)) {
-          return { path: requestedPath, ok: false, error: 'invalid_path' };
-        }
-
-        const target = path.resolve(root, requestedPath);
-        if (!isWithin(root, target)) {
-          return { path: requestedPath, ok: false, error: 'outside_workspace' };
-        }
+        const resolved = resolveRequestedPath(root, rawPath);
+        if (!resolved.ok) return { path: resolved.path, ok: false, error: resolved.error };
 
         let targetReal;
         try {
-          targetReal = await fs.realpath(target);
+          targetReal = await fs.realpath(resolved.target);
         } catch (error) {
-          return { path: requestedPath, ok: false, error: errorCode(error) };
+          return { path: resolved.path, ok: false, error: errorCode(error) };
         }
         if (!isWithin(rootReal, targetReal)) {
-          return { path: requestedPath, ok: false, error: 'outside_workspace' };
+          return { path: resolved.path, ok: false, error: 'outside_workspace' };
         }
 
         try {
           const result = await readBoundedFile(targetReal);
           return {
-            path: requestedPath.replace(/\\/g, '/'),
+            path: resolved.path,
             ok: true,
             ...result,
           };
         } catch (error) {
-          return { path: requestedPath.replace(/\\/g, '/'), ok: false, error: errorCode(error) };
+          return { path: resolved.path, ok: false, error: errorCode(error) };
         }
       }));
 
@@ -153,6 +174,7 @@ function createBatchViewTool(defineTool, workspace) {
 module.exports = {
   createBatchViewTool,
   relativePathAllowed,
+  resolveRequestedPath,
   readBoundedFile,
   MAX_BATCH_VIEW_PATHS,
   MAX_BATCH_VIEW_CHARS_PER_FILE,
