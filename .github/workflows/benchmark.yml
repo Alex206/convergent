@@ -30,6 +30,11 @@ on:
         options:
           - pause
           - continue
+      max_model_calls:
+        description: Hard total model-call fuse for this benchmark run
+        required: true
+        default: '24'
+        type: string
       answers_json:
         description: JSON array of scripted answers for expected headless clarification/recovery prompts
         required: true
@@ -39,7 +44,7 @@ on:
 jobs:
   benchmark:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 15
     permissions:
       contents: read
     env:
@@ -94,6 +99,8 @@ jobs:
             --flow "${{ inputs.flow }}" \
             --audit-level full \
             --limit-policy "${{ inputs.limit_policy }}" \
+            --max-model-calls "${{ inputs.max_model_calls }}" \
+            --max-ai-credits 12 \
             2>&1 | tee "${BENCHMARK_OUTPUT}/runner.log"
 
       - name: Independently validate benchmark target
@@ -103,8 +110,10 @@ jobs:
         run: |
           mkdir -p "${BENCHMARK_OUTPUT}"
           set -o pipefail
-          python3 -B -m unittest discover -s benchmark-target/tests -v \
-            2>&1 | tee "${BENCHMARK_OUTPUT}/target-validation.log"
+          (
+            cd benchmark-target
+            python3 -B -m unittest discover -s tests -v
+          ) 2>&1 | tee "${BENCHMARK_OUTPUT}/target-validation.log"
 
       - name: Capture final target workspace
         if: always()
