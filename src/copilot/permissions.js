@@ -2,6 +2,13 @@
 
 const path = require('node:path');
 
+const SENSITIVE_ENV_NAMES = [
+  'COPILOT_GITHUB_TOKEN',
+  'GH_TOKEN',
+  'GITHUB_TOKEN',
+  'GITHUB_COPILOT_API_TOKEN',
+];
+
 function isWithin(root, candidate) {
   if (!candidate) return false;
   const resolvedRoot = path.resolve(root);
@@ -10,9 +17,27 @@ function isWithin(root, candidate) {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
+function sensitiveEnvironmentCommand(command) {
+  const text = String(command ?? '');
+  if (!text.trim()) return false;
+
+  const upper = text.toUpperCase();
+  if (SENSITIVE_ENV_NAMES.some((name) => upper.includes(name))) return true;
+
+  return [
+    /(?:^|[;&|]\s*)\b(?:printenv|env)\b(?:\s|$)/i,
+    /(?:^|[;&|]\s*)\bset\b\s*(?:$|[;&|])/i,
+    /\b(?:Get-ChildItem|Get-Item|gci|gi|dir|ls)\s+Env:/i,
+    /\[\s*(?:System\.)?Environment\s*\]\s*::\s*GetEnvironmentVariables?/i,
+    /\bprocess\.env\b/i,
+    /\bos\.environ\b/i,
+  ].some((pattern) => pattern.test(text));
+}
+
 function riskyCommand(command) {
   const text = String(command ?? '');
-  return /\bgit\s+push\b|\bgit\s+reset\s+--hard\b|\bgit\s+clean\s+-[^\n]*f|\brm\s+-[^\n]*r[^\n]*f|\bRemove-Item\b[^\n]*-Recurse[^\n]*-Force|\bformat\b|\bshutdown\b/i.test(text);
+  return sensitiveEnvironmentCommand(text)
+    || /\bgit\s+push\b|\bgit\s+reset\s+--hard\b|\bgit\s+clean\s+-[^\n]*f|\brm\s+-[^\n]*r[^\n]*f|\bRemove-Item\b[^\n]*-Recurse[^\n]*-Force|\bformat\b|\bshutdown\b/i.test(text);
 }
 
 function createPermissionHandler(vscode, workspace, mode, output) {
@@ -73,4 +98,11 @@ function createUserInputHandler(vscode) {
   };
 }
 
-module.exports = { createPermissionHandler, createUserInputHandler, isWithin, riskyCommand };
+module.exports = {
+  createPermissionHandler,
+  createUserInputHandler,
+  isWithin,
+  riskyCommand,
+  sensitiveEnvironmentCommand,
+  SENSITIVE_ENV_NAMES,
+};
