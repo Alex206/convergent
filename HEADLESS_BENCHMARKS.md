@@ -25,6 +25,20 @@ node src/headless/cli.js \
 
 The SDK also recognizes `GH_TOKEN` and `GITHUB_TOKEN`, but `COPILOT_GITHUB_TOKEN` is preferred for CI because the credential's purpose is explicit.
 
+## Model eligibility preflight
+
+A deterministic benchmark must not silently turn a configured `strong` or adaptive role into Copilot `auto`. Before creating any agent session, the headless runner calls `listModels()`, resolves every configured role, writes `models.json`, and fails closed if a required coordinator, reviewer, or adaptive worker routing tier would fall back to `auto`.
+
+For diagnosis without spending an agent prompt, run:
+
+```bash
+node src/headless/model-preflight.js /tmp/convergent-models.json
+```
+
+The models-only preflight calls `listModels()` and does not create a Copilot agent session or send a prompt. CI can run the same operation with the temporary `headless-model-preflight` PR label and uploads the resulting JSON. Remove the label after inspection.
+
+If the credential exposes only `auto`, it is not eligible for Convergent's normal strong-role benchmark. Do not override this by explicitly selecting `auto` merely to make a benchmark run; doing so measures a different orchestration/model policy.
+
 ## GitHub Actions
 
 The benchmark workflows deliberately use two separate credentials:
@@ -40,14 +54,25 @@ The workflow:
 
 1. checks out this Convergent revision and a clean `convergent-test-repo` target,
 2. extracts only the benchmark's `## Prompt` fenced block,
-3. runs the same Convergent orchestration core headlessly,
-4. independently runs the target repository's unittest suite,
-5. uploads the complete trajectory audit, result/checkpoint JSON, runner log, final Git status/diff, validation log, and a non-`.git` workspace snapshot.
+3. verifies that configured role selectors resolve to explicit eligible models,
+4. runs the same Convergent orchestration core headlessly,
+5. independently runs the target repository's unittest suite,
+6. uploads the complete trajectory audit, model preflight, result/checkpoint JSON, runner log, final Git status/diff, validation log, and a non-`.git` workspace snapshot.
 
 `COPILOT_PLUGIN_DIR_ONLY=true` keeps ambient Copilot plugins from changing the benchmark environment.
 
-## Non-interactive safety
+## Non-interactive safety and quota fuses
 
 Headless runs fail closed for unexpected operator questions unless scripted answers are supplied through `CONVERGENT_HEADLESS_ANSWERS_JSON`. Risky shell commands such as `git push`, `git reset --hard`, and forced Git clean are denied by the headless permission adapter. Tool or agent inactivity decisions abort the affected turn rather than waiting indefinitely.
 
-Soft worker/reviewer limits default to `pause`. The workflow exposes a `limit_policy` input when an intentionally more autonomous benchmark is desired.
+Fast headless benchmarks use independent limits so one pathological agent loop cannot consume an account before a task boundary is reached:
+
+- **24 total underlying model calls** per run by default,
+- **10 underlying model calls in one Convergent agent prompt/turn** by default,
+- **8 Copilot chat requests of observed account-quota delta** by default,
+- **12 reported AI credits** as a soft safe-boundary budget in the supplied GitHub workflows,
+- **15 minutes** as the outer manual workflow timeout.
+
+The first three are hard headless fuses: when breached, Convergent aborts active sessions immediately and records the budget breach. The AI-credit limit is different: it is checked at safe workflow boundaries because reported credit data can lag the active agent loop.
+
+Soft worker/reviewer limits default to `pause`. The workflow exposes a `limit_policy` input when an intentionally more autonomous benchmark is desired. A benchmark account with scarce quota should keep `pause` and conservative hard fuses.
