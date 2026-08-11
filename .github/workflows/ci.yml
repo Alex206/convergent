@@ -204,7 +204,20 @@ jobs:
           node-version: '24'
           package-manager-cache: false
       - run: npm ci
-      - run: npm test
+      - name: Run Windows tests
+        id: windows-tests
+        shell: pwsh
+        run: |
+          npm test 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/windows-test.log"
+          exit $LASTEXITCODE
+      - name: Upload Windows test failure
+        if: always() && steps.windows-tests.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-test-failure-${{ github.run_number }}
+          path: ${{ runner.temp }}/windows-test.log
+          if-no-files-found: error
+          retention-days: 3
       - run: npm run check
       - name: Verify Windows x64 Copilot runtime dependency
         shell: pwsh
