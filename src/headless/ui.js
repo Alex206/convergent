@@ -11,6 +11,7 @@ class HeadlessWorkflowUi {
     this.auditEvent = eventSink;
     this.logger = logger;
     this.limitPolicy = limitPolicy === 'continue' ? 'continue' : 'pause';
+    this.flowMode = 'auto';
     this.agentInactivityTimeoutMs = undefined;
     this.toolStallTimeoutMs = undefined;
     this.stallGraceMs = undefined;
@@ -20,9 +21,27 @@ class HeadlessWorkflowUi {
   emit(event) { try { void this.eventSink?.(event); } catch {} }
   audit(event) { this.emit(event); }
   log(message) { this.logger?.log?.(`[${new Date().toISOString()}] ${message}`); }
-  runStarted(data) { this.log(`Convergent ${data?.version ?? 'unknown'} headless run started; flow=${data?.flowMode ?? 'auto'}`); this.emit({ type: 'ui_run_started', ...data }); }
+  runStarted(data) {
+    this.flowMode = data?.flowMode ?? 'auto';
+    this.log(`Convergent ${data?.version ?? 'unknown'} headless run started; flow=${this.flowMode}`);
+    this.emit({ type: 'ui_run_started', ...data });
+  }
   phase(name, detail) { this.log(`${name}: ${detail}`); this.audit({ type: 'phase', name, detail }); }
-  plan(plan, routes = []) { this.log(`Plan accepted with ${plan?.tasks?.length ?? 0} task(s).`); this.audit({ type: 'plan_accepted', plan, routes }); }
+  plan(plan, routes = []) {
+    const taskCount = plan?.tasks?.length ?? 0;
+    this.log(`Plan accepted with ${taskCount} task(s).`);
+    this.audit({ type: 'plan_accepted', plan, routes });
+    if (this.flowMode === 'fast' && taskCount > 3) {
+      const message = `Fast headless plan has ${taskCount} tasks; maximum is 3 before implementation. Stop here and consolidate the request at acceptance boundaries before spending worker/reviewer quota.`;
+      this.log(message);
+      this.audit({ type: 'headless_plan_budget_exceeded', taskCount, limit: 3, message });
+      const error = new Error(message);
+      error.code = 'CONVERGENT_HEADLESS_PLAN_BUDGET';
+      error.plan = plan;
+      error.routes = routes;
+      throw error;
+    }
+  }
   taskStarted(task, index, total, routing, policy) { this.log(`Task ${index}/${total} ${task.id}: ${task.title}; route=${routing.route}; risk=${routing.risk}`); this.audit({ type: 'task_start', task, index, total, routing, policy }); }
   agentConfiguration(entries) { this.log(`Agent configuration: ${(entries ?? []).map((e) => `${e.role}=${e.model}${e.effort ? `/${e.effort}` : ''}`).join(', ')}`); this.audit({ type: 'agent_configuration', entries }); }
   agentTools(agent, tools) { this.log(`${agent} tools: ${(tools ?? []).join(', ')}`); this.audit({ type: 'agent_tools', agent, tools }); }
