@@ -84,6 +84,8 @@ jobs:
             --flow fast \
             --audit-level full \
             --limit-policy pause \
+            --max-model-calls 24 \
+            --max-ai-credits 12 \
             2>&1 | tee "${BENCHMARK_OUTPUT}/runner.log"
 
       - name: Independently validate benchmark target
@@ -95,8 +97,10 @@ jobs:
         run: |
           mkdir -p "${BENCHMARK_OUTPUT}"
           set -o pipefail
-          python3 -B -m unittest discover -s benchmark-target/tests -v \
-            2>&1 | tee "${BENCHMARK_OUTPUT}/target-validation.log"
+          (
+            cd benchmark-target
+            python3 -B -m unittest discover -s tests -v
+          ) 2>&1 | tee "${BENCHMARK_OUTPUT}/target-validation.log"
 
       - name: Capture final target workspace
         if: always() && steps.headless-benchmark.outputs.enabled == 'true'
