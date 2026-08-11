@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { coordinatorFlowInstructions, workerFlowInstructions } = require('../src/orchestrator/flow');
+const { coordinatorFlowInstructions, workerFlowInstructions, reviewerFlowInstructions } = require('../src/orchestrator/flow');
 
 test('Fast coordinator rejects planning-inspection tasks and non-reusable inspection hints', () => {
   const prompt = coordinatorFlowInstructions('fast');
@@ -12,14 +12,19 @@ test('Fast coordinator rejects planning-inspection tasks and non-reusable inspec
   assert.match(prompt, /existing repository surface you actually observed/);
   assert.match(prompt, /proposed\/new file/);
   assert.match(prompt, /Current repository facts:/);
-  assert.match(prompt, /parallel\/batched tool roundtrip/);
+  assert.match(prompt, /custom batch_view tool/);
+  assert.match(prompt, /once paths are known, batch_view is the preferred Fast inspection path/);
 });
 
-test('Fast worker contract batches known reads and coordinated edits', () => {
+test('Fast worker contract uses batch_view for known reads and coordinated edits', () => {
   const prompt = workerFlowInstructions('fast');
-  assert.match(prompt, /SAME assistant turn/);
-  assert.match(prompt, /view file A, wait for a new model continuation/);
+  assert.match(prompt, /use custom batch_view once/);
+  assert.match(prompt, /Do not spend one model continuation per builtin:view call/);
   assert.match(prompt, /one coordinated patch/);
   assert.match(prompt, /current-repository facts already present in the task description/);
   assert.match(prompt, /not a checklist requiring every file to be reopened/);
+});
+
+test('Fast reviewer contract batches exact changed-file inspection', () => {
+  assert.match(reviewerFlowInstructions('fast'), /use custom batch_view once rather than serial builtin:view calls/);
 });
