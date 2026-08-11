@@ -4,6 +4,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { createClientOptions } = require('../copilot/runtime');
+const { runtimeVersionInfo } = require('../copilot/version-info');
 const { resolveHeadlessRoleModels } = require('./model-policy');
 
 async function inspectModels({
@@ -25,6 +26,7 @@ async function inspectModels({
     const report = {
       generatedAt: new Date().toISOString(),
       runtimeTransport: runtime.transport,
+      runtimeVersions: (dependencies.runtimeVersionInfo ?? runtimeVersionInfo)(),
       selectors: { coordinator, workerA, workerB, reviewer },
       availableCount: resolution.available.length,
       available: resolution.available,
@@ -44,7 +46,7 @@ async function inspectModels({
       await fs.writeFile(target, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
     }
 
-    console.log(`Copilot model preflight: ${report.availableCount} available model(s); coordinator=${report.resolved.coordinator.id}; reviewer=${report.resolved.reviewer.id}; issues=${report.issues.length}; eligible=${report.eligibleForDeterministicBenchmark}.`);
+    console.log(`Copilot model preflight: SDK=${report.runtimeVersions.sdk.version ?? 'unknown'}; CLI=${report.runtimeVersions.cli.version ?? 'unknown'}; ${report.availableCount} available model(s); coordinator=${report.resolved.coordinator.id}; reviewer=${report.resolved.reviewer.id}; issues=${report.issues.length}; eligible=${report.eligibleForDeterministicBenchmark}.`);
     return report;
   } finally {
     if (ownsClient) await client.stop().catch(() => {});
