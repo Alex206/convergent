@@ -1,7 +1,9 @@
 .github/**
 .vscode/**
+scripts/**
 test/**
 .gitignore
+package-lock.json
 *.vsix
 coverage/**
 .nyc_output/**
