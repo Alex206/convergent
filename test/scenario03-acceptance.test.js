@@ -55,20 +55,29 @@ def parse_tasks(items):
     return tuple(result)
 
 def order_tasks(tasks):
-    emitted = set()
+    by_name = {task.name: task for task in tasks}
+    index = {task.name: position for position, task in enumerate(tasks)}
+    dependents = {task.name: [] for task in tasks}
+    indegree = {task.name: len(task.depends_on) for task in tasks}
+    for task in tasks:
+        for dep in task.depends_on:
+            dependents[dep].append(task.name)
+
+    available = [task.name for task in tasks if indegree[task.name] == 0]
+    available.sort(key=index.__getitem__)
     result = []
-    while len(result) < len(tasks):
-        progressed = False
-        for task in tasks:
-            if task.name in emitted:
-                continue
-            if all(dep in emitted for dep in task.depends_on):
-                result.append(task)
-                emitted.add(task.name)
-                progressed = True
-        if not progressed:
-            remaining = [task.name for task in tasks if task.name not in emitted]
-            raise ConfigError("dependency cycle: " + ", ".join(remaining))
+    while available:
+        name = available.pop(0)
+        result.append(by_name[name])
+        for dependent in dependents[name]:
+            indegree[dependent] -= 1
+            if indegree[dependent] == 0:
+                available.append(dependent)
+        available.sort(key=index.__getitem__)
+
+    if len(result) != len(tasks):
+        remaining = [task.name for task in tasks if indegree[task.name] > 0]
+        raise ConfigError("dependency cycle: " + ", ".join(remaining))
     return tuple(result)
 `;
 
