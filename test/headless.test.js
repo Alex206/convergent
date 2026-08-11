@@ -143,6 +143,27 @@ test('models-only preflight only lists models and does not create an agent sessi
   assert.equal(report.issues.length, 2);
 });
 
+test('Fast headless plan budget stops over-decomposition before task execution', () => {
+  const events = [];
+  const ui = new HeadlessWorkflowUi({ eventSink: (event) => events.push(event), logger: { log() {} } });
+  ui.runStarted({ version: 'test', flowMode: 'fast' });
+  const plan = {
+    tasks: Array.from({ length: 4 }, (_, index) => ({ id: `T${index + 1}`, title: `Task ${index + 1}` })),
+  };
+  assert.throws(
+    () => ui.plan(plan, []),
+    (error) => error.code === 'CONVERGENT_HEADLESS_PLAN_BUDGET' && error.plan === plan,
+  );
+  assert.equal(events.some((event) => event.type === 'plan_accepted'), true);
+  assert.equal(events.some((event) => event.type === 'headless_plan_budget_exceeded' && event.limit === 3), true);
+});
+
+test('Fast headless plan budget permits a compact three-task plan', () => {
+  const ui = new HeadlessWorkflowUi({ logger: { log() {} } });
+  ui.runStarted({ version: 'test', flowMode: 'fast' });
+  assert.doesNotThrow(() => ui.plan({ tasks: [{ id: 'T1' }, { id: 'T2' }, { id: 'T3' }] }, []));
+});
+
 test('headless permissions allow workspace work but deny risky shell and outside writes', async () => {
   const handler = createHeadlessPermissionHandler('/tmp/work', { logger: { error() {} } });
   assert.equal((await handler({ kind: 'read' })).kind, 'approve-once');
