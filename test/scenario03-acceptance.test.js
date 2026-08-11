@@ -8,6 +8,7 @@ const path = require('node:path');
 const { runScenario03Acceptance } = require('../src/headless/scenario03-acceptance');
 
 const GOOD_TASKFLOW = `
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 class ConfigError(ValueError):
@@ -15,40 +16,60 @@ class ConfigError(ValueError):
 
 @dataclass(frozen=True)
 class TaskSpec:
-    id: str
+    name: str
     command: tuple[str, ...]
     depends_on: tuple[str, ...] = ()
 
 def parse_tasks(items):
     result = []
+    names = set()
     for item in items:
-        raw = item.get("depends_on", [])
-        if not isinstance(raw, list) or any(not isinstance(dep, str) or not dep for dep in raw):
-            raise ConfigError(f"invalid depends_on for {item.get('id')}")
-        result.append(TaskSpec(id=item["id"], command=tuple(item["command"]), depends_on=tuple(raw)))
-    return result
+        name = item["name"]
+        if name in names:
+            raise ConfigError(f"duplicate task name: {name}")
+        names.add(name)
+        if "depends_on" not in item:
+            raw = ()
+        else:
+            raw = item["depends_on"]
+            if isinstance(raw, (str, bytes)) or not isinstance(raw, Sequence):
+                raise ConfigError(f"depends_on for {name} must be a sequence")
+        dependencies = []
+        seen = set()
+        for dep in raw:
+            if not isinstance(dep, str) or not dep.strip():
+                raise ConfigError(f"depends_on for {name} must contain non-empty strings")
+            dep = dep.strip()
+            if dep in seen:
+                raise ConfigError(f"duplicate dependency for {name}: {dep}")
+            if dep == name:
+                raise ConfigError(f"task {name} cannot depend on itself")
+            seen.add(dep)
+            dependencies.append(dep)
+        result.append(TaskSpec(name=name, command=tuple(item["command"]), depends_on=tuple(dependencies)))
+    known = {task.name for task in result}
+    for task in result:
+        for dep in task.depends_on:
+            if dep not in known:
+                raise ConfigError(f"task {task.name} depends on unknown task {dep}")
+    return tuple(result)
 
 def order_tasks(tasks):
-    by_id = {task.id: task for task in tasks}
-    for task in tasks:
-        for dep in task.depends_on:
-            if dep not in by_id:
-                raise ConfigError(f"task {task.id} depends on unknown task {dep}")
     emitted = set()
     result = []
     while len(result) < len(tasks):
         progressed = False
         for task in tasks:
-            if task.id in emitted:
+            if task.name in emitted:
                 continue
             if all(dep in emitted for dep in task.depends_on):
                 result.append(task)
-                emitted.add(task.id)
+                emitted.add(task.name)
                 progressed = True
         if not progressed:
-            remaining = [task.id for task in tasks if task.id not in emitted]
+            remaining = [task.name for task in tasks if task.name not in emitted]
             raise ConfigError("dependency cycle: " + ", ".join(remaining))
-    return result
+    return tuple(result)
 `;
 
 const BAD_TASKFLOW = `
@@ -59,14 +80,14 @@ class ConfigError(ValueError):
 
 @dataclass(frozen=True)
 class TaskSpec:
-    id: str
+    name: str
     command: tuple[str, ...]
 
 def parse_tasks(items):
-    return [TaskSpec(id=item["id"], command=tuple(item["command"])) for item in items]
+    return tuple(TaskSpec(name=item["name"], command=tuple(item["command"])) for item in items)
 
 def order_tasks(tasks):
-    return list(tasks)
+    return tuple(tasks)
 `;
 
 async function withPackage(source, fn) {
@@ -86,7 +107,7 @@ test('Scenario 03 acceptance probe passes a conforming implementation', async ()
     const report = runScenario03Acceptance(root);
     assert.equal(report.ok, true, JSON.stringify(report, null, 2));
     assert.equal(report.exitCode, 0);
-    assert.equal(report.checks.length, 9);
+    assert.equal(report.checks.length, 12);
     assert.equal(report.checks.every((check) => check.ok), true);
   });
 });
