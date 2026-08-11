@@ -8,6 +8,7 @@ const path = require('node:path');
 const {
   createBatchViewTool,
   relativePathAllowed,
+  resolveRequestedPath,
   MAX_BATCH_VIEW_CHARS_PER_FILE,
   MAX_BATCH_VIEW_TOTAL_CHARS,
 } = require('../src/copilot/batch-view-tool');
@@ -53,16 +54,39 @@ test('batch_view reads several text files in request order and preserves missing
   });
 });
 
-test('batch_view rejects absolute, traversal, .git and cross-platform absolute paths', async () => {
+test('batch_view canonicalizes absolute paths inside the workspace and rejects escapes', async () => {
   await withWorkspace(async (root) => {
     await fs.mkdir(path.join(root, '.git'));
     await fs.writeFile(path.join(root, '.git', 'config'), 'secret', 'utf8');
-    const tool = toolFor(root);
-    const absolute = path.join(root, 'inside.txt');
-    await fs.writeFile(absolute, 'inside', 'utf8');
+    const inside = path.join(root, 'inside.txt');
+    await fs.writeFile(inside, 'inside', 'utf8');
+    const outsideRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'convergent-batch-view-outside-'));
+    try {
+      const outside = path.join(outsideRoot, 'outside.txt');
+      await fs.writeFile(outside, 'outside', 'utf8');
+      const result = await toolFor(root).handler({ paths: [inside, '../outside.txt', '.git/config', outside] });
+      assert.equal(result.files[0].ok, true);
+      assert.equal(result.files[0].path, 'inside.txt');
+      assert.equal(result.files[0].content, 'inside');
+      assert.deepEqual(result.files[1], { path: '../outside.txt', ok: false, error: 'invalid_path' });
+      assert.deepEqual(result.files[2], { path: '.git/config', ok: false, error: 'invalid_path' });
+      assert.equal(result.files[3].ok, false);
+      assert.equal(result.files[3].error, 'outside_workspace');
 
-    const result = await tool.handler({ paths: [absolute, '../outside.txt', '.git/config', 'C:\\Users\\x\\token.txt', '/etc/passwd'] });
-    assert.equal(result.files.every((entry) => entry.ok === false && entry.error === 'invalid_path'), true);
+      const resolved = resolveRequestedPath(root, inside);
+      assert.equal(resolved.ok, true);
+      assert.equal(resolved.path, 'inside.txt');
+    } finally {
+      await fs.rm(outsideRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+test('batch_view rejects absolute syntax from a foreign platform rather than reinterpreting it as relative', async () => {
+  await withWorkspace(async (root) => {
+    const foreign = process.platform === 'win32' ? '/etc/passwd' : 'C:\\Users\\x\\token.txt';
+    const result = await toolFor(root).handler({ paths: [foreign] });
+    assert.deepEqual(result.files[0], { path: foreign, ok: false, error: 'invalid_path' });
     assert.equal(relativePathAllowed('pkg/file.py'), true);
     assert.equal(relativePathAllowed('..\\outside.txt'), false);
   });
