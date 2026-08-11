@@ -8,6 +8,7 @@ const {
   extractBenchmarkPrompt,
   defaultMaxModelCalls,
   defaultMaxModelCallsPerTurn,
+  defaultMaxChatRequests,
   createModelCallBudget,
   parseArgs,
   createHeadlessPermissionHandler,
@@ -24,7 +25,7 @@ test('benchmark prompt extraction uses only the Prompt fenced block', () => {
   assert.equal(extractBenchmarkPrompt(text), 'Implement dependency ordering.');
 });
 
-test('headless arguments require output outside target workspace and bound model calls by flow', () => {
+test('headless arguments require output outside target workspace and bound model calls/quota by flow', () => {
   const workspace = path.resolve('/tmp/target');
   assert.throws(() => parseArgs(['--workspace', workspace, '--prompt', 'x', '--output-dir', path.join(workspace, 'audit')]), /outside --workspace/);
   assert.throws(() => parseArgs(['--workspace', workspace, '--prompt-file', '/tmp/outside.md', '--output-dir', '/tmp/results']), /prompt-file must be inside/);
@@ -32,11 +33,14 @@ test('headless arguments require output outside target workspace and bound model
   assert.equal(parsed.flow, 'fast');
   assert.equal(parsed.maxModelCalls, 24);
   assert.equal(parsed.maxModelCallsPerTurn, 10);
+  assert.equal(parsed.maxChatRequests, 8);
   assert.equal(defaultMaxModelCalls('auto'), 60);
   assert.equal(defaultMaxModelCallsPerTurn('auto'), 20);
-  const overridden = parseArgs(['--workspace', workspace, '--prompt', 'x', '--output-dir', '/tmp/results', '--max-model-calls', '17', '--max-model-calls-per-turn', '6']);
+  assert.equal(defaultMaxChatRequests('auto'), 24);
+  const overridden = parseArgs(['--workspace', workspace, '--prompt', 'x', '--output-dir', '/tmp/results', '--max-model-calls', '17', '--max-model-calls-per-turn', '6', '--max-chat-requests', '5']);
   assert.equal(overridden.maxModelCalls, 17);
   assert.equal(overridden.maxModelCallsPerTurn, 6);
+  assert.equal(overridden.maxChatRequests, 5);
 });
 
 test('headless model-call budget aborts one runaway agent turn before the whole-run fuse', () => {
@@ -67,6 +71,28 @@ test('headless model-call budget resets per-agent turn count but preserves total
   assert.equal(breaches.length, 1);
   assert.equal(breaches[0].kind, 'run');
   assert.equal(breaches[0].calls, 5);
+});
+
+test('headless budget protects the actual Copilot chat-request allowance delta', () => {
+  const breaches = [];
+  const budget = createModelCallBudget({ maxTotalCalls: 100, maxCallsPerTurn: 100, maxChatRequests: 3, onExceeded: (breach) => breaches.push(breach) });
+  const usage = (usedRequests) => ({
+    type: 'assistant_usage',
+    agent: 'Worker A',
+    data: { quotaSnapshots: { chat: { usedRequests } } },
+  });
+  budget.handle({ type: 'prompt_send', agent: 'Worker A' });
+  budget.handle(usage(40));
+  budget.handle(usage(41));
+  budget.handle(usage(42));
+  assert.equal(breaches.length, 0);
+  budget.handle(usage(43));
+  assert.equal(breaches.length, 1);
+  assert.equal(breaches[0].kind, 'chat_requests');
+  assert.equal(breaches[0].calls, 3);
+  assert.equal(breaches[0].accountStartUsedRequests, 40);
+  assert.equal(breaches[0].accountUsedRequests, 43);
+  assert.equal(budget.snapshot().chatRequestsUsed, 3);
 });
 
 test('headless benchmark refuses silent auto fallback for required strong roles', () => {
