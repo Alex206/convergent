@@ -11,9 +11,10 @@ const READ_BYTES_PER_FILE = MAX_BATCH_VIEW_CHARS_PER_FILE * 4;
 
 function relativePathAllowed(value) {
   const text = String(value ?? '').trim();
-  if (!text || path.isAbsolute(text)) return false;
+  if (!text || path.posix.isAbsolute(text) || path.win32.isAbsolute(text)) return false;
   const normalized = text.replace(/\\/g, '/');
-  if (normalized === '.git' || normalized.startsWith('.git/')) return false;
+  const lower = normalized.toLowerCase();
+  if (lower === '.git' || lower.startsWith('.git/')) return false;
   const parts = normalized.split('/').filter(Boolean);
   return !parts.includes('..');
 }
