@@ -2,6 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const path = require('node:path');
 const {
   detectLinuxLibc,
   resolveVsixTarget,
@@ -37,11 +38,12 @@ test('package wrapper rejects an explicit target that could disagree with instal
 
 test('package wrapper invokes vsce with the detected target and forwarded arguments', () => {
   const calls = [];
+  const root = path.resolve('/repo');
   const target = packageVsix(['--out', '/tmp/convergent.vsix'], {
     platform: 'linux',
     arch: 'x64',
     libc: 'glibc',
-    root: '/repo',
+    root,
     stdio: 'pipe',
     spawnSync(command, args, options) {
       calls.push({ command, args, options });
@@ -52,7 +54,7 @@ test('package wrapper invokes vsce with the detected target and forwarded argume
   assert.equal(target, 'linux-x64');
   assert.equal(calls.length, 1);
   assert.deepEqual(calls[0].args, [
-    '/repo/node_modules/@vscode/vsce/vsce',
+    path.join(root, 'node_modules', '@vscode', 'vsce', 'vsce'),
     'package',
     '--target',
     'linux-x64',
@@ -67,7 +69,7 @@ test('package wrapper can target Alpine only when running with a musl dependency
     platform: 'linux',
     arch: 'arm64',
     libc: 'musl',
-    root: '/repo',
+    root: path.resolve('/repo'),
     stdio: 'pipe',
     spawnSync(command, args) {
       calls.push({ command, args });
@@ -83,7 +85,7 @@ test('package wrapper propagates vsce failures', () => {
     () => packageVsix([], {
       platform: 'win32',
       arch: 'x64',
-      root: 'C:\\repo',
+      root: path.resolve('C:\\repo'),
       stdio: 'pipe',
       spawnSync() { return { status: 2 }; },
     }),
