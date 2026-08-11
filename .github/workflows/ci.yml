@@ -16,7 +16,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -24,13 +24,19 @@ jobs:
           node-version: '24'
           package-manager-cache: false
       - run: npm install
-      - name: Capture generated dependency lock
-        uses: actions/upload-artifact@v4
-        with:
-          name: convergent-package-lock-${{ github.run_number }}
-          path: package-lock.json
-          if-no-files-found: error
-          retention-days: 1
+      - name: Commit generated dependency lock once
+        if: github.event_name == 'push' && github.ref == 'refs/heads/agent/0.2-convergence-efficiency'
+        shell: bash
+        run: |
+          if git ls-files --error-unmatch package-lock.json >/dev/null 2>&1; then
+            echo "package-lock.json is already tracked; bootstrap commit not needed."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package-lock.json
+          git commit -m "Lock npm dependencies"
+          git push origin HEAD:${GITHUB_REF_NAME}
       - run: npm test
       - run: npm run check
       - name: Package VSIX
