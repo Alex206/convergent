@@ -11,12 +11,14 @@ class HeadlessWorkflowUi {
     logger = console,
     limitPolicy = 'pause',
     stopAfterPlan = process.env.CONVERGENT_HEADLESS_STOP_AFTER_PLAN === '1',
+    stopAfterWorkerA = process.env.CONVERGENT_HEADLESS_STOP_AFTER_WORKER_A === '1',
   } = {}) {
     this.eventSink = eventSink;
     this.auditEvent = eventSink;
     this.logger = logger;
     this.limitPolicy = limitPolicy === 'continue' ? 'continue' : 'pause';
     this.stopAfterPlan = Boolean(stopAfterPlan);
+    this.stopAfterWorkerA = Boolean(stopAfterWorkerA);
     this.flowMode = 'auto';
     this.agentInactivityTimeoutMs = undefined;
     this.toolStallTimeoutMs = undefined;
@@ -65,7 +67,30 @@ class HeadlessWorkflowUi {
   taskCompleted(task, route) { this.log(`Task ${task.id} completed via ${route}.`); this.audit({ type: 'task_complete', taskId: task.id, title: task.title, route }); }
   taskCommitted(task, sha) { this.log(`Task ${task.id} checkpoint commit ${sha}.`); this.audit({ type: 'task_commit', taskId: task.id, sha }); }
   taskCommitSkipped(task, reason) { this.log(`Task ${task.id} commit skipped: ${reason}`); this.audit({ type: 'task_commit_skipped', taskId: task.id, reason }); }
-  passResult(worker, report, changed, revision, meta = {}) { this.log(`Worker ${worker}: ${report.verdict}; changed=${changed}; revision=${String(revision).slice(0, 12)}; ${oneLine(report.summary)}`); this.audit({ type: 'worker_pass_result', worker, report, changed, workspaceFingerprint: revision, durationMs: meta.durationMs, usage: meta.usage }); }
+  passResult(worker, report, changed, revision, meta = {}) {
+    this.log(`Worker ${worker}: ${report.verdict}; changed=${changed}; revision=${String(revision).slice(0, 12)}; ${oneLine(report.summary)}`);
+    this.audit({ type: 'worker_pass_result', worker, report, changed, workspaceFingerprint: revision, durationMs: meta.durationMs, usage: meta.usage });
+    if (this.stopAfterWorkerA && worker === 'A') {
+      const message = `Headless Worker-A diagnostic completed after Worker A reported ${report.verdict}; stopping before Worker B or strong review.`;
+      this.log(message);
+      this.audit({
+        type: 'headless_worker_a_diagnostic_complete',
+        worker,
+        report,
+        changed,
+        workspaceFingerprint: revision,
+        durationMs: meta.durationMs,
+        usage: meta.usage,
+        message,
+      });
+      const error = new Error(message);
+      error.code = 'CONVERGENT_HEADLESS_WORKER_A_DIAGNOSTIC_COMPLETE';
+      error.report = report;
+      error.changed = changed;
+      error.revision = revision;
+      throw error;
+    }
+  }
   converged(revision, pass) { this.log(`Workers converged on ${String(revision).slice(0, 12)} after ${pass} pass(es).`); this.audit({ type: 'workers_converged', workspaceFingerprint: revision, passes: pass }); }
   reviewResult(review, cycle, meta = {}) { this.log(`Strong reviewer cycle ${cycle}: ${review.verdict}; ${oneLine(review.summary)}`); this.audit({ type: 'strong_review_result', cycle, review, durationMs: meta.durationMs, usage: meta.usage }); }
   escalated(from, to, reason) { this.log(`Escalated ${from} -> ${to}: ${reason}`); this.audit({ type: 'workflow_escalated', from, to, reason }); }
