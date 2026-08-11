@@ -26,16 +26,13 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run check
-      - name: Inspect Copilot runtime payload
+      - name: Verify Linux Copilot runtime dependency
         shell: bash
         run: |
-          echo "Installed @github platform packages:"
-          find node_modules/@github -maxdepth 1 -mindepth 1 -type d -printf '%f\n' | sort
-          echo
-          echo "Payload sizes:"
-          du -sh node_modules/@github/copilot* node_modules/koffi 2>/dev/null | sort -h || true
-      - name: Package VSIX
-        run: npm run package -- --out /tmp/convergent-ci.vsix
+          test -d node_modules/@github/copilot-linux-x64
+          test ! -d node_modules/@github/copilot-win32-x64
+      - name: Package Linux x64 VSIX
+        run: npm run package -- --out /tmp/convergent-linux-x64.vsix
 
       - name: Detect models-only preflight request
         id: model-preflight
@@ -182,3 +179,27 @@ jobs:
           path: ${{ runner.temp }}/convergent-benchmark
           if-no-files-found: warn
           retention-days: 14
+
+  package-windows-x64:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - run: npm ci
+      - name: Verify Windows x64 Copilot runtime dependency
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'node_modules/@github/copilot-win32-x64')) {
+            throw 'npm ci did not install @github/copilot-win32-x64 on the Windows x64 runner.'
+          }
+          if (Test-Path 'node_modules/@github/copilot-linux-x64') {
+            throw 'Linux Copilot runtime unexpectedly present in the Windows x64 install.'
+          }
+      - name: Package Windows x64 VSIX
+        shell: pwsh
+        run: npm run package -- --out "$env:RUNNER_TEMP/convergent-win32-x64.vsix"
