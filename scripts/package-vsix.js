@@ -7,17 +7,34 @@ const { spawnSync } = require('node:child_process');
 const TARGETS = new Map([
   ['win32:x64', 'win32-x64'],
   ['win32:arm64', 'win32-arm64'],
-  ['linux:x64', 'linux-x64'],
-  ['linux:arm64', 'linux-arm64'],
+  ['linux:x64:glibc', 'linux-x64'],
+  ['linux:arm64:glibc', 'linux-arm64'],
+  ['linux:x64:musl', 'alpine-x64'],
+  ['linux:arm64:musl', 'alpine-arm64'],
   ['darwin:x64', 'darwin-x64'],
   ['darwin:arm64', 'darwin-arm64'],
 ]);
 
-function resolveVsixTarget(platform = process.platform, arch = process.arch) {
-  const target = TARGETS.get(`${platform}:${arch}`);
+function detectLinuxLibc(report = process.report) {
+  if (!report || typeof report.getReport !== 'function') {
+    throw new Error('Cannot detect Linux libc: process.report.getReport() is unavailable.');
+  }
+  const header = report.getReport()?.header;
+  if (!header || typeof header !== 'object') {
+    throw new Error('Cannot detect Linux libc: Node process report has no header.');
+  }
+  return header.glibcVersionRuntime ? 'glibc' : 'musl';
+}
+
+function resolveVsixTarget(platform = process.platform, arch = process.arch, libc = null) {
+  const key = platform === 'linux'
+    ? `${platform}:${arch}:${libc ?? detectLinuxLibc()}`
+    : `${platform}:${arch}`;
+  const target = TARGETS.get(key);
   if (!target) {
+    const detail = platform === 'linux' ? `${platform}/${arch}/${libc ?? 'detected-libc'}` : `${platform}/${arch}`;
     throw new Error(
-      `Unsupported VSIX packaging host ${platform}/${arch}. `
+      `Unsupported VSIX packaging host ${detail}. `
       + 'Package Convergent on a host that matches a supported VS Code target instead of producing a generic VSIX with the wrong native Copilot runtime.',
     );
   }
@@ -39,7 +56,10 @@ function packageVsix(args = process.argv.slice(2), options = {}) {
   assertNoExplicitTarget(args);
   const platform = options.platform ?? process.platform;
   const arch = options.arch ?? process.arch;
-  const target = resolveVsixTarget(platform, arch);
+  const libc = platform === 'linux'
+    ? (options.libc ?? detectLinuxLibc(options.processReport ?? process.report))
+    : null;
+  const target = resolveVsixTarget(platform, arch, libc);
   const root = options.root ?? path.resolve(__dirname, '..');
   const vsceCli = path.join(root, 'node_modules', '@vscode', 'vsce', 'vsce');
   const spawn = options.spawnSync ?? spawnSync;
@@ -74,6 +94,7 @@ if (require.main === module) {
 
 module.exports = {
   TARGETS,
+  detectLinuxLibc,
   resolveVsixTarget,
   assertNoExplicitTarget,
   packageVsix,
