@@ -37,7 +37,7 @@ node src/headless/model-preflight.js /tmp/convergent-models.json
 
 The models-only preflight calls `listModels()` and does not create a Copilot agent session or send a prompt. CI can run the same operation with the temporary `headless-model-preflight` PR label and uploads the resulting JSON. Remove the label after inspection.
 
-If the credential exposes only `auto`, it is not eligible for Convergent's normal strong-role benchmark. Do not override this by explicitly selecting `auto` merely to make a benchmark run; doing so measures a different orchestration/model policy.
+The SDK model list is treated as runtime truth. Which models appear there can depend on the Copilot plan, client surface, and organization/enterprise model policy. If a credential exposes only `auto`, it is not eligible for Convergent's normal strong-role benchmark. Do not override this by explicitly selecting `auto` merely to make a benchmark run; doing so measures a different orchestration/model policy.
 
 ## GitHub Actions
 
