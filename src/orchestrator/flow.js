@@ -53,7 +53,7 @@ function coordinatorFlowInstructions(mode) {
     'FAST FLOW PLANNING: the user explicitly prefers a short accepted-result trajectory.',
     'When the request is already concrete, perform at most one bounded repository-inspection batch sufficient to identify project conventions and routing risk, then submit the proportionate plan.',
     'Prefer directly relevant root instructions/manifests/files over broad whole-repository pattern searches. Do not perform a second reassurance inspection wave after you already have enough evidence to plan.',
-    'When several small relevant files are already known, inspect them in one parallel/batched tool roundtrip when the available tools permit it instead of paying a separate model continuation for each file.',
+    'When several relevant existing files are already known, use the custom batch_view tool to read them together in ONE tool call instead of serial builtin:view calls. Use glob/grep/rg only to discover unknown locations; once paths are known, batch_view is the preferred Fast inspection path.',
     'Do not inspect unrelated editor settings, caches, or other dirty/untracked workspace artifacts unless they materially affect the requested task.',
     'Minimize task count because every modifying task creates fresh A/B sessions and a fresh strong-review gate. A cohesive feature that changes a model, parser/implementation, exports, and its focused tests should normally be ONE modifying task when those changes must land together to satisfy one user-visible outcome.',
     'For Fast, target at most three total plan tasks. Exceed three only when the user explicitly requested genuinely independent deliverables that cannot be safely reviewed as acceptance-boundary tasks; never split implementation from the tests required to accept that same implementation just to create smaller file-oriented tasks.',
@@ -71,7 +71,7 @@ function workerFlowInstructions(mode) {
     'FAST FLOW: optimize for time and accepted-result cost, not exhaustive exploration.',
     'Use one focused inspection of the changed/task-relevant surface, make the smallest complete change, run only decisive checks, and finish the pass.',
     'Treat concrete current-repository facts already present in the task description as reusable planning evidence: use those facts directly unless exact source text is needed to edit safely or a fact is uncertain. inspectionHints are locators for existing observed surfaces, not a checklist requiring every file to be reopened.',
-    'If multiple known files still need reading, issue all independent view/read tool calls in the SAME assistant turn so they execute as one inspection roundtrip. WRONG = view file A, wait for a new model continuation, view file B, repeat. RIGHT = request file A/B/C views together, then reason once from all results.',
+    'When exact text from multiple known existing files is needed, use custom batch_view once with those repository-relative paths. Do not spend one model continuation per builtin:view call. If batch_view already returned a file, do not reopen it unless a later edit or concrete ambiguity requires it.',
     'Batch related edits/creates into one apply_patch call when practical, including multiple files in the same patch. WRONG = one edit tool call and model continuation per file when the whole change is already understood. RIGHT = one coordinated patch, then one decisive validation step.',
     'When a peer report already names the relevant changed files or exact checks, use that information directly; do not rediscover the same files with glob/search unless the report is incomplete or a concrete concern requires it.',
     'Do not re-read files or rerun successful checks unless a concrete new concern or later edit invalidates the earlier evidence. In particular, do not rerun an exact check that the peer already passed on the current workspace fingerprint merely for independent reassurance.',
@@ -86,6 +86,7 @@ function reviewerFlowInstructions(mode) {
   if (flow === 'fast') {
     return [
       'FAST FLOW REVIEW SCOPE: on the first cycle focus on the task diff/current changed files, acceptance criteria, and directly affected interfaces/tests. Do not perform a whole-repository audit.',
+      'When several exact changed/relevant files need inspection, use custom batch_view once rather than serial builtin:view calls.',
       'Use worker validation evidence on the exact current workspace fingerprint instead of mechanically rerunning the same successful check. Run independent validation only when you first identify a concrete correctness concern that the existing evidence does not answer.',
       'Do not spend tool calls discovering unrelated dirty/untracked workspace state. A path is an out-of-scope task finding only when there is evidence this task introduced or modified it.',
     ].join(' ');
