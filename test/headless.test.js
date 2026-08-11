@@ -21,6 +21,31 @@ const {
   assertHeadlessRoleModels,
 } = require('../src/headless/model-policy');
 
+function usage(agent, sessionId, usedRequests) {
+  return {
+    type: 'assistant_usage',
+    agent,
+    sessionId,
+    data: Number.isFinite(usedRequests) ? { quotaSnapshots: { chat: { usedRequests } } } : {},
+  };
+}
+
+function toolStart(agent, sessionId, toolCallId, tool) {
+  return { type: 'tool_start', agent, sessionId, tool, data: { toolCallId, toolName: tool } };
+}
+
+function toolComplete(agent, sessionId, toolCallId, result) {
+  return {
+    type: 'tool_complete',
+    agent,
+    sessionId,
+    data: {
+      toolCallId,
+      result: { content: JSON.stringify(result) },
+    },
+  };
+}
+
 test('benchmark prompt extraction uses only the Prompt fenced block', () => {
   const text = '# Scenario\n\n## Prompt\n\n```text\nImplement dependency ordering.\n```\n\n## Expected scope\nIgnore me.';
   assert.equal(extractBenchmarkPrompt(text), 'Implement dependency ordering.');
@@ -44,56 +69,125 @@ test('headless arguments require output outside target workspace and bound model
   assert.equal(overridden.maxChatRequests, 5);
 });
 
-test('headless model-call budget aborts one runaway agent turn before the whole-run fuse', () => {
+test('headless turn budget lets the limit-th model call finish its tool action before stopping', () => {
   const breaches = [];
   const budget = createModelCallBudget({ maxTotalCalls: 24, maxCallsPerTurn: 10, onExceeded: (breach) => breaches.push(breach) });
-  budget.handle({ type: 'prompt_send', agent: 'Worker A' });
-  for (let index = 0; index < 9; index += 1) budget.handle({ type: 'assistant_usage', agent: 'Worker A' });
+  const sessionId = 'worker-a-session';
+  budget.handle({ type: 'prompt_send', agent: 'Worker A', sessionId });
+  for (let index = 0; index < 10; index += 1) budget.handle(usage('Worker A', sessionId));
+  assert.equal(breaches.length, 0, 'call 10 is billed but must be allowed to finish its selected action');
+  budget.handle(toolStart('Worker A', sessionId, 'call-10', 'view'));
   assert.equal(breaches.length, 0);
-  budget.handle({ type: 'assistant_usage', agent: 'Worker A' });
+  budget.handle(toolComplete('Worker A', sessionId, 'call-10', { ok: true }));
   assert.equal(breaches.length, 1);
   assert.equal(breaches[0].kind, 'turn');
   assert.equal(breaches[0].agent, 'Worker A');
   assert.equal(breaches[0].calls, 10);
+  assert.equal(breaches[0].boundary, 'tool_complete');
   assert.equal(budget.snapshot().totalCalls, 10);
+});
+
+test('accepted structured report at the per-turn cap stops only post-report continuation', () => {
+  const breaches = [];
+  const turnStops = [];
+  const budget = createModelCallBudget({
+    maxTotalCalls: 24,
+    maxCallsPerTurn: 9,
+    onExceeded: (breach) => breaches.push(breach),
+    onTurnLimit: (stop) => turnStops.push(stop),
+  });
+  const sessionId = 'coordinator-session';
+  budget.handle({ type: 'prompt_send', agent: 'Coordinator', sessionId });
+  for (let index = 0; index < 9; index += 1) budget.handle(usage('Coordinator', sessionId));
+  budget.handle(toolStart('Coordinator', sessionId, 'plan-9', 'report_plan'));
+  budget.handle(toolComplete('Coordinator', sessionId, 'plan-9', { accepted: true, taskCount: 1 }));
+
+  assert.equal(breaches.length, 0);
+  assert.equal(turnStops.length, 1);
+  assert.equal(turnStops[0].kind, 'turn');
+  assert.equal(turnStops[0].calls, 9);
+  assert.equal(turnStops[0].toolName, 'report_plan');
+  assert.equal(turnStops[0].boundary, 'accepted_report');
+  assert.equal(turnStops[0].sessionId, sessionId);
+
+  budget.handle({ type: 'assistant_turn_end', agent: 'Coordinator', sessionId });
+  assert.equal(breaches.length, 0, 'accepted report must not become a run-level budget failure');
+
+  budget.handle({ type: 'prompt_send', agent: 'Worker A', sessionId: 'worker-a-session' });
+  budget.handle(usage('Worker A', 'worker-a-session'));
+  assert.equal(breaches.length, 0, 'the next Convergent agent turn gets a fresh per-turn budget');
+  assert.equal(budget.snapshot().totalCalls, 10);
+});
+
+test('rejected structured report at the per-turn cap still stops before another model continuation', () => {
+  const breaches = [];
+  const turnStops = [];
+  const budget = createModelCallBudget({
+    maxTotalCalls: 24,
+    maxCallsPerTurn: 3,
+    onExceeded: (breach) => breaches.push(breach),
+    onTurnLimit: (stop) => turnStops.push(stop),
+  });
+  const sessionId = 'coordinator-session';
+  budget.handle({ type: 'prompt_send', agent: 'Coordinator', sessionId });
+  for (let index = 0; index < 3; index += 1) budget.handle(usage('Coordinator', sessionId));
+  budget.handle(toolStart('Coordinator', sessionId, 'plan-3', 'report_plan'));
+  budget.handle(toolComplete('Coordinator', sessionId, 'plan-3', { accepted: false, retry: true }));
+  assert.equal(turnStops.length, 0);
+  assert.equal(breaches.length, 1);
+  assert.equal(breaches[0].kind, 'turn');
+  assert.equal(breaches[0].calls, 3);
 });
 
 test('headless model-call budget resets per-agent turn count but preserves total run count', () => {
   const breaches = [];
   const budget = createModelCallBudget({ maxTotalCalls: 5, maxCallsPerTurn: 4, onExceeded: (breach) => breaches.push(breach) });
-  budget.handle({ type: 'prompt_send', agent: 'Worker A' });
-  budget.handle({ type: 'assistant_usage', agent: 'Worker A' });
-  budget.handle({ type: 'assistant_usage', agent: 'Worker A' });
-  budget.handle({ type: 'prompt_send', agent: 'Worker A' });
-  budget.handle({ type: 'assistant_usage', agent: 'Worker A' });
-  budget.handle({ type: 'assistant_usage', agent: 'Worker A' });
-  assert.equal(breaches.length, 0);
-  budget.handle({ type: 'assistant_usage', agent: 'Worker B' });
+  budget.handle({ type: 'prompt_send', agent: 'Worker A', sessionId: 'a' });
+  budget.handle(usage('Worker A', 'a'));
+  budget.handle(usage('Worker A', 'a'));
+  budget.handle({ type: 'prompt_send', agent: 'Worker A', sessionId: 'a' });
+  budget.handle(usage('Worker A', 'a'));
+  budget.handle(usage('Worker A', 'a'));
+  budget.handle(usage('Worker B', 'b'));
+  assert.equal(breaches.length, 0, 'fifth call is allowed to finish its current action');
+  budget.handle({ type: 'assistant_turn_end', agent: 'Worker B', sessionId: 'b' });
   assert.equal(breaches.length, 1);
   assert.equal(breaches[0].kind, 'run');
   assert.equal(breaches[0].calls, 5);
+  assert.equal(breaches[0].boundary, 'assistant_turn_end');
 });
 
-test('headless budget protects the actual Copilot chat-request allowance delta', () => {
+test('headless budget protects the actual Copilot chat-request allowance delta after the current action', () => {
   const breaches = [];
   const budget = createModelCallBudget({ maxTotalCalls: 100, maxCallsPerTurn: 100, maxChatRequests: 3, onExceeded: (breach) => breaches.push(breach) });
-  const usage = (usedRequests) => ({
-    type: 'assistant_usage',
-    agent: 'Worker A',
-    data: { quotaSnapshots: { chat: { usedRequests } } },
-  });
-  budget.handle({ type: 'prompt_send', agent: 'Worker A' });
-  budget.handle(usage(40));
-  budget.handle(usage(41));
-  budget.handle(usage(42));
+  const sessionId = 'worker-a-session';
+  budget.handle({ type: 'prompt_send', agent: 'Worker A', sessionId });
+  budget.handle(usage('Worker A', sessionId, 40));
+  budget.handle(usage('Worker A', sessionId, 41));
+  budget.handle(usage('Worker A', sessionId, 42));
+  budget.handle(usage('Worker A', sessionId, 43));
   assert.equal(breaches.length, 0);
-  budget.handle(usage(43));
+  budget.handle({ type: 'assistant_turn_end', agent: 'Worker A', sessionId });
   assert.equal(breaches.length, 1);
   assert.equal(breaches[0].kind, 'chat_requests');
   assert.equal(breaches[0].calls, 3);
   assert.equal(breaches[0].accountStartUsedRequests, 40);
   assert.equal(breaches[0].accountUsedRequests, 43);
   assert.equal(budget.snapshot().chatRequestsUsed, 3);
+});
+
+test('headless budget fails closed if an extra billed model call appears past a limit', () => {
+  const breaches = [];
+  const budget = createModelCallBudget({ maxTotalCalls: 100, maxCallsPerTurn: 2, onExceeded: (breach) => breaches.push(breach) });
+  const sessionId = 'worker-a-session';
+  budget.handle({ type: 'prompt_send', agent: 'Worker A', sessionId });
+  budget.handle(usage('Worker A', sessionId));
+  budget.handle(usage('Worker A', sessionId));
+  budget.handle(usage('Worker A', sessionId));
+  assert.equal(breaches.length, 1);
+  assert.equal(breaches[0].kind, 'turn');
+  assert.equal(breaches[0].calls, 3);
+  assert.equal(breaches[0].boundary, 'assistant_usage_overrun');
 });
 
 test('headless benchmark refuses silent auto fallback for required strong roles', () => {
