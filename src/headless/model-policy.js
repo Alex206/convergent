@@ -35,7 +35,8 @@ function unresolvedIssue(role, selector, resolution, preset = null) {
 }
 
 function resolveWorkerPolicy(role, selector, available, issues) {
-  const normalized = String(selector ?? '').trim().toLowerCase();
+  if (selector === undefined || selector === null) return { selector, presets: [] };
+  const normalized = String(selector).trim().toLowerCase();
   if (!normalized || normalized === 'auto') return { selector, presets: [] };
 
   if (isAdaptiveWorkerSelector(normalized)) {
@@ -67,8 +68,8 @@ function resolveHeadlessRoleModels(options, available = []) {
   }
 
   const workers = {
-    workerA: resolveWorkerPolicy('workerA', options.workerA ?? 'adaptive', available, issues),
-    workerB: resolveWorkerPolicy('workerB', options.workerB ?? 'adaptive-diverse', available, issues),
+    workerA: resolveWorkerPolicy('workerA', options.workerA, available, issues),
+    workerB: resolveWorkerPolicy('workerB', options.workerB, available, issues),
   };
 
   return {
