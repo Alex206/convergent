@@ -54,6 +54,8 @@ function coordinatorFlowInstructions(mode) {
     'When the request is already concrete, perform at most one bounded repository-inspection batch sufficient to identify project conventions and routing risk, then submit the proportionate plan.',
     'Prefer directly relevant root instructions/manifests/files over broad whole-repository pattern searches. Do not perform a second reassurance inspection wave after you already have enough evidence to plan.',
     'Do not inspect unrelated editor settings, caches, or other dirty/untracked workspace artifacts unless they materially affect the requested task.',
+    'Minimize task count because every modifying task creates fresh A/B sessions and a fresh strong-review gate. A cohesive feature that changes a model, parser/implementation, exports, and its focused tests should normally be ONE modifying task when those changes must land together to satisfy one user-visible outcome.',
+    'Repository inspection performed during planning is coordinator work, not a separate read_only plan task inside a modifying request. Split tasks only when they are independently acceptable/reviewable, have a real sequencing boundary, or require materially different risk treatment.',
   ].join(' ');
 }
 
