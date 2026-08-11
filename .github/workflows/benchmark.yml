@@ -101,6 +101,15 @@ jobs:
       - name: Install Convergent dependencies
         run: npm ci
 
+      - name: Record exact runtime versions
+        shell: bash
+        run: |
+          mkdir -p "${BENCHMARK_OUTPUT}"
+          node - <<'NODE' > "${BENCHMARK_OUTPUT}/runtime-versions.json"
+          const { runtimeVersionInfo } = require('./src/copilot/version-info');
+          process.stdout.write(`${JSON.stringify(runtimeVersionInfo(), null, 2)}\n`);
+          NODE
+
       - name: Run Convergent headless benchmark
         id: benchmark
         shell: bash
