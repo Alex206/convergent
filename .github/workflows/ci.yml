@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - 'agent/**'
   pull_request:
     types:
       - opened
@@ -84,8 +83,8 @@ jobs:
       - name: Detect headless benchmark request
         id: headless-benchmark
         if: >-
-          (github.event_name == 'push' && contains(github.event.head_commit.message, '[benchmark]')) ||
-          (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'headless-benchmark'))
+          github.event_name == 'pull_request' &&
+          contains(github.event.pull_request.labels.*.name, 'headless-benchmark')
         shell: bash
         env:
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
