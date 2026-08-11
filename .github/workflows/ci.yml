@@ -230,20 +230,22 @@ jobs:
           path: auto-smoke-target
           token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
 
-      - name: Run bounded non-authoritative auto smoke
+      - name: Run bounded plan-only auto diagnostic
         id: auto-smoke-run
         if: steps.auto-smoke.outputs.enabled == 'true'
-        timeout-minutes: 6
+        continue-on-error: true
+        timeout-minutes: 4
         shell: bash
         env:
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
           COPILOT_PLUGIN_DIR_ONLY: 'true'
           CONVERGENT_HEADLESS_ANSWERS_JSON: '[]'
+          CONVERGENT_HEADLESS_STOP_AFTER_PLAN: '1'
           SMOKE_OUTPUT: ${{ runner.temp }}/convergent-auto-smoke
         run: |
           set -o pipefail
           mkdir -p "${SMOKE_OUTPUT}"
-          echo "NON-AUTHORITATIVE DIAGNOSTIC: every role intentionally uses Copilot auto." | tee "${SMOKE_OUTPUT}/diagnostic-scope.txt"
+          echo "NON-AUTHORITATIVE PLAN-ONLY DIAGNOSTIC: every role intentionally uses Copilot auto; stop immediately after a valid plan." | tee "${SMOKE_OUTPUT}/diagnostic-scope.txt"
           node - <<'NODE' > "${SMOKE_OUTPUT}/runtime-versions.json"
           const { runtimeVersionInfo } = require('./src/copilot/version-info');
           process.stdout.write(`${JSON.stringify(runtimeVersionInfo(), null, 2)}\n`);
@@ -259,11 +261,57 @@ jobs:
             --reviewer auto \
             --audit-level full \
             --limit-policy pause \
-            --max-model-calls 12 \
-            --max-model-calls-per-turn 5 \
-            --max-chat-requests 5 \
-            --max-ai-credits 6 \
+            --max-model-calls 10 \
+            --max-model-calls-per-turn 9 \
+            --max-chat-requests 3 \
+            --max-ai-credits 4 \
             2>&1 | tee "${SMOKE_OUTPUT}/runner.log"
+
+      - name: Validate plan-only diagnostic stop
+        if: always() && steps.auto-smoke.outputs.enabled == 'true'
+        shell: bash
+        env:
+          SMOKE_OUTPUT: ${{ runner.temp }}/convergent-auto-smoke
+        run: |
+          set -euo pipefail
+          events="$(find "${SMOKE_OUTPUT}/audit" -name events.jsonl -type f 2>/dev/null | head -n 1)"
+          if [[ -z "${events}" ]]; then
+            echo "Plan-only diagnostic produced no trajectory events." >&2
+            exit 2
+          fi
+          EVENTS_FILE="${events}" node - <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const events = fs.readFileSync(process.env.EVENTS_FILE, 'utf8')
+            .split(/\r?\n/)
+            .filter(Boolean)
+            .map((line) => JSON.parse(line));
+          const accepted = events.find((event) => event.type === 'plan_accepted');
+          const complete = events.find((event) => event.type === 'headless_plan_diagnostic_complete');
+          const taskStarts = events.filter((event) => event.type === 'task_start');
+          if (!accepted || !complete) {
+            console.error('Expected a valid accepted plan followed by the plan-only diagnostic stop.');
+            process.exit(2);
+          }
+          if (taskStarts.length !== 0) {
+            console.error(`Plan-only diagnostic unexpectedly started ${taskStarts.length} task(s).`);
+            process.exit(3);
+          }
+          const taskCount = accepted.plan?.tasks?.length ?? 0;
+          if (taskCount > 3) {
+            console.error(`Fast plan unexpectedly contains ${taskCount} tasks.`);
+            process.exit(4);
+          }
+          const output = {
+            diagnostic: 'plan_only',
+            taskCount,
+            plan: accepted.plan,
+            routes: accepted.routes ?? [],
+            taskStarts: 0,
+          };
+          fs.writeFileSync(path.join(process.env.SMOKE_OUTPUT, 'plan-diagnostic.json'), `${JSON.stringify(output, null, 2)}\n`);
+          console.log(`Plan-only diagnostic accepted ${taskCount} task(s) and started no workers.`);
+          NODE
 
       - name: Summarize auto-smoke efficiency
         if: always() && steps.auto-smoke.outputs.enabled == 'true'
