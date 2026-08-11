@@ -123,6 +123,7 @@ jobs:
             --limit-policy pause \
             --max-model-calls 24 \
             --max-model-calls-per-turn 10 \
+            --max-chat-requests 8 \
             --max-ai-credits 12 \
             2>&1 | tee "${BENCHMARK_OUTPUT}/runner.log"
 
