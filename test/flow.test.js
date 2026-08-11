@@ -9,7 +9,7 @@ const {
   workerFlowInstructions,
   reviewerFlowInstructions,
 } = require('../src/orchestrator/flow');
-const { REVIEWER_PROMPT, WORKER_A_PROMPT, WORKER_B_PROMPT } = require('../src/orchestrator/prompts');
+const { COORDINATOR_PROMPT, REVIEWER_PROMPT, WORKER_A_PROMPT, WORKER_B_PROMPT } = require('../src/orchestrator/prompts');
 
 test('fast flow allows one automatic remediation delta review before asking', () => {
   const policy = flowPolicy('fast', { maxWorkerPasses: 8, maxReviewerCycles: 3 });
@@ -20,10 +20,19 @@ test('fast flow allows one automatic remediation delta review before asking', ()
   assert.match(policy.description, /automatic remediation/i);
   assert.match(coordinatorFlowInstructions('fast'), /one bounded repository-inspection batch/i);
   assert.match(coordinatorFlowInstructions('fast'), /editor settings/i);
+  assert.match(coordinatorFlowInstructions('fast'), /Minimize task count/i);
+  assert.match(coordinatorFlowInstructions('fast'), /ONE modifying task/i);
+  assert.match(coordinatorFlowInstructions('fast'), /not a separate read_only plan task/i);
   assert.match(workerFlowInstructions('fast'), /focused inspection/i);
   assert.match(workerFlowInstructions('fast'), /apply_patch/i);
   assert.match(workerFlowInstructions('fast'), /peer already passed/i);
   assert.match(reviewerFlowInstructions('fast'), /instead of mechanically rerunning/i);
+});
+
+test('coordinator plans at acceptance boundaries rather than file boundaries', () => {
+  assert.match(COORDINATOR_PROMPT, /Plan tasks at acceptance boundaries, not file boundaries/i);
+  assert.match(COORDINATOR_PROMPT, /must not become a separate read_only task/i);
+  assert.match(COORDINATOR_PROMPT, /inspectionHints/i);
 });
 
 test('auto preserves configured soft tranches', () => {
