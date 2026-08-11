@@ -35,6 +35,16 @@ on:
         required: true
         default: '24'
         type: string
+      max_model_calls_per_turn:
+        description: Hard model-call fuse for one Convergent agent prompt/turn
+        required: true
+        default: '10'
+        type: string
+      max_ai_credits:
+        description: Soft reported AI-credit boundary checked at safe workflow boundaries
+        required: true
+        default: '12'
+        type: string
       answers_json:
         description: JSON array of scripted answers for expected headless clarification/recovery prompts
         required: true
@@ -100,7 +110,8 @@ jobs:
             --audit-level full \
             --limit-policy "${{ inputs.limit_policy }}" \
             --max-model-calls "${{ inputs.max_model_calls }}" \
-            --max-ai-credits 12 \
+            --max-model-calls-per-turn "${{ inputs.max_model_calls_per_turn }}" \
+            --max-ai-credits "${{ inputs.max_ai_credits }}" \
             2>&1 | tee "${BENCHMARK_OUTPUT}/runner.log"
 
       - name: Independently validate benchmark target
@@ -118,6 +129,8 @@ jobs:
       - name: Capture final target workspace
         if: always()
         shell: bash
+        env:
+          BENCHMARK_OUTPUT: ${{ runner.temp }}/convergent-benchmark
         run: |
           mkdir -p "${BENCHMARK_OUTPUT}"
           git -C benchmark-target status --porcelain=v1 --untracked-files=all > "${BENCHMARK_OUTPUT}/final-status.txt" || true
