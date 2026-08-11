@@ -29,6 +29,43 @@ jobs:
       - name: Package VSIX
         run: npm run package -- --out /tmp/convergent-ci.vsix
 
+      - name: Detect models-only preflight request
+        id: model-preflight
+        if: >-
+          github.event_name == 'pull_request' &&
+          contains(github.event.pull_request.labels.*.name, 'headless-model-preflight')
+        shell: bash
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+        run: |
+          if [[ -z "${COPILOT_GITHUB_TOKEN}" ]]; then
+            echo "::notice::Models-only preflight requested but repository secret COPILOT_GITHUB_TOKEN is not configured."
+            echo "enabled=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "enabled=true" >> "${GITHUB_OUTPUT}"
+            echo "Models-only preflight requested. This calls listModels() only and sends no agent prompt."
+          fi
+
+      - name: Run models-only Copilot preflight
+        if: steps.model-preflight.outputs.enabled == 'true'
+        shell: bash
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          COPILOT_PLUGIN_DIR_ONLY: 'true'
+          MODEL_PREFLIGHT_OUTPUT: ${{ runner.temp }}/convergent-model-preflight/models.json
+        run: |
+          mkdir -p "$(dirname "${MODEL_PREFLIGHT_OUTPUT}")"
+          node src/headless/model-preflight.js "${MODEL_PREFLIGHT_OUTPUT}"
+
+      - name: Upload models-only preflight
+        if: always() && steps.model-preflight.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: convergent-model-preflight-${{ github.run_number }}
+          path: ${{ runner.temp }}/convergent-model-preflight
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Detect headless benchmark request
         id: headless-benchmark
         if: >-
@@ -85,6 +122,7 @@ jobs:
             --audit-level full \
             --limit-policy pause \
             --max-model-calls 24 \
+            --max-model-calls-per-turn 10 \
             --max-ai-credits 12 \
             2>&1 | tee "${BENCHMARK_OUTPUT}/runner.log"
 
