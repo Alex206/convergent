@@ -56,10 +56,13 @@ The workflow:
 2. extracts only the benchmark's `## Prompt` fenced block,
 3. verifies that configured role selectors resolve to explicit eligible models,
 4. runs the same Convergent orchestration core headlessly,
-5. independently runs the target repository's unittest suite,
-6. uploads the complete trajectory audit, model preflight, result/checkpoint JSON, runner log, final Git status/diff, validation log, and a non-`.git` workspace snapshot.
+5. produces a deterministic `efficiency-summary.json` from `events.jsonl`,
+6. independently runs the target repository's unittest suite,
+7. uploads the complete trajectory audit, model preflight, efficiency summary, result/checkpoint JSON, runner log, final Git status/diff, validation log, and a non-`.git` workspace snapshot.
 
 `COPILOT_PLUGIN_DIR_ONLY=true` keeps ambient Copilot plugins from changing the benchmark environment.
+
+The offline efficiency summary reports Convergent prompt count versus underlying model calls, worst model/tool calls per prompt, observed Copilot chat-quota delta, session/runtime models, task progress, and serialized report recovery. It flags high prompt-to-model amplification, runaway single-agent turns, `auto` model leakage, and report fallback without invoking another model.
 
 ## Non-interactive safety and quota fuses
 
