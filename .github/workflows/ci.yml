@@ -361,6 +361,181 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+      - name: Detect bounded Worker A smoke request
+        id: worker-a-smoke
+        if: >-
+          github.event_name == 'pull_request' &&
+          contains(github.event.pull_request.labels.*.name, 'headless-auto-worker-a-smoke')
+        shell: bash
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          BENCHMARK_REPO_TOKEN: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+        run: |
+          missing=0
+          if [[ -z "${COPILOT_GITHUB_TOKEN}" ]]; then
+            echo "::notice::Worker A smoke requested but COPILOT_GITHUB_TOKEN is not configured."
+            missing=1
+          fi
+          if [[ -z "${BENCHMARK_REPO_TOKEN}" ]]; then
+            echo "::notice::Worker A smoke requested but BENCHMARK_REPO_TOKEN is not configured."
+            missing=1
+          fi
+          if [[ "${missing}" == "0" ]]; then
+            echo "enabled=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "enabled=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Checkout Worker A smoke target
+        if: steps.worker-a-smoke.outputs.enabled == 'true'
+        uses: actions/checkout@v6
+        with:
+          repository: Alex206/convergent-test-repo
+          ref: main
+          path: worker-a-smoke-target
+          token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+
+      - name: Run bounded Worker A-only auto diagnostic
+        id: worker-a-smoke-run
+        if: steps.worker-a-smoke.outputs.enabled == 'true'
+        continue-on-error: true
+        timeout-minutes: 6
+        shell: bash
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          COPILOT_PLUGIN_DIR_ONLY: 'true'
+          CONVERGENT_HEADLESS_ANSWERS_JSON: '[]'
+          CONVERGENT_HEADLESS_STOP_AFTER_WORKER_A: '1'
+          WORKER_A_OUTPUT: ${{ runner.temp }}/convergent-worker-a-smoke
+        run: |
+          set -o pipefail
+          mkdir -p "${WORKER_A_OUTPUT}"
+          echo "NON-AUTHORITATIVE WORKER-A-ONLY DIAGNOSTIC: every role intentionally uses Copilot auto; stop immediately after Worker A's first report." | tee "${WORKER_A_OUTPUT}/diagnostic-scope.txt"
+          node - <<'NODE' > "${WORKER_A_OUTPUT}/runtime-versions.json"
+          const { runtimeVersionInfo } = require('./src/copilot/version-info');
+          process.stdout.write(`${JSON.stringify(runtimeVersionInfo(), null, 2)}\n`);
+          NODE
+          node src/headless/cli.js \
+            --workspace "${GITHUB_WORKSPACE}/worker-a-smoke-target" \
+            --prompt-file "${GITHUB_WORKSPACE}/worker-a-smoke-target/benchmarks/03-dependency-ordering.md" \
+            --output-dir "${WORKER_A_OUTPUT}" \
+            --flow fast \
+            --coordinator auto \
+            --worker-a auto \
+            --worker-b auto \
+            --reviewer auto \
+            --audit-level full \
+            --limit-policy pause \
+            --max-model-calls 17 \
+            --max-model-calls-per-turn 9 \
+            --max-chat-requests 4 \
+            --max-ai-credits 5 \
+            2>&1 | tee "${WORKER_A_OUTPUT}/runner.log"
+
+      - name: Validate Worker A-only diagnostic stop
+        if: always() && steps.worker-a-smoke.outputs.enabled == 'true'
+        shell: bash
+        env:
+          WORKER_A_OUTPUT: ${{ runner.temp }}/convergent-worker-a-smoke
+        run: |
+          set -euo pipefail
+          events="$(find "${WORKER_A_OUTPUT}/audit" -name events.jsonl -type f 2>/dev/null | head -n 1)"
+          if [[ -z "${events}" ]]; then
+            echo "Worker A diagnostic produced no trajectory events." >&2
+            exit 2
+          fi
+          EVENTS_FILE="${events}" node - <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const events = fs.readFileSync(process.env.EVENTS_FILE, 'utf8')
+            .split(/\r?\n/)
+            .filter(Boolean)
+            .map((line) => JSON.parse(line));
+          const accepted = events.find((event) => event.type === 'plan_accepted');
+          const completed = events.find((event) => event.type === 'headless_worker_a_diagnostic_complete');
+          const workerA = events.find((event) => event.type === 'worker_pass_result' && event.worker === 'A');
+          const laterPrompts = events.filter((event) => event.type === 'prompt_send' && event.agent !== 'Coordinator' && event.agent !== 'A');
+          if (!accepted || !completed || !workerA) {
+            console.error('Expected accepted plan plus Worker A report and diagnostic completion event.');
+            process.exit(2);
+          }
+          if (laterPrompts.length !== 0) {
+            console.error(`Worker A-only diagnostic unexpectedly sent ${laterPrompts.length} Worker B/reviewer prompt(s).`);
+            process.exit(3);
+          }
+          const modifying = (accepted.plan?.tasks ?? []).filter((task) => task.route !== 'read_only');
+          if (modifying.length !== 1) {
+            console.error(`Expected exactly one modifying task, got ${modifying.length}.`);
+            process.exit(4);
+          }
+          if (workerA.report?.verdict === 'blocked') {
+            console.error(`Worker A ended blocked: ${workerA.report?.summary ?? 'no summary'}`);
+            process.exit(5);
+          }
+          const output = {
+            diagnostic: 'worker_a_only',
+            plan: accepted.plan,
+            routes: accepted.routes ?? [],
+            workerA: {
+              report: workerA.report,
+              changed: workerA.changed,
+              workspaceFingerprint: workerA.workspaceFingerprint,
+              durationMs: workerA.durationMs,
+              usage: workerA.usage,
+            },
+            laterAgentPrompts: 0,
+          };
+          fs.writeFileSync(path.join(process.env.WORKER_A_OUTPUT, 'worker-a-diagnostic.json'), `${JSON.stringify(output, null, 2)}\n`);
+          console.log(`Worker A-only diagnostic completed with verdict ${workerA.report?.verdict}; no Worker B/reviewer prompt was sent.`);
+          NODE
+
+      - name: Summarize Worker A smoke efficiency
+        if: always() && steps.worker-a-smoke.outputs.enabled == 'true'
+        continue-on-error: true
+        shell: bash
+        env:
+          WORKER_A_OUTPUT: ${{ runner.temp }}/convergent-worker-a-smoke
+        run: |
+          events="$(find "${WORKER_A_OUTPUT}/audit" -name events.jsonl -type f 2>/dev/null | head -n 1)"
+          if [[ -n "${events}" ]]; then
+            node src/headless/efficiency-summary.js "${events}" "${WORKER_A_OUTPUT}/efficiency-summary.json" > "${WORKER_A_OUTPUT}/efficiency-summary.log"
+          else
+            echo "No trajectory events available." > "${WORKER_A_OUTPUT}/efficiency-summary.log"
+          fi
+
+      - name: Independently validate Worker A target
+        if: always() && steps.worker-a-smoke.outputs.enabled == 'true'
+        shell: bash
+        env:
+          WORKER_A_OUTPUT: ${{ runner.temp }}/convergent-worker-a-smoke
+        run: |
+          mkdir -p "${WORKER_A_OUTPUT}"
+          set -o pipefail
+          (
+            cd worker-a-smoke-target
+            python3 -B -m unittest discover -s tests -v
+          ) 2>&1 | tee "${WORKER_A_OUTPUT}/target-validation.log"
+
+      - name: Capture final Worker A workspace
+        if: always() && steps.worker-a-smoke.outputs.enabled == 'true'
+        shell: bash
+        env:
+          WORKER_A_OUTPUT: ${{ runner.temp }}/convergent-worker-a-smoke
+        run: |
+          mkdir -p "${WORKER_A_OUTPUT}"
+          git -C worker-a-smoke-target status --porcelain=v1 --untracked-files=all > "${WORKER_A_OUTPUT}/final-status.txt" || true
+          git -C worker-a-smoke-target diff --binary --no-ext-diff > "${WORKER_A_OUTPUT}/final-diff.patch" || true
+          tar --exclude=.git -czf "${WORKER_A_OUTPUT}/workspace.tar.gz" -C worker-a-smoke-target .
+
+      - name: Upload Worker A smoke evidence
+        if: always() && steps.worker-a-smoke.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: convergent-worker-a-smoke-${{ github.run_number }}
+          path: ${{ runner.temp }}/convergent-worker-a-smoke
+          if-no-files-found: warn
+          retention-days: 7
+
   package-windows-x64:
     runs-on: windows-latest
     timeout-minutes: 20
