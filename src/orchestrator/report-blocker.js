@@ -28,8 +28,9 @@ function operatorPrerequisiteEvidence(detail = {}) {
   const candidates = [detail.summary, ...(detail.checks ?? [])]
     .map(text)
     .filter(Boolean);
-  const prerequisite = /(?:\b(?:missing|unavailable|not configured|unset|required)\b.{0,120}\b(?:token|credential|secret|environment variable|environment prerequisite|env(?:ironment)? prerequisite)\b|\b(?:token|credential|secret|environment variable|environment prerequisite|env(?:ironment)? prerequisite)\b.{0,120}\b(?:missing|unavailable|not configured|unset|required)\b)/i;
-  return candidates.find((candidate) => prerequisite.test(candidate)) ?? null;
+  const genericPrerequisite = /(?:\b(?:missing|unavailable|not configured|unset|required)\b.{0,120}\b(?:token|credential|secret|environment variable|environment prerequisite|env(?:ironment)? prerequisite)\b|\b(?:token|credential|secret|environment variable|environment prerequisite|env(?:ironment)? prerequisite)\b.{0,120}\b(?:missing|unavailable|not configured|unset|required)\b)/i;
+  const namedCredentialVariable = /(?:\b(?:missing|unavailable|not configured|unset|required)\b.{0,120}\b[A-Z][A-Z0-9_]*(?:TOKEN|SECRET|CREDENTIAL)\b|\b[A-Z][A-Z0-9_]*(?:TOKEN|SECRET|CREDENTIAL)\b.{0,120}\b(?:missing|unavailable|not configured|unset|required)\b)/;
+  return candidates.find((candidate) => genericPrerequisite.test(candidate) || namedCredentialVariable.test(candidate)) ?? null;
 }
 
 function reconcileExplicitValidationBlocker(report = {}) {
