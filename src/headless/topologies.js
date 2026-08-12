@@ -15,6 +15,8 @@ const { SessionFactory } = require('../copilot/session-factory');
 const ARCHITECTURES = Object.freeze({
   SINGLE_AGENT: 'single-agent',
   IMPLEMENTER_REVIEWER: 'implementer-reviewer',
+  PEER_COMPETITION: 'peer-competition',
+  PEER_COMPETITION_REVIEWER: 'peer-competition-reviewer',
   CONVERGENT_V02: 'convergent-v02',
 });
 
@@ -29,6 +31,11 @@ function normalizeArchitecture(value) {
     single: ARCHITECTURES.SINGLE_AGENT,
     reviewer: ARCHITECTURES.IMPLEMENTER_REVIEWER,
     'implementer+reviewer': ARCHITECTURES.IMPLEMENTER_REVIEWER,
+    peers: ARCHITECTURES.PEER_COMPETITION,
+    'two-peers': ARCHITECTURES.PEER_COMPETITION,
+    'terra-vs-terra': ARCHITECTURES.PEER_COMPETITION,
+    'peers+reviewer': ARCHITECTURES.PEER_COMPETITION_REVIEWER,
+    'two-peers-reviewer': ARCHITECTURES.PEER_COMPETITION_REVIEWER,
   };
   const resolved = aliases[normalized] ?? normalized;
   if (!VALID_ARCHITECTURES.has(resolved)) {
@@ -61,6 +68,26 @@ function architectureMetadata(architecture, options = {}) {
       },
       independentReviewer: true,
       peerConvergence: false,
+      coordinator: false,
+    };
+  }
+  if (id === ARCHITECTURES.PEER_COMPETITION || id === ARCHITECTURES.PEER_COMPETITION_REVIEWER) {
+    const withReviewer = id === ARCHITECTURES.PEER_COMPETITION_REVIEWER;
+    return {
+      id,
+      topology: withReviewer
+        ? 'Worker A <-> Worker B exact-fingerprint convergence -> strong reviewer'
+        : 'Worker A <-> Worker B exact-fingerprint convergence',
+      activeRoles: withReviewer
+        ? ['worker-a', 'worker-b', 'strong-reviewer']
+        : ['worker-a', 'worker-b'],
+      selectors: {
+        workerA: options.workerA ?? 'strong',
+        workerB: options.workerB ?? 'strong',
+        ...(withReviewer ? { reviewer: options.reviewer ?? 'strong' } : {}),
+      },
+      independentReviewer: withReviewer,
+      peerConvergence: true,
       coordinator: false,
     };
   }
@@ -216,6 +243,35 @@ class ExperimentalTopologyEngine extends ConvergentEngine {
     }
   }
 
+  async runPeerCompetition(factory, task, routing, taskContext, withReviewer) {
+    let workerA;
+    let workerB;
+    let reviewer;
+    try {
+      workerA = await factory.createWorker('1-benchmark-task', 'A', routing.route, routing.risk);
+      workerB = await factory.createWorker('1-benchmark-task', 'B', routing.route, routing.risk);
+      if (withReviewer) reviewer = await factory.createReviewer('1-benchmark-task', routing.route, routing.risk);
+      this.sessions.push(workerA.session, workerB.session, ...(reviewer ? [reviewer.session] : []));
+      this.ui.agentConfiguration?.([
+        { role: 'Peer A', model: workerA.model.name ?? workerA.model.id, effort: workerA.reasoningEffort },
+        { role: 'Peer B', model: workerB.model.name ?? workerB.model.id, effort: workerB.reasoningEffort },
+        ...(reviewer ? [{ role: 'Strong reviewer', model: reviewer.model.name ?? reviewer.model.id, effort: reviewer.reasoningEffort }] : []),
+      ]);
+
+      const initial = await this.runWorkerPass(workerA, task, 'IMPLEMENT', null, null, taskContext);
+      this.ui.passResult?.('A', initial.report, initial.changed, initial.revision, initial);
+      if (initial.report.verdict === 'blocked') throw new Error(`Worker A is blocked: ${initial.report.summary}`);
+
+      const convergence = await this.convergeWorkers(task, workerA, workerB, workerB, initial, taskContext);
+      if (reviewer) {
+        await this.runStrongReview(task, workerA, workerB, reviewer, convergence.evidence, routing, taskContext);
+      }
+      return { initial, convergence, reviewed: Boolean(reviewer) };
+    } finally {
+      await this.disposeTaskSessions([workerA?.session, workerB?.session, reviewer?.session]);
+    }
+  }
+
   async run(userRequest) {
     await this.validateWorkspace();
     this.checkCancelled();
@@ -240,9 +296,18 @@ class ExperimentalTopologyEngine extends ConvergentEngine {
     this.ui.plan?.(plan, [routing]);
     this.ui.taskStarted?.(task, 1, 1, routing, policy);
 
-    const topologyResult = this.architecture === ARCHITECTURES.SINGLE_AGENT
-      ? await this.runSingleAgent(factory, task, routing, taskContext)
-      : await this.runImplementerReviewer(factory, task, routing, taskContext);
+    let topologyResult;
+    if (this.architecture === ARCHITECTURES.SINGLE_AGENT) {
+      topologyResult = await this.runSingleAgent(factory, task, routing, taskContext);
+    } else if (this.architecture === ARCHITECTURES.IMPLEMENTER_REVIEWER) {
+      topologyResult = await this.runImplementerReviewer(factory, task, routing, taskContext);
+    } else if (this.architecture === ARCHITECTURES.PEER_COMPETITION) {
+      topologyResult = await this.runPeerCompetition(factory, task, routing, taskContext, false);
+    } else if (this.architecture === ARCHITECTURES.PEER_COMPETITION_REVIEWER) {
+      topologyResult = await this.runPeerCompetition(factory, task, routing, taskContext, true);
+    } else {
+      throw new Error(`Experimental architecture ${this.architecture} is not implemented.`);
+    }
 
     const finalUsage = this.getUsageSummary();
     this.ui.taskCompleted?.(task, this.architecture);
