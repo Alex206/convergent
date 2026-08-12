@@ -3,6 +3,7 @@
 const { ResumableConvergentEngine } = require('./resumable-engine');
 const { requireReport, taskPrompt, formatValidationEvidence } = require('./engine');
 const { formatTaskChangeManifest } = require('./task-change-manifest');
+const { reconcileExplicitValidationBlocker } = require('./report-blocker');
 const { pauseWorkflow } = require('./control');
 const { SessionFactory } = require('../copilot/session-factory');
 
@@ -80,7 +81,7 @@ class RecoveryConvergentEngine extends ResumableConvergentEngine {
   }
 
   async runWorkerPass(worker, task, mode, findings, peerPass = null, taskContext = null) {
-    return super.runWorkerPass(
+    const result = await super.runWorkerPass(
       worker,
       task,
       mode,
@@ -88,6 +89,15 @@ class RecoveryConvergentEngine extends ResumableConvergentEngine {
       peerPass,
       taskContext ?? this.activeTaskChangeContext,
     );
+    const reconciled = reconcileExplicitValidationBlocker(result.report);
+    if (reconciled.correction) {
+      this.ui?.log?.(`Worker ${worker.name} verdict reconciled by Convergent: ${reconciled.correction}`);
+    }
+    return {
+      ...result,
+      report: reconciled.report,
+      validationBlockerCorrection: reconciled.correction,
+    };
   }
 
   async consultRecoveryCoordinator(task, kind, detail, { allowPeer = false } = {}) {
