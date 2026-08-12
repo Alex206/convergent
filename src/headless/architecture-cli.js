@@ -2,12 +2,12 @@
 'use strict';
 
 const { parseArgs } = require('./runner');
-const { normalizeArchitecture } = require('./topologies');
+const { normalizeBenchmarkArchitecture } = require('./architecture-catalog');
 const { runArchitectureBenchmark } = require('./architecture-runner');
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
-  options.architecture = normalizeArchitecture(options.architecture);
+  options.architecture = normalizeBenchmarkArchitecture(options.architecture);
   await runArchitectureBenchmark(options);
 }
 
