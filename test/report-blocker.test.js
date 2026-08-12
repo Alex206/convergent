@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   explicitBlockerEvidence,
+  operatorPrerequisiteEvidence,
   reconcileExplicitValidationBlocker,
 } = require('../src/orchestrator/report-blocker');
 
@@ -20,6 +21,16 @@ test('non-BLOCKED worker report is reconciled when its own summary says required
   assert.match(explicitBlockerEvidence(original), /explicitly blocked/);
 });
 
+test('blocker noun wording from the live Scenario 04 report is also reconciled', () => {
+  const report = {
+    verdict: 'changed',
+    summary: 'The unchanged release validator reported its explicit missing-token blocker.',
+    findings: [],
+    checks: ['python tools/validate_release_signature.py (exit 2: TASKFLOW_RELEASE_TOKEN is not configured)'],
+  };
+  assert.equal(reconcileExplicitValidationBlocker(report).report.verdict, 'blocked');
+});
+
 test('explicit BLOCKED check evidence cannot be reported CLEAN', () => {
   const report = {
     verdict: 'clean',
@@ -28,6 +39,21 @@ test('explicit BLOCKED check evidence cannot be reported CLEAN', () => {
     checks: ['external validation BLOCKED: signing token not configured'],
   };
   assert.equal(reconcileExplicitValidationBlocker(report).report.verdict, 'blocked');
+});
+
+test('missing operator-controlled validation prerequisites are identified separately', () => {
+  assert.match(operatorPrerequisiteEvidence({
+    summary: 'The external validator is blocked because TASKFLOW_RELEASE_TOKEN is unavailable.',
+    checks: [],
+  }), /TASKFLOW_RELEASE_TOKEN/i);
+  assert.match(operatorPrerequisiteEvidence({
+    summary: 'Implementation is otherwise complete.',
+    checks: ['required external validation: signing credential is not configured'],
+  }), /credential/i);
+  assert.equal(operatorPrerequisiteEvidence({
+    summary: 'The compiler is temporarily busy; retry is appropriate.',
+    checks: [],
+  }), null);
 });
 
 test('negative tests and resolved blocker wording do not create false BLOCKED verdicts', () => {
