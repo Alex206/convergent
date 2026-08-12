@@ -10,8 +10,13 @@ function stableObject(value) {
   return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stableObject(value[key])]));
 }
 
+function inferredRecoveryPolicy(run = {}) {
+  if (run.recoveryPolicy) return run.recoveryPolicy;
+  return run.architecture === 'convergent-v02' ? 'strong-coordinator' : 'none';
+}
+
 function variantKey(run) {
-  return `${run.architecture}|${JSON.stringify(stableObject(run.selectors ?? {}))}`;
+  return `${run.architecture}|recovery=${inferredRecoveryPolicy(run)}|${JSON.stringify(stableObject(run.selectors ?? {}))}`;
 }
 
 function mean(values) {
@@ -57,6 +62,7 @@ function aggregateRuns(runs = []) {
     const group = groups.get(key) ?? {
       key,
       architecture: run.architecture,
+      recoveryPolicy: inferredRecoveryPolicy(run),
       selectors: stableObject(run.selectors ?? {}),
       runs: [],
     };
@@ -95,6 +101,7 @@ function aggregateRuns(runs = []) {
     return {
       key: group.key,
       architecture: group.architecture,
+      recoveryPolicy: group.recoveryPolicy,
       selectors: group.selectors,
       n,
       passes,
@@ -145,7 +152,7 @@ function main(argv = process.argv.slice(2)) {
     generatedAt: new Date().toISOString(),
     totalRuns: runs.length,
     groups,
-    warning: 'Small-n stochastic benchmark statistics are descriptive. Wilson intervals show uncertainty; missing accumulated AI-credit data is never treated as zero cost.',
+    warning: 'Small-n stochastic benchmark statistics are descriptive. Wilson intervals show uncertainty; recovery policy is a separate experiment dimension and missing accumulated AI-credit data is never treated as zero cost.',
   };
   fs.mkdirSync(path.dirname(path.resolve(outputFile)), { recursive: true });
   fs.writeFileSync(path.resolve(outputFile), `${JSON.stringify(output, null, 2)}\n`, 'utf8');
@@ -157,6 +164,7 @@ if (require.main === module) process.exitCode = main();
 
 module.exports = {
   stableObject,
+  inferredRecoveryPolicy,
   variantKey,
   mean,
   median,
