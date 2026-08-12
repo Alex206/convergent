@@ -2,15 +2,23 @@
   "name": "convergent",
   "displayName": "Convergent",
   "description": "Adaptive multi-agent implementation and adversarial review workflows powered by GitHub Copilot.",
-  "version": "0.2.0-dev.14",
+  "version": "0.2.0",
   "publisher": "alex206",
   "license": "MIT",
   "engines": {
     "vscode": "^1.102.0",
     "node": ">=22.12.0"
   },
-  "categories": ["Other"],
-  "keywords": ["copilot", "agents", "review", "orchestration", "workflow"],
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "copilot",
+    "agents",
+    "review",
+    "orchestration",
+    "workflow"
+  ],
   "main": "./src/extension.js",
   "activationEvents": [
     "onChatParticipant:convergent.workflow",
@@ -59,24 +67,61 @@
       }
     ],
     "commands": [
-      { "command": "convergent.start", "title": "Convergent: Start Workflow" },
-      { "command": "convergent.resume", "title": "Convergent: Resume Last Workflow" },
-      { "command": "convergent.stop", "title": "Convergent: Stop Active Workflow" },
-      { "command": "convergent.steer", "title": "Convergent: Steer Active Agent" },
-      { "command": "convergent.selectFlow", "title": "Convergent: Select Default Flow" },
-      { "command": "convergent.showModels", "title": "Convergent: Show Available Copilot Models" },
-      { "command": "convergent.showUsage", "title": "Convergent: Show AI Usage" },
-      { "command": "convergent.showDiagnostics", "title": "Convergent: Show Diagnostics" },
-      { "command": "convergent.showOutput", "title": "Convergent: Show Agent Log" },
-      { "command": "convergent.openLastAudit", "title": "Convergent: Open Last Trajectory Audit" },
-      { "command": "convergent.revealLastAudit", "title": "Convergent: Reveal Last Trajectory Audit Folder" }
+      {
+        "command": "convergent.start",
+        "title": "Convergent: Start Workflow"
+      },
+      {
+        "command": "convergent.resume",
+        "title": "Convergent: Resume Last Workflow"
+      },
+      {
+        "command": "convergent.stop",
+        "title": "Convergent: Stop Active Workflow"
+      },
+      {
+        "command": "convergent.steer",
+        "title": "Convergent: Steer Active Agent"
+      },
+      {
+        "command": "convergent.selectFlow",
+        "title": "Convergent: Select Default Flow"
+      },
+      {
+        "command": "convergent.showModels",
+        "title": "Convergent: Show Available Copilot Models"
+      },
+      {
+        "command": "convergent.showUsage",
+        "title": "Convergent: Show AI Usage"
+      },
+      {
+        "command": "convergent.showDiagnostics",
+        "title": "Convergent: Show Diagnostics"
+      },
+      {
+        "command": "convergent.showOutput",
+        "title": "Convergent: Show Agent Log"
+      },
+      {
+        "command": "convergent.openLastAudit",
+        "title": "Convergent: Open Last Trajectory Audit"
+      },
+      {
+        "command": "convergent.revealLastAudit",
+        "title": "Convergent: Reveal Last Trajectory Audit Folder"
+      }
     ],
     "configuration": {
       "title": "Convergent",
       "properties": {
         "convergent.flow": {
           "type": "string",
-          "enum": ["fast", "auto", "thorough"],
+          "enum": [
+            "fast",
+            "auto",
+            "thorough"
+          ],
           "default": "auto",
           "enumDescriptions": [
             "Focused inspection/review with short autonomous tranches; ask the user sooner before spending more iterations.",
@@ -107,7 +152,10 @@
         },
         "convergent.routingMode": {
           "type": "string",
-          "enum": ["adaptive", "full"],
+          "enum": [
+            "adaptive",
+            "full"
+          ],
           "default": "adaptive",
           "enumDescriptions": [
             "Let the strong coordinator classify read-only, trivial, standard, and high-risk tasks; the engine enforces minimum review levels and escalation.",
@@ -117,7 +165,10 @@
         },
         "convergent.reasoningMode": {
           "type": "string",
-          "enum": ["adaptive", "model-default"],
+          "enum": [
+            "adaptive",
+            "model-default"
+          ],
           "default": "adaptive",
           "enumDescriptions": [
             "Use low/medium/high reasoning effort according to role and route when the selected model advertises support. The coordinator uses medium effort by default.",
@@ -148,7 +199,10 @@
         },
         "convergent.taskCommits": {
           "type": "string",
-          "enum": ["off", "safe"],
+          "enum": [
+            "off",
+            "safe"
+          ],
           "default": "off",
           "enumDescriptions": [
             "Do not create Git commits automatically.",
@@ -163,7 +217,10 @@
         },
         "convergent.audit.level": {
           "type": "string",
-          "enum": ["metadata", "full"],
+          "enum": [
+            "metadata",
+            "full"
+          ],
           "default": "metadata",
           "enumDescriptions": [
             "Store event structure, sizes and SHA-256 hashes for large prompt/message/tool payloads without retaining their full text.",
@@ -230,7 +287,10 @@
         },
         "convergent.permissionMode": {
           "type": "string",
-          "enum": ["workspace", "ask"],
+          "enum": [
+            "workspace",
+            "ask"
+          ],
           "default": "workspace",
           "enumDescriptions": [
             "Automatically approve normal workspace reads, writes, and commands; still ask for risky operations.",
@@ -240,7 +300,11 @@
         },
         "convergent.runtimeTransport": {
           "type": "string",
-          "enum": ["auto", "inprocess", "stdio"],
+          "enum": [
+            "auto",
+            "inprocess",
+            "stdio"
+          ],
           "default": "auto",
           "enumDescriptions": [
             "Use stdio under a real Node process and the SDK in-process transport inside a VS Code/Electron extension host.",
@@ -271,7 +335,12 @@
     "keytar": true,
     "koffi": true
   },
-  "repository": { "type": "git", "url": "https://github.com/Alex206/convergent.git" },
-  "bugs": { "url": "https://github.com/Alex206/convergent/issues" },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Alex206/convergent.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Alex206/convergent/issues"
+  },
   "homepage": "https://github.com/Alex206/convergent#readme"
 }
