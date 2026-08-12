@@ -66,7 +66,6 @@ jobs:
       COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
       COPILOT_PLUGIN_DIR_ONLY: 'true'
       CONVERGENT_HEADLESS_ANSWERS_JSON: ${{ inputs.answers_json }}
-      BENCHMARK_OUTPUT: ${{ runner.temp }}/convergent-benchmark
     steps:
       - name: Require benchmark credentials
         shell: bash
@@ -103,6 +102,8 @@ jobs:
 
       - name: Record exact runtime versions
         shell: bash
+        env:
+          BENCHMARK_OUTPUT: ${{ runner.temp }}/convergent-benchmark
         run: |
           mkdir -p "${BENCHMARK_OUTPUT}"
           node - <<'NODE' > "${BENCHMARK_OUTPUT}/runtime-versions.json"
@@ -113,6 +114,8 @@ jobs:
       - name: Run Convergent headless benchmark
         id: benchmark
         shell: bash
+        env:
+          BENCHMARK_OUTPUT: ${{ runner.temp }}/convergent-benchmark
         run: |
           set -o pipefail
           mkdir -p "${BENCHMARK_OUTPUT}"
@@ -133,6 +136,8 @@ jobs:
         if: always()
         continue-on-error: true
         shell: bash
+        env:
+          BENCHMARK_OUTPUT: ${{ runner.temp }}/convergent-benchmark
         run: |
           events="$(find "${BENCHMARK_OUTPUT}/audit" -name events.jsonl -type f 2>/dev/null | head -n 1)"
           if [[ -n "${events}" ]]; then
@@ -145,6 +150,8 @@ jobs:
         if: always()
         continue-on-error: true
         shell: bash
+        env:
+          BENCHMARK_OUTPUT: ${{ runner.temp }}/convergent-benchmark
         run: |
           mkdir -p "${BENCHMARK_OUTPUT}"
           set -o pipefail
