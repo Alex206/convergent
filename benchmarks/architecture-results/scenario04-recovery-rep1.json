@@ -12,12 +12,22 @@
     "maxAiCredits": 0
   },
   "operatorGuidance": "Use TASKFLOW_RELEASE_TOKEN=benchmark-only-secret only for the validation command; do not persist it or modify the validator.",
-  "sourceRun": {
-    "workflowRunId": 31587522879,
-    "artifactId": 9137792901,
-    "artifactDigest": "sha256:b3ca3a4d653fa25e23ae1301626ab8b74cbe1168b41d179a86458b012ec4f52e",
-    "harnessSha": "76bd53ffc208678cffb499c46e7dd9720e7e8ea5"
-  },
+  "sourceRuns": [
+    {
+      "workflowRunId": 31587522879,
+      "artifactId": 9137792901,
+      "artifactDigest": "sha256:b3ca3a4d653fa25e23ae1301626ab8b74cbe1168b41d179a86458b012ec4f52e",
+      "harnessSha": "76bd53ffc208678cffb499c46e7dd9720e7e8ea5",
+      "arms": ["implementer-reviewer-recovery", "convergent-v02-diagnostic"]
+    },
+    {
+      "workflowRunId": 31588027949,
+      "artifactId": 9137970266,
+      "artifactDigest": "sha256:733a040a4af1ef45e46f5844774274a63c285b8f388033677a92d06c92b6ab6c",
+      "harnessSha": "cd191231d843286a30e6fb34ce207ac65f7d72e7",
+      "arms": ["convergent-v02"]
+    }
+  ],
   "runs": [
     {
       "arm": "implementer-reviewer-recovery",
@@ -63,7 +73,7 @@
       }
     },
     {
-      "arm": "convergent-v02-incomplete-operator-answer-exhausted",
+      "arm": "convergent-v02",
       "architecture": "convergent-v02",
       "recoveryPolicy": "strong-coordinator",
       "selectors": {
@@ -72,57 +82,75 @@
         "workerB": "adaptive-diverse",
         "reviewer": "strong"
       },
-      "runStatus": "failed",
-      "failureClassification": "operator-answer-exhausted",
-      "failureIsProductCorrectnessEvidence": false,
-      "oraclePass": false,
-      "oracleChecksPassed": 9,
-      "oracleChecksTotal": 11,
-      "workspaceChecksPassed": 5,
-      "workspaceChecksTotal": 5,
-      "recoveryChecksPassed": 4,
-      "recoveryChecksTotal": 6,
-      "failedChecks": [
-        {
-          "name": "strong reviewer completes clean after recovered implementation boundary",
-          "error": "reviewer never started because a second independent worker blocker required a second operator answer"
-        },
-        {
-          "name": "task completes only after recovery and clean strong review",
-          "error": "task could not continue after scripted operator answers were exhausted"
-        }
+      "actualRoleModels": [
+        { "agent": "Coordinator", "role": "coordinator", "modelId": "gpt-5.6-terra", "modelName": "GPT-5.6 Terra", "reasoningEffort": "medium" },
+        { "agent": "Worker A", "role": "workerA", "modelId": "gpt-5.6-terra", "modelName": "GPT-5.6 Terra", "reasoningEffort": "medium" },
+        { "agent": "Worker B", "role": "workerB", "modelId": "gpt-5.4-mini", "modelName": "GPT-5.4 mini", "reasoningEffort": "medium" },
+        { "agent": "Recovery coordinator", "role": "recovery-coordinator", "modelId": "gpt-5.6-terra", "modelName": "GPT-5.6 Terra", "reasoningEffort": "medium" },
+        { "agent": "Strong reviewer", "role": "reviewer", "modelId": "gpt-5.6-terra", "modelName": "GPT-5.6 Terra", "reasoningEffort": "high" }
       ],
-      "error": "Headless run requires operator input but no scripted answer remains: Please provide or configure a non-secret fixture value for TASKFLOW_RELEASE_TOKEN so tools/validate_release_signature.py can be run successfully against tools/release_payload.txt.",
+      "runStatus": "complete",
+      "oraclePass": true,
+      "oracleChecksPassed": 12,
+      "oracleChecksTotal": 12,
+      "workspaceChecksPassed": 5,
+      "recoveryChecksPassed": 7,
       "modelCalls": 23,
       "promptSends": 7,
       "toolCalls": 18,
       "turns": 7,
-      "elapsedMs": 61255,
-      "aiCredits": 19.86666,
-      "inputTokens": 264778,
-      "outputTokens": 3767,
-      "reasoningTokens": 1248,
-      "cacheReadTokens": 207288,
-      "cacheWriteTokens": 46095,
-      "maxContextTokens": 16357,
-      "reviewerCycles": 0,
+      "elapsedMs": 67377,
+      "aiCredits": 17.866445,
+      "inputTokens": 243962,
+      "outputTokens": 4034,
+      "reasoningTokens": 1550,
+      "cacheReadTokens": 191686,
+      "cacheWriteTokens": 43476,
+      "maxContextTokens": 14746,
+      "reviewerCycles": 1,
+      "reviewerFindings": 0,
       "workerPasses": 3,
-      "convergenceEvents": 0,
-      "recoveryReports": 2,
+      "workerChangedPasses": 1,
+      "convergenceEvents": 1,
+      "recoveryReports": 1,
       "roleCalls": {
         "Coordinator": 3,
-        "Worker A": 10,
-        "Worker B": 4,
-        "Recovery coordinators": 6,
-        "Strong reviewer": 0
-      },
-      "interpretation": "Worker A and Worker B independently ran the required external validator and each encountered the same missing TASKFLOW_RELEASE_TOKEN prerequisite. The single scripted answer was consumed by Worker A recovery; Worker B triggered a second legitimate recovery/operator prompt. The workspace implementation itself passed all five deterministic workspace checks. This arm requires a fair rerun with two identical scripted operator answers."
+        "Worker A": 5,
+        "Worker B": 8,
+        "Recovery coordinator": 4,
+        "Strong reviewer": 3
+      }
     }
   ],
+  "diagnostics": [
+    {
+      "arm": "convergent-v02-operator-answer-exhausted",
+      "sourceWorkflowRunId": 31587522879,
+      "classification": "harness-operator-answer-exhausted",
+      "countAsArchitectureFailure": false,
+      "workspaceChecksPassed": 5,
+      "workspaceChecksTotal": 5,
+      "modelCallsBeforeStop": 23,
+      "aiCreditsBeforeStop": 19.86666,
+      "elapsedMsBeforeStop": 61255,
+      "inputTokensBeforeStop": 264778,
+      "observedRecoveryInteractions": 2,
+      "interpretation": "Worker A and Worker B independently encountered the same missing TASKFLOW_RELEASE_TOKEN prerequisite. Only one scripted operator answer had been supplied, so the second legitimate recovery prompt could not be answered. This demonstrates possible duplicate recovery/operator overhead but is not counted in pass-rate statistics."
+    }
+  ],
+  "comparison": {
+    "implementerReviewerRelativeToConvergent": {
+      "modelCallsReductionPercent": 30.4348,
+      "aiCreditsReductionPercent": 24.6697,
+      "inputTokensReductionPercent": 31.9123,
+      "wallTimeReductionPercent": 38.577,
+      "bothOraclePass": true
+    }
+  },
   "notes": [
-    "The simple implementer-reviewer topology passed the complete topology-neutral recovery oracle without peer convergence.",
-    "The released Convergent arm is intentionally not counted as an architecture correctness failure in this repetition because the harness supplied only one operator answer for two independent recovery interactions.",
-    "Repeated independent validation/recovery of the same external prerequisite is itself an observed coordination-overhead signal and should be measured separately from pass/fail.",
-    "A current-only rerun with two identical scripted answers is required for a fair cost/completion comparison."
+    "Both comparable arms passed the deterministic workspace and topology-neutral recovery trajectory contracts on the same pinned target commit.",
+    "The implementer-reviewer topology paid for a recovery coordinator only after a real BLOCKED state; it did not pay for a planning coordinator or peer convergence on the normal path.",
+    "In the fair released-Convergent rerun only Worker B hit the external prerequisite; the earlier diagnostic run showed that both A and B can independently hit the same prerequisite, so duplicate recovery interactions are stochastic architecture overhead worth tracking separately.",
+    "One recovery repetition is insufficient for a product architecture decision; repeat before ranking and compare Scenario 05/larger tasks as well."
   ]
 }
