@@ -12,6 +12,7 @@ const FILES = [
   'src/headless/architecture-summary.js',
   'src/headless/architecture-aggregate.js',
   'src/headless/default-copilot-engine.js',
+  'src/headless/scenario04-architecture-acceptance.js',
   'src/headless/topologies.js',
 ];
 
