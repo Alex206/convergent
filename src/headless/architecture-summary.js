@@ -41,7 +41,7 @@ function eventStats(file) {
       if (event.changed) stats.workerChangedPasses += 1;
     } else if (event.type === 'workers_converged') {
       stats.convergenceEvents += 1;
-    } else if (event.type === 'recovery_report') {
+    } else if (event.type === 'recovery_report' || event.type === 'recovery_decision') {
       stats.recoveryReports += 1;
     }
   }
@@ -69,13 +69,21 @@ function actualModels(result) {
   }));
 }
 
+function inferredRecoveryPolicy(result) {
+  if (result?.architecture?.recoveryPolicy) return result.architecture.recoveryPolicy;
+  if (result?.architecture?.id === 'convergent-v02') return 'strong-coordinator';
+  return 'none';
+}
+
 function summarizeArm(dir) {
   const root = path.resolve(dir);
   const result = readJson(path.join(root, 'result.json'), {});
-  const acceptance = readJson(path.join(root, 'scenario03-acceptance.json'), {});
+  const acceptance = readJson(path.join(root, 'scenario03-acceptance.json'), readJson(path.join(root, 'scenario04-architecture-acceptance.json'), {}));
   const efficiency = readJson(path.join(root, 'efficiency-summary.json'), {});
   const armStatus = readJson(path.join(root, 'arm-status.json'), {});
-  const checks = Array.isArray(acceptance.checks) ? acceptance.checks : [];
+  const checks = Array.isArray(acceptance.checks)
+    ? acceptance.checks
+    : [...(acceptance.workspace?.checks ?? []), ...(acceptance.recovery?.checks ?? [])];
   const failures = checks.filter((check) => check.ok !== true);
   const events = eventStats(findEventsFile(root));
   const usage = result.usage ?? {};
@@ -84,6 +92,7 @@ function summarizeArm(dir) {
 
   return {
     architecture: result.architecture?.id ?? path.basename(root),
+    recoveryPolicy: inferredRecoveryPolicy(result),
     topology: result.architecture?.topology ?? null,
     selectors: result.architecture?.selectors ?? {},
     actualRoleModels: actualModels(result),
@@ -124,7 +133,7 @@ function csvCell(value) {
 
 function toCsv(rows) {
   const columns = [
-    'architecture', 'oraclePass', 'oracleChecksPassed', 'oracleChecksTotal',
+    'architecture', 'recoveryPolicy', 'oraclePass', 'oracleChecksPassed', 'oracleChecksTotal',
     'modelCalls', 'promptSends', 'toolCalls', 'turns', 'elapsedMs', 'hasAiCreditData', 'aiCredits', 'premiumRequestCost',
     'inputTokens', 'outputTokens', 'reasoningTokens', 'cacheReadTokens', 'cacheWriteTokens',
     'maxContextTokens', 'chatRequestDelta', 'reviewerCycles', 'reviewerFindings',
@@ -159,6 +168,7 @@ module.exports = {
   findEventsFile,
   eventStats,
   actualModels,
+  inferredRecoveryPolicy,
   summarizeArm,
   csvCell,
   toCsv,
