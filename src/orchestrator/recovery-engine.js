@@ -3,7 +3,10 @@
 const { ResumableConvergentEngine } = require('./resumable-engine');
 const { requireReport, taskPrompt, formatValidationEvidence } = require('./engine');
 const { formatTaskChangeManifest } = require('./task-change-manifest');
-const { reconcileExplicitValidationBlocker } = require('./report-blocker');
+const {
+  reconcileExplicitValidationBlocker,
+  operatorPrerequisiteEvidence,
+} = require('./report-blocker');
 const { pauseWorkflow } = require('./control');
 const { SessionFactory } = require('../copilot/session-factory');
 
@@ -124,12 +127,30 @@ class RecoveryConvergentEngine extends ResumableConvergentEngine {
           detail.checks?.length ? `Checks/evidence already reported:\n${detail.checks.map((item) => `- ${item}`).join('\n')}` : '',
           detail.evidence?.length ? formatValidationEvidence(detail.evidence) : '',
           '',
-          'Decide the least wasteful safe recovery action. Inspect only a small amount of read-only repository/environment context if it resolves the blocker. Use ask_user only for a genuinely missing operator fact or decision.',
+          'Decide the least wasteful safe recovery action. Inspect only a small amount of read-only repository/environment context if it resolves the blocker. A required validation that is blocked by a missing operator-controlled token, credential, secret, or environment prerequisite must not be reclassified as acceptable or retried unchanged: ask_user for the missing prerequisite or guidance. Use ask_user only for a genuinely missing operator fact or decision.',
         ].filter(Boolean).join('\n'),
         'report_recovery',
         this.agentTurnTimeoutMs,
       );
       await this.finishTurn(coordinator, startedAt);
+
+      const prerequisite = operatorPrerequisiteEvidence(detail);
+      if (prerequisite && (report.action === 'retry' || report.action === 'peer')) {
+        this.ui?.log?.(`Recovery coordinator attempted ${report.action} while an operator-controlled validation prerequisite is still missing; requiring operator input before another worker turn.`);
+        this.ui?.audit?.({
+          type: 'recovery_operator_prerequisite_required',
+          taskId: task.id,
+          kind,
+          attemptedAction: report.action,
+          prerequisite,
+        });
+        report = {
+          action: 'ask_user',
+          rationale: 'Required validation remains blocked by an operator-controlled environment prerequisite, so retrying or handing to the peer without new operator context would only repeat the same blocker.',
+          question: 'A required validation is blocked by a missing environment prerequisite (for example a token, credential, secret, or environment variable). What value or safe recovery guidance should Convergent use for this validation?',
+          guidance: report.guidance,
+        };
+      }
 
       if (!allowPeer && report.action === 'peer') {
         startedAt = Date.now();
@@ -158,7 +179,7 @@ class RecoveryConvergentEngine extends ResumableConvergentEngine {
             `Operator answer to your recovery question:\n${operatorAnswer}`,
             '',
             `Choose the final action now from: ${allowPeer ? 'peer, retry, pause' : 'retry, pause'}. Do not ask_user again.`,
-            'Preserve useful operator context in guidance for the selected agent.',
+            'Preserve useful operator context in guidance for the selected agent. A retry/peer action must use the operator context to resolve or meaningfully re-evaluate the blocker; do not simply accept the same blocked required validation.',
           ].join('\n'),
           'report_recovery',
           this.agentTurnTimeoutMs,
