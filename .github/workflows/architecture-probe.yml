@@ -13,7 +13,7 @@ permissions:
 jobs:
   scenario03:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 20
     env:
       COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
       COPILOT_PLUGIN_DIR_ONLY: 'true'
@@ -39,62 +39,26 @@ jobs:
       - name: Install locked dependencies
         run: npm ci
 
-      - name: Checkout fresh Scenario 03 targets
+      - name: Checkout identical fresh Scenario 03 targets
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.BENCHMARK_REPO_TOKEN }}
         run: |
           set -euo pipefail
-          for arm in single reviewer current; do
+          for arm in reviewer current; do
             git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/Alex206/convergent-test-repo.git" "target-${arm}"
           done
-          sha_single="$(git -C target-single rev-parse HEAD)"
           sha_reviewer="$(git -C target-reviewer rev-parse HEAD)"
           sha_current="$(git -C target-current rev-parse HEAD)"
-          test "${sha_single}" = "${sha_reviewer}"
-          test "${sha_single}" = "${sha_current}"
-          echo "Scenario 03 target baseline: ${sha_single}"
-
-      - name: Run Terra single-agent arm
-        timeout-minutes: 6
-        shell: bash
-        run: |
-          set -euo pipefail
-          out="${RUNNER_TEMP}/architecture/single-terra"
-          mkdir -p "${out}"
-          node src/headless/architecture-cli.js \
-            --architecture single-agent \
-            --workspace "${GITHUB_WORKSPACE}/target-single" \
-            --prompt-file "${GITHUB_WORKSPACE}/target-single/benchmarks/03-dependency-ordering.md" \
-            --output-dir "${out}" \
-            --flow fast \
-            --worker-a strong \
-            --coordinator strong \
-            --reviewer strong \
-            --audit-level full \
-            --limit-policy pause \
-            --max-model-calls 36 \
-            --max-model-calls-per-turn 10 \
-            --max-chat-requests 12 \
-            --max-ai-credits 35 \
-            2>&1 | tee "${out}/runner.log"
-          node src/headless/scenario03-acceptance.js "${GITHUB_WORKSPACE}/target-single" "${out}/scenario03-acceptance.json"
-
-      - name: Summarize Terra single-agent arm
-        if: always()
-        shell: bash
-        run: |
-          out="${RUNNER_TEMP}/architecture/single-terra"
-          events="$(find "${out}/audit" -name events.jsonl -type f 2>/dev/null | head -n 1)"
-          if [[ -n "${events}" ]]; then
-            node src/headless/efficiency-summary.js "${events}" "${out}/efficiency-summary.json" > "${out}/efficiency-summary.log"
-          fi
+          test "${sha_reviewer}" = "${sha_current}"
+          test "${sha_reviewer}" = "1f38b2606f306ef4902d6159e8c9b7f3d8fe9aef"
+          echo "Scenario 03 target baseline: ${sha_reviewer}"
 
       - name: Run Terra implementer-reviewer arm
         timeout-minutes: 6
         shell: bash
         run: |
-          set -euo pipefail
+          set +e
           out="${RUNNER_TEMP}/architecture/implementer-reviewer-terra"
           mkdir -p "${out}"
           node src/headless/architecture-cli.js \
@@ -113,13 +77,18 @@ jobs:
             --max-chat-requests 12 \
             --max-ai-credits 35 \
             2>&1 | tee "${out}/runner.log"
+          run_rc=${PIPESTATUS[0]}
           node src/headless/scenario03-acceptance.js "${GITHUB_WORKSPACE}/target-reviewer" "${out}/scenario03-acceptance.json"
+          oracle_rc=$?
+          printf '{"runExit":%d,"oracleExit":%d}\n' "${run_rc}" "${oracle_rc}" > "${out}/arm-status.json"
+          exit 0
 
       - name: Summarize Terra implementer-reviewer arm
         if: always()
         shell: bash
         run: |
           out="${RUNNER_TEMP}/architecture/implementer-reviewer-terra"
+          mkdir -p "${out}"
           events="$(find "${out}/audit" -name events.jsonl -type f 2>/dev/null | head -n 1)"
           if [[ -n "${events}" ]]; then
             node src/headless/efficiency-summary.js "${events}" "${out}/efficiency-summary.json" > "${out}/efficiency-summary.log"
@@ -129,7 +98,7 @@ jobs:
         timeout-minutes: 6
         shell: bash
         run: |
-          set -euo pipefail
+          set +e
           out="${RUNNER_TEMP}/architecture/convergent-v02"
           mkdir -p "${out}"
           node src/headless/architecture-cli.js \
@@ -149,13 +118,18 @@ jobs:
             --max-chat-requests 12 \
             --max-ai-credits 35 \
             2>&1 | tee "${out}/runner.log"
+          run_rc=${PIPESTATUS[0]}
           node src/headless/scenario03-acceptance.js "${GITHUB_WORKSPACE}/target-current" "${out}/scenario03-acceptance.json"
+          oracle_rc=$?
+          printf '{"runExit":%d,"oracleExit":%d}\n' "${run_rc}" "${oracle_rc}" > "${out}/arm-status.json"
+          exit 0
 
       - name: Summarize released Convergent 0.2 arm
         if: always()
         shell: bash
         run: |
           out="${RUNNER_TEMP}/architecture/convergent-v02"
+          mkdir -p "${out}"
           events="$(find "${out}/audit" -name events.jsonl -type f 2>/dev/null | head -n 1)"
           if [[ -n "${events}" ]]; then
             node src/headless/efficiency-summary.js "${events}" "${out}/efficiency-summary.json" > "${out}/efficiency-summary.log"
@@ -166,24 +140,20 @@ jobs:
         shell: bash
         run: |
           set +e
-          for arm in single reviewer current; do
-            out_name="${arm}"
-            case "${arm}" in
-              single) out_name="single-terra" ;;
-              reviewer) out_name="implementer-reviewer-terra" ;;
-              current) out_name="convergent-v02" ;;
-            esac
+          for arm in reviewer current; do
+            out_name="implementer-reviewer-terra"
+            [[ "${arm}" == "current" ]] && out_name="convergent-v02"
             out="${RUNNER_TEMP}/architecture/${out_name}"
             mkdir -p "${out}"
             git -C "target-${arm}" status --porcelain=v1 --untracked-files=all > "${out}/final-status.txt"
             git -C "target-${arm}" diff --binary --no-ext-diff > "${out}/final-diff.patch"
           done
 
-      - name: Upload architecture comparison evidence
+      - name: Upload remaining architecture evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: scenario03-architecture-probe
+          name: scenario03-architecture-probe-remaining
           path: ${{ runner.temp }}/architecture
           if-no-files-found: error
           retention-days: 14
