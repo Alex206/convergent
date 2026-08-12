@@ -20,15 +20,19 @@ const {
 } = require('./runner');
 const {
   ARCHITECTURES,
-  normalizeArchitecture,
-  architectureMetadata,
   ExperimentalTopologyEngine,
 } = require('./topologies');
+const {
+  COPILOT_DEFAULT,
+  normalizeBenchmarkArchitecture,
+  benchmarkArchitectureMetadata,
+} = require('./architecture-catalog');
+const { DefaultCopilotEngine } = require('./default-copilot-engine');
 
 function architectureRelevantModelIssues(architecture, issues = []) {
-  const id = normalizeArchitecture(architecture);
+  const id = normalizeBenchmarkArchitecture(architecture);
   let roles;
-  if (id === ARCHITECTURES.SINGLE_AGENT) {
+  if (id === COPILOT_DEFAULT || id === ARCHITECTURES.SINGLE_AGENT) {
     roles = new Set(['workerA']);
   } else if (id === ARCHITECTURES.IMPLEMENTER_REVIEWER) {
     roles = new Set(['workerA', 'reviewer']);
@@ -57,12 +61,27 @@ function sessionModelRecord(event = {}) {
     modelName: event.modelName ?? null,
     reasoningEffort: event.reasoningEffort ?? null,
     sessionId: event.sessionId ?? null,
+    routedModels: [],
   };
 }
 
+function recordActualModelEvent(records, event = {}) {
+  const created = sessionModelRecord(event);
+  if (created) {
+    records.push(created);
+    return created;
+  }
+  if (event.type !== 'assistant_usage' || !event.sessionId || !event.data?.model) return null;
+  const record = [...records].reverse().find((candidate) => candidate.sessionId === event.sessionId);
+  if (!record) return null;
+  const model = String(event.data.model);
+  if (!record.routedModels.includes(model)) record.routedModels.push(model);
+  return record;
+}
+
 async function runArchitectureBenchmark(options, dependencies = {}) {
-  const architecture = normalizeArchitecture(options.architecture);
-  const metadata = architectureMetadata(architecture, options);
+  const architecture = normalizeBenchmarkArchitecture(options.architecture);
+  const metadata = benchmarkArchitectureMetadata(architecture, options);
   await fs.mkdir(options.outputDir, { recursive: true });
   const prompt = await readPrompt(options);
   if (!prompt) throw new Error('Benchmark prompt is empty.');
@@ -182,8 +201,7 @@ async function runArchitectureBenchmark(options, dependencies = {}) {
 
   const ui = new HeadlessWorkflowUi({
     eventSink: (event) => {
-      const sessionModel = sessionModelRecord(event);
-      if (sessionModel) actualRoleModels.push(sessionModel);
+      recordActualModelEvent(actualRoleModels, event);
       void audit.record({ architecture, ...event });
       budget.handle(event);
     },
@@ -223,14 +241,21 @@ async function runArchitectureBenchmark(options, dependencies = {}) {
     ),
   };
 
-  engine = architecture === ARCHITECTURES.CONVERGENT_V02
-    ? new RecoveryConvergentEngine(commonEngineOptions)
-    : new ExperimentalTopologyEngine({
+  if (architecture === ARCHITECTURES.CONVERGENT_V02) {
+    engine = new RecoveryConvergentEngine(commonEngineOptions);
+  } else if (architecture === COPILOT_DEFAULT) {
+    engine = new DefaultCopilotEngine({
+      ...commonEngineOptions,
+      defaultAgentSelector: options.workerA ?? 'auto',
+    });
+  } else {
+    engine = new ExperimentalTopologyEngine({
       ...commonEngineOptions,
       architecture,
       experimentalRoute: options.experimentalRoute ?? 'standard',
       experimentalRisk: options.experimentalRisk ?? 'medium',
     });
+  }
 
   let status = 'failed';
   let errorText = null;
@@ -302,5 +327,6 @@ module.exports = {
   architectureRelevantModelIssues,
   assertArchitectureRoleModels,
   sessionModelRecord,
+  recordActualModelEvent,
   runArchitectureBenchmark,
 };
