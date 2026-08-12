@@ -35,6 +35,14 @@ test('architecture model preflight ignores unused roles but keeps active-role fa
     ['workerA', 'reviewer'],
   );
   assert.deepEqual(
+    architectureRelevantModelIssues('peer-competition', issues).map((item) => item.role),
+    ['workerA', 'workerB'],
+  );
+  assert.deepEqual(
+    architectureRelevantModelIssues('peer-competition-reviewer', issues).map((item) => item.role),
+    ['workerA', 'workerB', 'reviewer'],
+  );
+  assert.deepEqual(
     architectureRelevantModelIssues('convergent-v02', issues).map((item) => item.role),
     ['coordinator', 'workerA', 'workerB', 'reviewer'],
   );
