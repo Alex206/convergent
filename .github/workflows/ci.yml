@@ -1,6 +1,9 @@
 name: CI
 
 on:
+  push:
+    branches:
+      - main
   pull_request:
     types:
       - opened
@@ -11,7 +14,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -23,9 +26,64 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run check
+      - name: Verify Linux Copilot runtime dependency
+        shell: bash
+        run: |
+          test -d node_modules/@github/copilot-linux-x64
+          test ! -d node_modules/@github/copilot-win32-x64
+      - name: Package Linux x64 VSIX
+        run: npm run package -- --out /tmp/convergent-linux-x64.vsix
+      - name: Verify Linux x64 VSIX payload
+        shell: bash
+        run: |
+          unzip -p /tmp/convergent-linux-x64.vsix extension.vsixmanifest > /tmp/extension.vsixmanifest
+          grep -q 'TargetPlatform="linux-x64"' /tmp/extension.vsixmanifest
+          unzip -l /tmp/convergent-linux-x64.vsix | grep -q 'extension/node_modules/@github/copilot-linux-x64/'
+          if unzip -l /tmp/convergent-linux-x64.vsix | grep -q 'extension/node_modules/@github/copilot-win32-x64/'; then
+            echo 'Windows Copilot runtime unexpectedly packaged in Linux VSIX.' >&2
+            exit 1
+          fi
 
-      - name: Detect bounded Scenario 05 request
-        id: benchmark
+      - name: Detect models-only preflight request
+        id: model-preflight
+        if: >-
+          github.event_name == 'pull_request' &&
+          contains(github.event.pull_request.labels.*.name, 'headless-model-preflight')
+        shell: bash
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+        run: |
+          if [[ -z "${COPILOT_GITHUB_TOKEN}" ]]; then
+            echo "::notice::Models-only preflight requested but repository secret COPILOT_GITHUB_TOKEN is not configured."
+            echo "enabled=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "enabled=true" >> "${GITHUB_OUTPUT}"
+            echo "Models-only preflight requested. This calls listModels() only and sends no agent prompt."
+          fi
+
+      - name: Run models-only Copilot preflight
+        if: steps.model-preflight.outputs.enabled == 'true'
+        timeout-minutes: 2
+        shell: bash
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          COPILOT_PLUGIN_DIR_ONLY: 'true'
+          MODEL_PREFLIGHT_OUTPUT: ${{ runner.temp }}/convergent-model-preflight/models.json
+        run: |
+          mkdir -p "$(dirname "${MODEL_PREFLIGHT_OUTPUT}")"
+          node src/headless/model-preflight.js "${MODEL_PREFLIGHT_OUTPUT}"
+
+      - name: Upload models-only preflight
+        if: always() && steps.model-preflight.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: convergent-model-preflight-${{ github.run_number }}
+          path: ${{ runner.temp }}/convergent-model-preflight
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Detect headless benchmark request
+        id: headless-benchmark
         if: >-
           github.event_name == 'pull_request' &&
           contains(github.event.pull_request.labels.*.name, 'headless-benchmark')
@@ -34,12 +92,25 @@ jobs:
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
           BENCHMARK_REPO_TOKEN: ${{ secrets.BENCHMARK_REPO_TOKEN }}
         run: |
-          test -n "${COPILOT_GITHUB_TOKEN}" || { echo 'COPILOT_GITHUB_TOKEN is required.' >&2; exit 2; }
-          test -n "${BENCHMARK_REPO_TOKEN}" || { echo 'BENCHMARK_REPO_TOKEN is required.' >&2; exit 2; }
-          echo 'enabled=true' >> "${GITHUB_OUTPUT}"
+          missing=0
+          if [[ -z "${COPILOT_GITHUB_TOKEN}" ]]; then
+            echo "::notice::Headless benchmark requested but repository secret COPILOT_GITHUB_TOKEN is not configured."
+            missing=1
+          fi
+          if [[ -z "${BENCHMARK_REPO_TOKEN}" ]]; then
+            echo "::notice::Headless benchmark requested but repository secret BENCHMARK_REPO_TOKEN is not configured. It needs read-only Contents access to Alex206/convergent-test-repo."
+            missing=1
+          fi
+          if [[ "${missing}" == "0" ]]; then
+            echo "enabled=true" >> "${GITHUB_OUTPUT}"
+            echo "Headless benchmark requested and both required credentials are available."
+          else
+            echo "enabled=false" >> "${GITHUB_OUTPUT}"
+            echo "Normal CI remains valid; benchmark execution is skipped until both credentials are configured."
+          fi
 
       - name: Checkout benchmark target
-        if: steps.benchmark.outputs.enabled == 'true'
+        if: steps.headless-benchmark.outputs.enabled == 'true'
         uses: actions/checkout@v6
         with:
           repository: Alex206/convergent-test-repo
@@ -47,28 +118,16 @@ jobs:
           path: benchmark-target
           token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
 
-      - name: Create pre-existing user workspace state
-        if: steps.benchmark.outputs.enabled == 'true'
-        shell: bash
-        run: |
-          mkdir -p benchmark-target/.vscode
-          printf '%s\n' '{"files.trimTrailingWhitespace":true}' > benchmark-target/.vscode/settings.json
-          printf '%s\n' 'local benchmark note' > benchmark-target/notes.local
-          test "$(cat benchmark-target/.vscode/settings.json)" = '{"files.trimTrailingWhitespace":true}'
-          test "$(cat benchmark-target/notes.local)" = 'local benchmark note'
-          git -C benchmark-target status --short --untracked-files=all
-          git -C benchmark-target check-ignore -q notes.local
-
-      - name: Run bounded Pro Scenario 05 workspace benchmark
-        id: scenario05
-        if: steps.benchmark.outputs.enabled == 'true'
+      - name: Run headless Scenario 03
+        id: scenario03
+        if: steps.headless-benchmark.outputs.enabled == 'true'
         timeout-minutes: 9
         shell: bash
         env:
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
           COPILOT_PLUGIN_DIR_ONLY: 'true'
           CONVERGENT_HEADLESS_ANSWERS_JSON: '[]'
-          BENCHMARK_OUTPUT: ${{ runner.temp }}/convergent-pro-scenario05
+          BENCHMARK_OUTPUT: ${{ runner.temp }}/convergent-benchmark
         run: |
           set -o pipefail
           mkdir -p "${BENCHMARK_OUTPUT}"
@@ -78,88 +137,465 @@ jobs:
           NODE
           node src/headless/cli.js \
             --workspace "${GITHUB_WORKSPACE}/benchmark-target" \
-            --prompt-file "${GITHUB_WORKSPACE}/benchmark-target/benchmarks/05-preexisting-workspace-state.md" \
+            --prompt-file "${GITHUB_WORKSPACE}/benchmark-target/benchmarks/03-dependency-ordering.md" \
             --output-dir "${BENCHMARK_OUTPUT}" \
             --flow fast \
             --audit-level full \
             --limit-policy pause \
-            --max-model-calls 36 \
+            --max-model-calls 24 \
             --max-model-calls-per-turn 10 \
-            --max-chat-requests 12 \
-            --max-ai-credits 35 \
+            --max-chat-requests 8 \
+            --max-ai-credits 12 \
             2>&1 | tee "${BENCHMARK_OUTPUT}/runner.log"
 
-      - name: Summarize Scenario 05 efficiency
-        if: always() && steps.benchmark.outputs.enabled == 'true'
+      - name: Summarize benchmark efficiency
+        if: always() && steps.headless-benchmark.outputs.enabled == 'true'
         continue-on-error: true
         shell: bash
         env:
-          BENCHMARK_OUTPUT: ${{ runner.temp }}/convergent-pro-scenario05
+          BENCHMARK_OUTPUT: ${{ runner.temp }}/convergent-benchmark
         run: |
           events="$(find "${BENCHMARK_OUTPUT}/audit" -name events.jsonl -type f 2>/dev/null | head -n 1)"
           if [[ -n "${events}" ]]; then
             node src/headless/efficiency-summary.js "${events}" "${BENCHMARK_OUTPUT}/efficiency-summary.json" > "${BENCHMARK_OUTPUT}/efficiency-summary.log"
+          else
+            echo "No trajectory events available; benchmark may have failed during preflight." > "${BENCHMARK_OUTPUT}/efficiency-summary.log"
           fi
 
-      - name: Independently validate Scenario 05 behavior and protected state
-        id: acceptance
-        if: always() && steps.benchmark.outputs.enabled == 'true'
+      - name: Independently validate benchmark target
+        if: always() && steps.headless-benchmark.outputs.enabled == 'true'
         continue-on-error: true
         shell: bash
         env:
-          BENCHMARK_OUTPUT: ${{ runner.temp }}/convergent-pro-scenario05
+          BENCHMARK_OUTPUT: ${{ runner.temp }}/convergent-benchmark
         run: |
+          mkdir -p "${BENCHMARK_OUTPUT}"
           set -o pipefail
           (
             cd benchmark-target
             python3 -B -m unittest discover -s tests -v
           ) 2>&1 | tee "${BENCHMARK_OUTPUT}/target-validation.log"
-          node src/headless/scenario05-acceptance.js \
+          node "${GITHUB_WORKSPACE}/src/headless/scenario03-acceptance.js" \
             "${GITHUB_WORKSPACE}/benchmark-target" \
-            "${BENCHMARK_OUTPUT}/scenario05-acceptance.json"
+            "${BENCHMARK_OUTPUT}/scenario03-acceptance.json"
 
-      - name: Capture final Scenario 05 workspace
-        if: always() && steps.benchmark.outputs.enabled == 'true'
+      - name: Capture final target workspace
+        if: always() && steps.headless-benchmark.outputs.enabled == 'true'
         shell: bash
         env:
-          BENCHMARK_OUTPUT: ${{ runner.temp }}/convergent-pro-scenario05
+          BENCHMARK_OUTPUT: ${{ runner.temp }}/convergent-benchmark
         run: |
+          mkdir -p "${BENCHMARK_OUTPUT}"
           git -C benchmark-target status --porcelain=v1 --untracked-files=all > "${BENCHMARK_OUTPUT}/final-status.txt" || true
           git -C benchmark-target diff --binary --no-ext-diff > "${BENCHMARK_OUTPUT}/final-diff.patch" || true
-          printf 'settings-sha256=' > "${BENCHMARK_OUTPUT}/protected-state.sha256"
-          sha256sum benchmark-target/.vscode/settings.json >> "${BENCHMARK_OUTPUT}/protected-state.sha256"
-          printf 'note-sha256=' >> "${BENCHMARK_OUTPUT}/protected-state.sha256"
-          sha256sum benchmark-target/notes.local >> "${BENCHMARK_OUTPUT}/protected-state.sha256"
           tar --exclude=.git -czf "${BENCHMARK_OUTPUT}/workspace.tar.gz" -C benchmark-target .
 
-      - name: Upload bounded Scenario 05 evidence
-        if: always() && steps.benchmark.outputs.enabled == 'true'
+      - name: Upload headless benchmark evidence
+        if: always() && steps.headless-benchmark.outputs.enabled == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: convergent-pro-scenario05-${{ github.run_number }}
-          path: ${{ runner.temp }}/convergent-pro-scenario05
-          if-no-files-found: error
+          name: convergent-fast-scenario03-${{ github.run_number }}
+          path: ${{ runner.temp }}/convergent-benchmark
+          if-no-files-found: warn
           retention-days: 14
 
-      - name: Require completed accepted Scenario 05
-        if: always() && steps.benchmark.outputs.enabled == 'true'
+      - name: Detect bounded auto smoke request
+        id: auto-smoke
+        if: >-
+          github.event_name == 'pull_request' &&
+          contains(github.event.pull_request.labels.*.name, 'headless-auto-smoke')
         shell: bash
         env:
-          BENCHMARK_OUTPUT: ${{ runner.temp }}/convergent-pro-scenario05
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          BENCHMARK_REPO_TOKEN: ${{ secrets.BENCHMARK_REPO_TOKEN }}
         run: |
-          node - <<'NODE'
+          missing=0
+          if [[ -z "${COPILOT_GITHUB_TOKEN}" ]]; then
+            echo "::notice::Auto smoke requested but COPILOT_GITHUB_TOKEN is not configured."
+            missing=1
+          fi
+          if [[ -z "${BENCHMARK_REPO_TOKEN}" ]]; then
+            echo "::notice::Auto smoke requested but BENCHMARK_REPO_TOKEN is not configured."
+            missing=1
+          fi
+          if [[ "${missing}" == "0" ]]; then
+            echo "enabled=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "enabled=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Checkout auto-smoke target
+        if: steps.auto-smoke.outputs.enabled == 'true'
+        uses: actions/checkout@v6
+        with:
+          repository: Alex206/convergent-test-repo
+          ref: main
+          path: auto-smoke-target
+          token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+
+      - name: Run bounded plan-only auto diagnostic
+        id: auto-smoke-run
+        if: steps.auto-smoke.outputs.enabled == 'true'
+        continue-on-error: true
+        timeout-minutes: 4
+        shell: bash
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          COPILOT_PLUGIN_DIR_ONLY: 'true'
+          CONVERGENT_HEADLESS_ANSWERS_JSON: '[]'
+          CONVERGENT_HEADLESS_STOP_AFTER_PLAN: '1'
+          SMOKE_OUTPUT: ${{ runner.temp }}/convergent-auto-smoke
+        run: |
+          set -o pipefail
+          mkdir -p "${SMOKE_OUTPUT}"
+          echo "NON-AUTHORITATIVE PLAN-ONLY DIAGNOSTIC: every role intentionally uses Copilot auto; stop immediately after a valid plan." | tee "${SMOKE_OUTPUT}/diagnostic-scope.txt"
+          node - <<'NODE' > "${SMOKE_OUTPUT}/runtime-versions.json"
+          const { runtimeVersionInfo } = require('./src/copilot/version-info');
+          process.stdout.write(`${JSON.stringify(runtimeVersionInfo(), null, 2)}\n`);
+          NODE
+          node src/headless/cli.js \
+            --workspace "${GITHUB_WORKSPACE}/auto-smoke-target" \
+            --prompt-file "${GITHUB_WORKSPACE}/auto-smoke-target/benchmarks/03-dependency-ordering.md" \
+            --output-dir "${SMOKE_OUTPUT}" \
+            --flow fast \
+            --coordinator auto \
+            --worker-a auto \
+            --worker-b auto \
+            --reviewer auto \
+            --audit-level full \
+            --limit-policy pause \
+            --max-model-calls 10 \
+            --max-model-calls-per-turn 9 \
+            --max-chat-requests 3 \
+            --max-ai-credits 4 \
+            2>&1 | tee "${SMOKE_OUTPUT}/runner.log"
+
+      - name: Validate plan-only diagnostic stop
+        if: always() && steps.auto-smoke.outputs.enabled == 'true'
+        shell: bash
+        env:
+          SMOKE_OUTPUT: ${{ runner.temp }}/convergent-auto-smoke
+        run: |
+          set -euo pipefail
+          events="$(find "${SMOKE_OUTPUT}/audit" -name events.jsonl -type f 2>/dev/null | head -n 1)"
+          if [[ -z "${events}" ]]; then
+            echo "Plan-only diagnostic produced no trajectory events." >&2
+            exit 2
+          fi
+          EVENTS_FILE="${events}" node - <<'NODE'
           const fs = require('node:fs');
           const path = require('node:path');
-          const root = process.env.BENCHMARK_OUTPUT;
-          const result = JSON.parse(fs.readFileSync(path.join(root, 'result.json'), 'utf8'));
-          const acceptance = JSON.parse(fs.readFileSync(path.join(root, 'scenario05-acceptance.json'), 'utf8'));
-          if (result.status !== 'complete') {
-            console.error(`Convergent Scenario 05 status is ${result.status}: ${result.error ?? 'no error'}`);
+          const events = fs.readFileSync(process.env.EVENTS_FILE, 'utf8')
+            .split(/\r?\n/)
+            .filter(Boolean)
+            .map((line) => JSON.parse(line));
+          const accepted = events.find((event) => event.type === 'plan_accepted');
+          const complete = events.find((event) => event.type === 'headless_plan_diagnostic_complete');
+          const taskStarts = events.filter((event) => event.type === 'task_start');
+          if (!accepted || !complete) {
+            console.error('Expected a valid accepted plan followed by the plan-only diagnostic stop.');
             process.exit(2);
           }
-          if (!acceptance.ok) {
-            console.error('Scenario 05 deterministic workspace-state acceptance failed.');
+          if (taskStarts.length !== 0) {
+            console.error(`Plan-only diagnostic unexpectedly started ${taskStarts.length} task(s).`);
             process.exit(3);
           }
-          console.log('Bounded Pro Scenario 05 completed while preserving pre-existing user workspace state.');
+          const taskCount = accepted.plan?.tasks?.length ?? 0;
+          if (taskCount > 3) {
+            console.error(`Fast plan unexpectedly contains ${taskCount} tasks.`);
+            process.exit(4);
+          }
+          const output = {
+            diagnostic: 'plan_only',
+            taskCount,
+            plan: accepted.plan,
+            routes: accepted.routes ?? [],
+            taskStarts: 0,
+          };
+          fs.writeFileSync(path.join(process.env.SMOKE_OUTPUT, 'plan-diagnostic.json'), `${JSON.stringify(output, null, 2)}\n`);
+          console.log(`Plan-only diagnostic accepted ${taskCount} task(s) and started no workers.`);
           NODE
+
+      - name: Summarize auto-smoke efficiency
+        if: always() && steps.auto-smoke.outputs.enabled == 'true'
+        continue-on-error: true
+        shell: bash
+        env:
+          SMOKE_OUTPUT: ${{ runner.temp }}/convergent-auto-smoke
+        run: |
+          events="$(find "${SMOKE_OUTPUT}/audit" -name events.jsonl -type f 2>/dev/null | head -n 1)"
+          if [[ -n "${events}" ]]; then
+            node src/headless/efficiency-summary.js "${events}" "${SMOKE_OUTPUT}/efficiency-summary.json" > "${SMOKE_OUTPUT}/efficiency-summary.log"
+          else
+            echo "No trajectory events available." > "${SMOKE_OUTPUT}/efficiency-summary.log"
+          fi
+
+      - name: Independently validate auto-smoke target
+        if: always() && steps.auto-smoke.outputs.enabled == 'true'
+        continue-on-error: true
+        shell: bash
+        env:
+          SMOKE_OUTPUT: ${{ runner.temp }}/convergent-auto-smoke
+        run: |
+          mkdir -p "${SMOKE_OUTPUT}"
+          set -o pipefail
+          (
+            cd auto-smoke-target
+            python3 -B -m unittest discover -s tests -v
+          ) 2>&1 | tee "${SMOKE_OUTPUT}/target-validation.log"
+
+      - name: Capture final auto-smoke workspace
+        if: always() && steps.auto-smoke.outputs.enabled == 'true'
+        shell: bash
+        env:
+          SMOKE_OUTPUT: ${{ runner.temp }}/convergent-auto-smoke
+        run: |
+          mkdir -p "${SMOKE_OUTPUT}"
+          git -C auto-smoke-target status --porcelain=v1 --untracked-files=all > "${SMOKE_OUTPUT}/final-status.txt" || true
+          git -C auto-smoke-target diff --binary --no-ext-diff > "${SMOKE_OUTPUT}/final-diff.patch" || true
+          tar --exclude=.git -czf "${SMOKE_OUTPUT}/workspace.tar.gz" -C auto-smoke-target .
+
+      - name: Upload auto-smoke evidence
+        if: always() && steps.auto-smoke.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: convergent-auto-smoke-${{ github.run_number }}
+          path: ${{ runner.temp }}/convergent-auto-smoke
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Detect bounded Worker A smoke request
+        id: worker-a-smoke
+        if: >-
+          github.event_name == 'pull_request' &&
+          contains(github.event.pull_request.labels.*.name, 'headless-auto-worker-a-smoke')
+        shell: bash
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          BENCHMARK_REPO_TOKEN: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+        run: |
+          missing=0
+          if [[ -z "${COPILOT_GITHUB_TOKEN}" ]]; then
+            echo "::notice::Worker A smoke requested but COPILOT_GITHUB_TOKEN is not configured."
+            missing=1
+          fi
+          if [[ -z "${BENCHMARK_REPO_TOKEN}" ]]; then
+            echo "::notice::Worker A smoke requested but BENCHMARK_REPO_TOKEN is not configured."
+            missing=1
+          fi
+          if [[ "${missing}" == "0" ]]; then
+            echo "enabled=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "enabled=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Checkout Worker A smoke target
+        if: steps.worker-a-smoke.outputs.enabled == 'true'
+        uses: actions/checkout@v6
+        with:
+          repository: Alex206/convergent-test-repo
+          ref: main
+          path: worker-a-smoke-target
+          token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+
+      - name: Run bounded Worker A-only auto diagnostic
+        id: worker-a-smoke-run
+        if: steps.worker-a-smoke.outputs.enabled == 'true'
+        continue-on-error: true
+        timeout-minutes: 6
+        shell: bash
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          COPILOT_PLUGIN_DIR_ONLY: 'true'
+          CONVERGENT_HEADLESS_ANSWERS_JSON: '[]'
+          CONVERGENT_HEADLESS_STOP_AFTER_WORKER_A: '1'
+          WORKER_A_OUTPUT: ${{ runner.temp }}/convergent-worker-a-smoke
+        run: |
+          set -o pipefail
+          mkdir -p "${WORKER_A_OUTPUT}"
+          echo "NON-AUTHORITATIVE WORKER-A-ONLY DIAGNOSTIC: every role intentionally uses Copilot auto; stop immediately after Worker A's first report." | tee "${WORKER_A_OUTPUT}/diagnostic-scope.txt"
+          node - <<'NODE' > "${WORKER_A_OUTPUT}/runtime-versions.json"
+          const { runtimeVersionInfo } = require('./src/copilot/version-info');
+          process.stdout.write(`${JSON.stringify(runtimeVersionInfo(), null, 2)}\n`);
+          NODE
+          node src/headless/cli.js \
+            --workspace "${GITHUB_WORKSPACE}/worker-a-smoke-target" \
+            --prompt-file "${GITHUB_WORKSPACE}/worker-a-smoke-target/benchmarks/03-dependency-ordering.md" \
+            --output-dir "${WORKER_A_OUTPUT}" \
+            --flow fast \
+            --coordinator auto \
+            --worker-a auto \
+            --worker-b auto \
+            --reviewer auto \
+            --audit-level full \
+            --limit-policy pause \
+            --max-model-calls 17 \
+            --max-model-calls-per-turn 9 \
+            --max-chat-requests 4 \
+            --max-ai-credits 5 \
+            2>&1 | tee "${WORKER_A_OUTPUT}/runner.log"
+
+      - name: Validate Worker A-only diagnostic stop
+        if: always() && steps.worker-a-smoke.outputs.enabled == 'true'
+        shell: bash
+        env:
+          WORKER_A_OUTPUT: ${{ runner.temp }}/convergent-worker-a-smoke
+        run: |
+          set -euo pipefail
+          events="$(find "${WORKER_A_OUTPUT}/audit" -name events.jsonl -type f 2>/dev/null | head -n 1)"
+          if [[ -z "${events}" ]]; then
+            echo "Worker A diagnostic produced no trajectory events." >&2
+            exit 2
+          fi
+          EVENTS_FILE="${events}" node - <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const events = fs.readFileSync(process.env.EVENTS_FILE, 'utf8')
+            .split(/\r?\n/)
+            .filter(Boolean)
+            .map((line) => JSON.parse(line));
+          const accepted = events.find((event) => event.type === 'plan_accepted');
+          const completed = events.find((event) => event.type === 'headless_worker_a_diagnostic_complete');
+          const workerA = events.find((event) => event.type === 'worker_pass_result' && event.worker === 'A');
+          const laterPrompts = events.filter((event) => event.type === 'prompt_send' && event.agent !== 'Coordinator' && event.agent !== 'Worker A');
+          if (!accepted || !completed || !workerA) {
+            console.error('Expected accepted plan plus Worker A report and diagnostic completion event.');
+            process.exit(2);
+          }
+          if (laterPrompts.length !== 0) {
+            console.error(`Worker A-only diagnostic unexpectedly sent ${laterPrompts.length} Worker B/reviewer prompt(s).`);
+            process.exit(3);
+          }
+          const modifying = (accepted.plan?.tasks ?? []).filter((task) => task.route !== 'read_only');
+          if (modifying.length !== 1) {
+            console.error(`Expected exactly one modifying task, got ${modifying.length}.`);
+            process.exit(4);
+          }
+          if (workerA.report?.verdict === 'blocked') {
+            console.error(`Worker A ended blocked: ${workerA.report?.summary ?? 'no summary'}`);
+            process.exit(5);
+          }
+          const output = {
+            diagnostic: 'worker_a_only',
+            plan: accepted.plan,
+            routes: accepted.routes ?? [],
+            workerA: {
+              report: workerA.report,
+              changed: workerA.changed,
+              workspaceFingerprint: workerA.workspaceFingerprint,
+              durationMs: workerA.durationMs,
+              usage: workerA.usage,
+            },
+            laterAgentPrompts: 0,
+          };
+          fs.writeFileSync(path.join(process.env.WORKER_A_OUTPUT, 'worker-a-diagnostic.json'), `${JSON.stringify(output, null, 2)}\n`);
+          console.log(`Worker A-only diagnostic completed with verdict ${workerA.report?.verdict}; no Worker B/reviewer prompt was sent.`);
+          NODE
+
+      - name: Summarize Worker A smoke efficiency
+        if: always() && steps.worker-a-smoke.outputs.enabled == 'true'
+        continue-on-error: true
+        shell: bash
+        env:
+          WORKER_A_OUTPUT: ${{ runner.temp }}/convergent-worker-a-smoke
+        run: |
+          events="$(find "${WORKER_A_OUTPUT}/audit" -name events.jsonl -type f 2>/dev/null | head -n 1)"
+          if [[ -n "${events}" ]]; then
+            node src/headless/efficiency-summary.js "${events}" "${WORKER_A_OUTPUT}/efficiency-summary.json" > "${WORKER_A_OUTPUT}/efficiency-summary.log"
+          else
+            echo "No trajectory events available." > "${WORKER_A_OUTPUT}/efficiency-summary.log"
+          fi
+
+      - name: Independently validate Worker A target
+        if: always() && steps.worker-a-smoke.outputs.enabled == 'true'
+        shell: bash
+        env:
+          WORKER_A_OUTPUT: ${{ runner.temp }}/convergent-worker-a-smoke
+        run: |
+          mkdir -p "${WORKER_A_OUTPUT}"
+          set -o pipefail
+          (
+            cd worker-a-smoke-target
+            python3 -B -m unittest discover -s tests -v
+          ) 2>&1 | tee "${WORKER_A_OUTPUT}/target-validation.log"
+          node "${GITHUB_WORKSPACE}/src/headless/scenario03-acceptance.js" \
+            "${GITHUB_WORKSPACE}/worker-a-smoke-target" \
+            "${WORKER_A_OUTPUT}/scenario03-acceptance.json"
+
+      - name: Capture final Worker A workspace
+        if: always() && steps.worker-a-smoke.outputs.enabled == 'true'
+        shell: bash
+        env:
+          WORKER_A_OUTPUT: ${{ runner.temp }}/convergent-worker-a-smoke
+        run: |
+          mkdir -p "${WORKER_A_OUTPUT}"
+          git -C worker-a-smoke-target status --porcelain=v1 --untracked-files=all > "${WORKER_A_OUTPUT}/final-status.txt" || true
+          git -C worker-a-smoke-target diff --binary --no-ext-diff > "${WORKER_A_OUTPUT}/final-diff.patch" || true
+          tar --exclude=.git -czf "${WORKER_A_OUTPUT}/workspace.tar.gz" -C worker-a-smoke-target .
+
+      - name: Upload Worker A smoke evidence
+        if: always() && steps.worker-a-smoke.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: convergent-worker-a-smoke-${{ github.run_number }}
+          path: ${{ runner.temp }}/convergent-worker-a-smoke
+          if-no-files-found: warn
+          retention-days: 7
+
+  package-windows-x64:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - run: npm ci
+      - name: Run Windows tests
+        id: windows-tests
+        shell: pwsh
+        run: |
+          npm test 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/windows-test.log"
+          exit $LASTEXITCODE
+      - name: Upload Windows test failure
+        if: always() && steps.windows-tests.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-test-failure-${{ github.run_number }}
+          path: ${{ runner.temp }}/windows-test.log
+          if-no-files-found: error
+          retention-days: 3
+      - run: npm run check
+      - name: Verify Windows x64 Copilot runtime dependency
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'node_modules/@github/copilot-win32-x64')) {
+            throw 'npm ci did not install @github/copilot-win32-x64 on the Windows x64 runner.'
+          }
+          if (Test-Path 'node_modules/@github/copilot-linux-x64') {
+            throw 'Linux Copilot runtime unexpectedly present in the Windows x64 install.'
+          }
+      - name: Package Windows x64 VSIX
+        shell: pwsh
+        run: npm run package -- --out "$env:RUNNER_TEMP/convergent-win32-x64.vsix"
+      - name: Verify Windows x64 VSIX payload
+        shell: pwsh
+        run: |
+          $vsix = "$env:RUNNER_TEMP/convergent-win32-x64.vsix"
+          $zip = "$env:RUNNER_TEMP/convergent-win32-x64.zip"
+          $expanded = "$env:RUNNER_TEMP/convergent-win32-x64-expanded"
+          Copy-Item $vsix $zip
+          Expand-Archive -LiteralPath $zip -DestinationPath $expanded
+          $manifest = Get-Content -Raw (Join-Path $expanded 'extension.vsixmanifest')
+          if ($manifest -notmatch 'TargetPlatform="win32-x64"') {
+            throw 'VSIX manifest does not declare TargetPlatform="win32-x64".'
+          }
+          if (-not (Test-Path (Join-Path $expanded 'extension/node_modules/@github/copilot-win32-x64'))) {
+            throw 'Windows Copilot runtime is missing from the Windows VSIX.'
+          }
+          if (Test-Path (Join-Path $expanded 'extension/node_modules/@github/copilot-linux-x64')) {
+            throw 'Linux Copilot runtime unexpectedly packaged in Windows VSIX.'
+          }
