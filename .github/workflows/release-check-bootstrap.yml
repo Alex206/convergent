@@ -1,0 +1,50 @@
+name: Release check bootstrap
+
+on:
+  push:
+    branches:
+      - agent/0.2-convergence-efficiency
+
+permissions:
+  contents: write
+
+jobs:
+  check-surface:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: agent/0.2-convergence-efficiency
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Add all new runtime helpers to npm run check
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('node:fs');
+          const p = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const existing = String(p.scripts?.check ?? '').split(' && ').filter(Boolean);
+          const additions = [
+            'node --check src/orchestrator/report-blocker.js',
+            'node --check src/headless/scenario04-acceptance.js',
+            'node --check src/headless/scenario05-acceptance.js',
+          ];
+          for (const item of additions) if (!existing.includes(item)) existing.push(item);
+          p.scripts.check = existing.join(' && ');
+          fs.writeFileSync('package.json', `${JSON.stringify(p, null, 2)}\n`);
+          NODE
+          test "$(node -p "require('./package.json').version")" = "0.2.0"
+          git diff --exit-code -- package-lock.json
+          if git diff --quiet -- package.json; then
+            echo 'Syntax-check surface already complete.'
+            exit 0
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add package.json
+          git commit -m 'Check all 0.2.0 runtime helpers'
+          git push origin HEAD:agent/0.2-convergence-efficiency
