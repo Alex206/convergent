@@ -3,12 +3,15 @@
 const { assertGitRepository } = require('../orchestrator/revision');
 const { routePolicy } = require('../orchestrator/routing');
 const {
-  ConvergentEngine,
   requireReport,
   taskPrompt,
   evidenceFromPass,
   formatValidationEvidence,
 } = require('../orchestrator/engine');
+const {
+  RecoveryConvergentEngine,
+  queueRecoveryInstruction,
+} = require('../orchestrator/recovery-engine');
 const { formatTaskChangeManifest } = require('../orchestrator/task-change-manifest');
 const { SessionFactory } = require('../copilot/session-factory');
 
@@ -20,7 +23,13 @@ const ARCHITECTURES = Object.freeze({
   CONVERGENT_V02: 'convergent-v02',
 });
 
+const RECOVERY_POLICIES = Object.freeze({
+  NONE: 'none',
+  STRONG_COORDINATOR: 'strong-coordinator',
+});
+
 const VALID_ARCHITECTURES = new Set(Object.values(ARCHITECTURES));
+const VALID_RECOVERY_POLICIES = new Set(Object.values(RECOVERY_POLICIES));
 
 function normalizeArchitecture(value) {
   const normalized = String(value ?? ARCHITECTURES.CONVERGENT_V02).trim().toLowerCase();
@@ -44,8 +53,31 @@ function normalizeArchitecture(value) {
   return resolved;
 }
 
+function normalizeRecoveryPolicy(value) {
+  const normalized = String(value ?? RECOVERY_POLICIES.NONE).trim().toLowerCase();
+  const aliases = {
+    off: RECOVERY_POLICIES.NONE,
+    disabled: RECOVERY_POLICIES.NONE,
+    strong: RECOVERY_POLICIES.STRONG_COORDINATOR,
+    coordinator: RECOVERY_POLICIES.STRONG_COORDINATOR,
+    'on-demand': RECOVERY_POLICIES.STRONG_COORDINATOR,
+  };
+  const resolved = aliases[normalized] ?? normalized;
+  if (!VALID_RECOVERY_POLICIES.has(resolved)) {
+    throw new Error(`Unsupported recovery policy: ${value}. Expected one of: ${[...VALID_RECOVERY_POLICIES].join(', ')}`);
+  }
+  return resolved;
+}
+
 function architectureMetadata(architecture, options = {}) {
   const id = normalizeArchitecture(architecture);
+  const recoveryPolicy = normalizeRecoveryPolicy(options.recoveryPolicy);
+  const recovery = {
+    recoveryPolicy,
+    conditionalRoles: recoveryPolicy === RECOVERY_POLICIES.STRONG_COORDINATOR
+      ? ['strong-recovery-coordinator']
+      : [],
+  };
   if (id === ARCHITECTURES.SINGLE_AGENT) {
     return {
       id,
@@ -55,6 +87,7 @@ function architectureMetadata(architecture, options = {}) {
       independentReviewer: false,
       peerConvergence: false,
       coordinator: false,
+      ...recovery,
     };
   }
   if (id === ARCHITECTURES.IMPLEMENTER_REVIEWER) {
@@ -69,6 +102,7 @@ function architectureMetadata(architecture, options = {}) {
       independentReviewer: true,
       peerConvergence: false,
       coordinator: false,
+      ...recovery,
     };
   }
   if (id === ARCHITECTURES.PEER_COMPETITION || id === ARCHITECTURES.PEER_COMPETITION_REVIEWER) {
@@ -89,6 +123,7 @@ function architectureMetadata(architecture, options = {}) {
       independentReviewer: withReviewer,
       peerConvergence: true,
       coordinator: false,
+      ...recovery,
     };
   }
   return {
@@ -104,6 +139,8 @@ function architectureMetadata(architecture, options = {}) {
     independentReviewer: true,
     peerConvergence: true,
     coordinator: true,
+    recoveryPolicy: RECOVERY_POLICIES.STRONG_COORDINATOR,
+    conditionalRoles: ['strong-recovery-coordinator'],
   };
 }
 
@@ -122,12 +159,20 @@ function benchmarkTask(prompt, { route = 'standard', risk = 'medium' } = {}) {
   };
 }
 
-class ExperimentalTopologyEngine extends ConvergentEngine {
+class ExperimentalTopologyEngine extends RecoveryConvergentEngine {
   constructor(options = {}) {
     super(options);
     this.architecture = normalizeArchitecture(options.architecture);
+    this.recoveryPolicy = normalizeRecoveryPolicy(options.recoveryPolicy);
+    this.maxExperimentalRecoveryAttempts = Math.max(1, Number(options.maxExperimentalRecoveryAttempts) || 2);
     this.experimentalRoute = options.experimentalRoute ?? 'standard';
     this.experimentalRisk = options.experimentalRisk ?? 'medium';
+    if (
+      this.recoveryPolicy !== RECOVERY_POLICIES.NONE
+      && [ARCHITECTURES.PEER_COMPETITION, ARCHITECTURES.PEER_COMPETITION_REVIEWER].includes(this.architecture)
+    ) {
+      throw new Error('On-demand recovery is not yet implemented for peer-competition experimental topologies; benchmark it only with recovery=none until a peer-recovery policy is defined.');
+    }
   }
 
   async validateWorkspace() {
@@ -179,6 +224,53 @@ class ExperimentalTopologyEngine extends ConvergentEngine {
     return review;
   }
 
+  async recoverBlockedImplementer(worker, task, blockedPass, routing, taskContext, label = 'Implementer') {
+    if (blockedPass.report?.verdict !== 'blocked') return blockedPass;
+    if (this.recoveryPolicy === RECOVERY_POLICIES.NONE) {
+      throw new Error(`${label} is blocked: ${blockedPass.report.summary}`);
+    }
+
+    let current = blockedPass;
+    for (let attempt = 1; attempt <= this.maxExperimentalRecoveryAttempts; attempt += 1) {
+      const decision = await this.consultRecoveryCoordinator(task, `worker-${worker.name}`, {
+        changed: current.changed,
+        workspaceFingerprint: current.revision,
+        summary: current.report?.summary,
+        checks: current.report?.checks ?? [],
+        evidence: evidenceFromPass(current),
+      }, { allowPeer: false });
+
+      if (decision.action !== 'retry') {
+        throw new Error(`On-demand recovery did not produce a retry for ${label}: ${decision.rationale}`);
+      }
+      queueRecoveryInstruction(worker.session, decision.guidance || decision.rationale);
+      this.ui.phase?.('Recovery retry', `${label} retries the preserved workspace after strong recovery-coordinator guidance (attempt ${attempt}).`);
+      current = await this.runWorkerPass(worker, task, 'REVIEW_AND_FIX', null, null, taskContext);
+      this.ui.passResult?.(label, current.report, current.changed, current.revision, current);
+      if (current.report.verdict !== 'blocked') return current;
+    }
+    throw new Error(`${label} remains blocked after ${this.maxExperimentalRecoveryAttempts} on-demand recovery attempt(s): ${current.report?.summary ?? ''}`);
+  }
+
+  async recoverBlockedReviewer(reviewer, task, implementationPass, blockedReview, reviewCycle, routing, taskContext) {
+    if (blockedReview.verdict !== 'blocked') return blockedReview;
+    if (this.recoveryPolicy === RECOVERY_POLICIES.NONE) {
+      throw new Error(`Strong reviewer is blocked: ${blockedReview.summary}`);
+    }
+    const decision = await this.consultRecoveryCoordinator(task, 'strong-reviewer', {
+      summary: blockedReview.summary,
+      checks: blockedReview.checks ?? [],
+      evidence: evidenceFromPass(implementationPass),
+      workspaceFingerprint: await this.revisionProvider(this.workspace),
+    }, { allowPeer: false });
+    if (decision.action !== 'retry') {
+      throw new Error(`On-demand reviewer recovery did not produce a retry: ${decision.rationale}`);
+    }
+    queueRecoveryInstruction(reviewer.session, decision.guidance || decision.rationale);
+    this.ui.phase?.('Reviewer recovery retry', 'Strong reviewer retries after on-demand recovery-coordinator guidance.');
+    return this.reviewPass(reviewer, task, implementationPass, reviewCycle, routing, taskContext);
+  }
+
   async runSingleAgent(factory, task, routing, taskContext) {
     let worker;
     try {
@@ -187,9 +279,9 @@ class ExperimentalTopologyEngine extends ConvergentEngine {
       this.ui.agentConfiguration?.([
         { role: 'Implementer', model: worker.model.name ?? worker.model.id, effort: worker.reasoningEffort },
       ]);
-      const pass = await this.runWorkerPass(worker, task, 'IMPLEMENT', null, null, taskContext);
+      let pass = await this.runWorkerPass(worker, task, 'IMPLEMENT', null, null, taskContext);
       this.ui.passResult?.('Implementer', pass.report, pass.changed, pass.revision, pass);
-      if (pass.report.verdict === 'blocked') throw new Error(`Implementer is blocked: ${pass.report.summary}`);
+      pass = await this.recoverBlockedImplementer(worker, task, pass, routing, taskContext, 'Implementer');
       return { pass, reviews: [] };
     } finally {
       await this.disposeTaskSessions([worker?.session]);
@@ -210,14 +302,15 @@ class ExperimentalTopologyEngine extends ConvergentEngine {
 
       let implementationPass = await this.runWorkerPass(worker, task, 'IMPLEMENT', null, null, taskContext);
       this.ui.passResult?.('Implementer', implementationPass.report, implementationPass.changed, implementationPass.revision, implementationPass);
-      if (implementationPass.report.verdict === 'blocked') throw new Error(`Implementer is blocked: ${implementationPass.report.summary}`);
+      implementationPass = await this.recoverBlockedImplementer(worker, task, implementationPass, routing, taskContext, 'Implementer');
 
       const reviews = [];
       for (let reviewCycle = 1; reviewCycle <= this.maxReviewerCycles; reviewCycle += 1) {
-        const review = await this.reviewPass(reviewer, task, implementationPass, reviewCycle, routing, taskContext);
+        let review = await this.reviewPass(reviewer, task, implementationPass, reviewCycle, routing, taskContext);
+        review = await this.recoverBlockedReviewer(reviewer, task, implementationPass, review, reviewCycle, routing, taskContext);
         reviews.push(review);
         if (review.verdict === 'clean') return { pass: implementationPass, reviews };
-        if (review.verdict === 'blocked') throw new Error(`Strong reviewer is blocked: ${review.summary}`);
+        if (review.verdict === 'blocked') throw new Error(`Strong reviewer remains blocked after recovery: ${review.summary}`);
         if (!review.findings?.length) throw new Error('Strong reviewer returned findings without actionable findings.');
         if (reviewCycle === this.maxReviewerCycles) {
           throw new Error(`Strong review still has findings after ${this.maxReviewerCycles} remediation cycles.`);
@@ -233,9 +326,14 @@ class ExperimentalTopologyEngine extends ConvergentEngine {
           taskContext,
         );
         this.ui.passResult?.('Implementer', implementationPass.report, implementationPass.changed, implementationPass.revision, implementationPass);
-        if (implementationPass.report.verdict === 'blocked') {
-          throw new Error(`Implementer is blocked during reviewer remediation: ${implementationPass.report.summary}`);
-        }
+        implementationPass = await this.recoverBlockedImplementer(
+          worker,
+          task,
+          implementationPass,
+          routing,
+          taskContext,
+          'Implementer during reviewer remediation',
+        );
       }
       throw new Error('Strong reviewer loop ended without a clean verdict.');
     } finally {
@@ -283,50 +381,60 @@ class ExperimentalTopologyEngine extends ConvergentEngine {
     const routing = { route: this.experimentalRoute, risk: this.experimentalRisk, routingReason: task.routingReason };
     const policy = routePolicy(routing.route, routing.risk);
     const plan = {
-      summary: `Experimental benchmark architecture: ${this.architecture}`,
+      summary: `Experimental benchmark architecture: ${this.architecture}; recovery=${this.recoveryPolicy}`,
       tasks: [task],
     };
     const factory = this.createFactory();
     const taskContext = await this.createTaskContext(factory);
 
+    this.activeTaskChangeContext = taskContext;
     this.stats.tasks = 1;
     this.stats.full = 1;
     this.stats.architecture = this.architecture;
-    this.ui.phase?.('Experimental benchmark', `Running ${this.architecture} on one fixed benchmark task.`);
+    this.stats.recoveryPolicy = this.recoveryPolicy;
+    this.ui.phase?.('Experimental benchmark', `Running ${this.architecture} with recovery=${this.recoveryPolicy} on one fixed benchmark task.`);
     this.ui.plan?.(plan, [routing]);
     this.ui.taskStarted?.(task, 1, 1, routing, policy);
 
-    let topologyResult;
-    if (this.architecture === ARCHITECTURES.SINGLE_AGENT) {
-      topologyResult = await this.runSingleAgent(factory, task, routing, taskContext);
-    } else if (this.architecture === ARCHITECTURES.IMPLEMENTER_REVIEWER) {
-      topologyResult = await this.runImplementerReviewer(factory, task, routing, taskContext);
-    } else if (this.architecture === ARCHITECTURES.PEER_COMPETITION) {
-      topologyResult = await this.runPeerCompetition(factory, task, routing, taskContext, false);
-    } else if (this.architecture === ARCHITECTURES.PEER_COMPETITION_REVIEWER) {
-      topologyResult = await this.runPeerCompetition(factory, task, routing, taskContext, true);
-    } else {
-      throw new Error(`Experimental architecture ${this.architecture} is not implemented.`);
-    }
+    try {
+      let topologyResult;
+      if (this.architecture === ARCHITECTURES.SINGLE_AGENT) {
+        topologyResult = await this.runSingleAgent(factory, task, routing, taskContext);
+      } else if (this.architecture === ARCHITECTURES.IMPLEMENTER_REVIEWER) {
+        topologyResult = await this.runImplementerReviewer(factory, task, routing, taskContext);
+      } else if (this.architecture === ARCHITECTURES.PEER_COMPETITION) {
+        topologyResult = await this.runPeerCompetition(factory, task, routing, taskContext, false);
+      } else if (this.architecture === ARCHITECTURES.PEER_COMPETITION_REVIEWER) {
+        topologyResult = await this.runPeerCompetition(factory, task, routing, taskContext, true);
+      } else {
+        throw new Error(`Experimental architecture ${this.architecture} is not implemented.`);
+      }
 
-    const finalUsage = this.getUsageSummary();
-    this.ui.taskCompleted?.(task, this.architecture);
-    this.ui.phase?.('Complete', `Experimental architecture ${this.architecture} completed.`);
-    this.ui.runSummary?.(finalUsage, this.stats);
-    return {
-      plan,
-      architecture: this.architecture,
-      topologyResult,
-      usage: finalUsage,
-      stats: { ...this.stats },
-    };
+      const finalUsage = this.getUsageSummary();
+      this.ui.taskCompleted?.(task, this.architecture);
+      this.ui.phase?.('Complete', `Experimental architecture ${this.architecture} completed.`);
+      this.ui.runSummary?.(finalUsage, this.stats);
+      return {
+        plan,
+        architecture: this.architecture,
+        recoveryPolicy: this.recoveryPolicy,
+        topologyResult,
+        usage: finalUsage,
+        stats: { ...this.stats },
+      };
+    } finally {
+      this.activeTaskChangeContext = null;
+    }
   }
 }
 
 module.exports = {
   ARCHITECTURES,
+  RECOVERY_POLICIES,
   VALID_ARCHITECTURES,
+  VALID_RECOVERY_POLICIES,
   normalizeArchitecture,
+  normalizeRecoveryPolicy,
   architectureMetadata,
   benchmarkTask,
   ExperimentalTopologyEngine,
