@@ -1,0 +1,131 @@
+{
+  "schemaVersion": 1,
+  "benchmark": "scenario03-dependency-ordering",
+  "repetition": 1,
+  "targetRepository": "Alex206/convergent-test-repo",
+  "targetSha": "1f38b2606f306ef4902d6159e8c9b7f3d8fe9aef",
+  "flow": "fast",
+  "hardEnvelope": {
+    "maxModelCalls": 36,
+    "maxModelCallsPerTurn": 10,
+    "maxChatRequests": 12,
+    "stepTimeoutMinutes": 6
+  },
+  "sourceRuns": [
+    {
+      "workflowRunId": 31581950758,
+      "artifactId": 9135525090,
+      "arms": ["single-agent-terra"]
+    },
+    {
+      "workflowRunId": 31582125147,
+      "artifactId": 9135652552,
+      "arms": ["implementer-reviewer-terra", "convergent-v02"]
+    }
+  ],
+  "runs": [
+    {
+      "arm": "single-agent-terra",
+      "architecture": "single-agent",
+      "selectors": { "implementer": "strong" },
+      "actualRoleModels": [
+        { "role": "implementer", "modelId": "gpt-5.6-terra", "modelName": "GPT-5.6 Terra" }
+      ],
+      "runStatus": "complete",
+      "oraclePass": false,
+      "oracleChecksPassed": 11,
+      "oracleChecksTotal": 12,
+      "failedChecks": [
+        {
+          "name": "unconstrained tasks preserve input order",
+          "error": "AssertionError: ['z', 'a', 'base', 'm', 'dependent']"
+        }
+      ],
+      "modelCalls": 5,
+      "turns": 1,
+      "promptSends": 1,
+      "toolCalls": 4,
+      "elapsedMs": 32333,
+      "aiCredits": 8.66412,
+      "inputTokens": 73436,
+      "outputTokens": 2703,
+      "reasoningTokens": 645,
+      "cacheReadTokens": 56251,
+      "cacheWriteTokens": 17170,
+      "maxContextTokens": 16971,
+      "reviewerCycles": 0,
+      "convergenceEvents": 0
+    },
+    {
+      "arm": "implementer-reviewer-terra",
+      "architecture": "implementer-reviewer",
+      "selectors": { "implementer": "strong", "reviewer": "strong" },
+      "actualRoleModels": [
+        { "role": "implementer", "modelId": "gpt-5.6-terra", "modelName": "GPT-5.6 Terra", "reasoningEffort": "low" },
+        { "role": "strong-reviewer", "modelId": "gpt-5.6-terra", "modelName": "GPT-5.6 Terra", "reasoningEffort": "medium" }
+      ],
+      "runStatus": "complete",
+      "oraclePass": true,
+      "oracleChecksPassed": 12,
+      "oracleChecksTotal": 12,
+      "failedChecks": [],
+      "modelCalls": 9,
+      "turns": 2,
+      "promptSends": 2,
+      "toolCalls": 8,
+      "elapsedMs": 42577,
+      "aiCredits": 14.81006,
+      "inputTokens": 126910,
+      "outputTokens": 3449,
+      "reasoningTokens": 1183,
+      "cacheReadTokens": 91543,
+      "cacheWriteTokens": 35340,
+      "maxContextTokens": 19074,
+      "reviewerCycles": 1,
+      "reviewerFindings": 0,
+      "convergenceEvents": 0
+    },
+    {
+      "arm": "convergent-v02",
+      "architecture": "convergent-v02",
+      "selectors": {
+        "coordinator": "strong",
+        "workerA": "adaptive",
+        "workerB": "adaptive-diverse",
+        "reviewer": "strong"
+      },
+      "actualRoleModels": [
+        { "role": "coordinator", "modelId": "gpt-5.6-terra", "modelName": "GPT-5.6 Terra", "reasoningEffort": "medium" },
+        { "role": "worker-a", "modelId": "gpt-5.6-terra", "modelName": "GPT-5.6 Terra", "reasoningEffort": "low" },
+        { "role": "worker-b", "modelId": "gpt-5.4-mini", "modelName": "GPT-5.4 mini", "reasoningEffort": "low" },
+        { "role": "strong-reviewer", "modelId": "gpt-5.6-terra", "modelName": "GPT-5.6 Terra", "reasoningEffort": "medium" }
+      ],
+      "runStatus": "complete",
+      "oraclePass": true,
+      "oracleChecksPassed": 12,
+      "oracleChecksTotal": 12,
+      "failedChecks": [],
+      "modelCalls": 22,
+      "turns": 4,
+      "promptSends": 5,
+      "toolCalls": 22,
+      "elapsedMs": 92713,
+      "aiCredits": 26.01748,
+      "inputTokens": 311272,
+      "outputTokens": 6767,
+      "reasoningTokens": 2873,
+      "cacheReadTokens": 240229,
+      "cacheWriteTokens": 53434,
+      "maxContextTokens": 20193,
+      "reviewerCycles": 1,
+      "reviewerFindings": 0,
+      "convergenceEvents": 1
+    }
+  ],
+  "notes": [
+    "All arms started from the same target commit and ran sequentially.",
+    "The first single-agent workflow stopped later arms after its oracle failure; the two remaining arms were rerun from the asserted identical target SHA in a second workflow.",
+    "Copilot Pro quota snapshots reported zero request delta in these artifacts, so request delta is not used as a discriminator for this repetition.",
+    "One repetition is descriptive evidence only and is insufficient for architecture selection."
+  ]
+}
