@@ -37,7 +37,14 @@ node src/headless/model-preflight.js /tmp/convergent-models.json
 
 The models-only preflight calls `listModels()` and does not create a Copilot agent session or send a prompt. CI can run the same operation with the temporary `headless-model-preflight` PR label and uploads the resulting JSON. Remove the label after inspection.
 
-The SDK model list is treated as runtime truth. Which models appear there can depend on the Copilot plan, client surface, and organization/enterprise model policy. If a credential exposes only `auto`, it is not eligible for Convergent's normal strong-role benchmark. Do not override this by explicitly selecting `auto` merely to make a benchmark run; doing so measures a different orchestration/model policy.
+The SDK model list is treated as runtime truth. Which models appear there can depend on the Copilot plan, client surface, and organization/enterprise model policy. If a credential exposes only `auto`, it is not eligible for Convergent's normal strong-role benchmark. Do not override this merely to force release evidence; use an explicit-model credential/provider or treat an `auto` run as diagnostic only.
+
+For the 0.2 release validation, the Copilot Pro benchmark identity exposed 19 selectable models. The configured policy resolved explicitly to:
+
+- coordinator: **GPT-5.6 Terra**,
+- strong reviewer: **GPT-5.6 Terra**,
+- Worker A: adaptive, using the capable/strong tier required by the task,
+- Worker B: **GPT-5.4 mini** for the measured standard Fast scenarios.
 
 ## GitHub Actions
 
@@ -58,36 +65,25 @@ The workflow:
 4. runs the same Convergent orchestration core headlessly,
 5. produces a deterministic `efficiency-summary.json` from `events.jsonl`,
 6. independently runs the target repository's unittest suite,
-7. for Scenario 03, runs `src/headless/scenario03-acceptance.js` as a deterministic contract oracle in addition to repository tests,
-8. uploads the complete trajectory audit, model preflight, efficiency summary, result/checkpoint JSON, runner log, final Git status/diff, validation log, and a non-`.git` workspace snapshot.
+7. uses scenario-specific deterministic acceptance oracles where the repository tests alone are not enough,
+8. uploads the complete trajectory audit, model preflight/provenance, efficiency summary, result/checkpoint JSON, runner log, final Git status/diff, validation log, and a non-`.git` workspace snapshot.
 
 `COPILOT_PLUGIN_DIR_ONLY=true` keeps ambient Copilot plugins from changing the benchmark environment.
 
 The offline efficiency summary reports Convergent prompt count versus underlying model calls, worst model/tool calls per prompt, observed Copilot chat-quota delta, session/runtime models, task progress, and serialized report recovery. It flags high prompt-to-model amplification, runaway single-agent turns, `auto` model leakage, and report fallback without invoking another model.
 
-## Bounded diagnostic modes
-
-When the benchmark identity is not eligible for the configured strong/adaptive model policy, CI may run deliberately **non-authoritative** `auto` diagnostics to isolate orchestration mechanics without claiming release-quality benchmark evidence.
-
-The current diagnostics are label-triggered and one-shot:
-
-- `headless-auto-smoke`: plan-only. It stops immediately after an accepted Fast plan and verifies that no task started.
-- `headless-auto-worker-a-smoke`: coordinator plus exactly one Worker A pass. It stops after Worker A reports and verifies that no Worker B or strong-review prompt was sent.
-
-The label should be removed immediately after the run is queued. These diagnostics use smaller call/request/credit caps and an explicit GitHub Actions step timeout. They do not substitute for the normal strong-role benchmark.
-
 ## Non-interactive safety and quota fuses
 
 Headless runs fail closed for unexpected operator questions unless scripted answers are supplied through `CONVERGENT_HEADLESS_ANSWERS_JSON`. Risky shell commands such as `git push`, `git reset --hard`, forced Git clean, and sensitive environment enumeration are denied by the headless permission adapter. Tool or agent inactivity decisions abort the affected turn rather than waiting indefinitely.
 
-Fast headless benchmarks use independent limits so a bad plan or one pathological agent loop cannot consume an account before a useful workflow boundary is reached:
+Fast headless benchmarks use independent limits so a bad plan or one pathological agent loop cannot consume an account before a useful workflow boundary is reached. The built-in defaults remain intentionally conservative for accounts with scarce quota:
 
-- **3 planned tasks maximum** before implementation begins; a larger Fast plan records the accepted plan and stops before Worker A is started,
+- **3 planned tasks maximum** before implementation begins,
 - **24 total underlying model calls** per run by default,
 - **10 underlying model calls in one Convergent agent prompt/turn** by default,
-- **8 Copilot chat requests of observed account-quota delta** by default,
-- **12 reported AI credits** as a soft safe-boundary budget in the supplied GitHub workflows,
-- **15 minutes** as the outer manual workflow timeout.
+- **8 observed Copilot chat-request quota delta** by default.
+
+The supplied manual workflow additionally has a soft AI-credit boundary and an outer Actions timeout. These are operator-configurable. The 0.2 Pro release-validation trajectories showed that the old Free-era `12`-credit soft boundary is too small for a legitimate Terra A/B/strong-review run: Scenario 03 completed at about 20.46 internal AI credits and Scenario 04 recovery at about 19.90. For explicit-model Pro release validation, the measured safe one-run envelope was **36 total calls / 10 per turn / 12 request delta / 35 soft credits** for ordinary Fast work, with a larger one-off whole-run envelope used for the recovery experiment. The **10-call per-turn fuse was not raised**.
 
 The plan-size guard is intentionally headless/Fast-specific: it protects benchmark quota from pathological over-decomposition without changing normal VS Code orchestration.
 
@@ -102,13 +98,15 @@ The hard call/request fuses are **phase-aware**. `assistant_usage` is emitted be
 
 This boundary behavior is covered by synthetic tests and a replay of the historical Scenario 03 failure shape where the coordinator's ninth billed call selected a valid `report_plan`.
 
-The AI-credit limit is different: it is checked at safe workflow boundaries because provider-reported credit data can lag the active agent loop.
+The AI-credit limit is different: it is checked at safe workflow boundaries because provider-reported credit data can lag the active agent loop. Copilot `premiumRequestCost`/chat-quota counters and Convergent's SDK-reported internal AI credits are separate measurements and should not be treated as interchangeable.
 
-Soft worker/reviewer limits default to `pause`. The workflow exposes a `limit_policy` input when an intentionally more autonomous benchmark is desired. A benchmark account with scarce quota should keep `pause` and conservative hard fuses.
+Soft worker/reviewer limits default to `pause`. A benchmark account with scarce quota should keep `pause` and conservative hard fuses; release validation can explicitly raise only the whole-run/soft envelope while preserving the per-turn fuse and outer timeout.
 
-## Scenario 03 acceptance oracle
+## Deterministic scenario oracles
 
-Scenario 03's repository tests are intentionally a benchmark surface and are not by themselves sufficient evidence that a generated implementation met every requested dependency-ordering contract. The deterministic acceptance probe independently checks:
+### Scenario 03 — dependency ordering
+
+Repository tests are not by themselves sufficient evidence that a generated implementation met every requested dependency-ordering contract. The deterministic oracle independently checks:
 
 - immutable `TaskSpec.depends_on` tuple/default behavior,
 - omitted versus explicitly invalid `depends_on` values,
@@ -119,4 +117,38 @@ Scenario 03's repository tests are intentionally a benchmark surface and are not
 - useful cycle errors,
 - public `order_tasks` export.
 
-The probe invokes no model and is used as benchmark/diagnostic evidence, not as production TaskFlow code.
+### Scenario 04 — blocked external validation
+
+The deterministic oracle checks both workspace behavior and trajectory semantics:
+
+- missing token raises a clear `RuntimeError`,
+- the HMAC-SHA256 helper matches the unchanged external validator,
+- the helper is publicly exported,
+- the external helper succeeds when given a benchmark-only token,
+- the external helper/payload remain unmodified,
+- a worker records `BLOCKED`,
+- the strong recovery coordinator records a recovery decision,
+- operator guidance is captured for an operator-controlled prerequisite,
+- BLOCKED is never counted as approval,
+- recovered A/B convergence is followed by a clean strong review and task completion.
+
+Convergent also reconciles a contradictory worker report to `BLOCKED` when the worker itself says required external validation is blocked/unavailable while attempting to return CLEAN/CHANGED. Missing operator-controlled token/credential/secret prerequisites cannot be retried unchanged without obtaining operator guidance first.
+
+### Scenario 05 — pre-existing workspace state
+
+Before Convergent starts, the benchmark creates an untracked `.vscode/settings.json` and ignored `notes.local`. The oracle verifies:
+
+- `has_label` performs exact case-sensitive matching and is publicly exported,
+- `.vscode/settings.json` remains byte-for-byte unchanged, untracked, and unstaged,
+- `notes.local` remains byte-for-byte unchanged and ignored,
+- neither pre-existing path is staged or treated as task output.
+
+## 0.2 release-validation evidence
+
+The historical Free/`auto` run #403 was deliberately cancelled after **108 underlying model calls from 10 Convergent prompts** and ~8.8 minutes without completion. The current explicit-model Pro trajectories are materially different:
+
+- **Scenario 03 / CI #595:** complete dependency-ordering task, A/B convergence + Terra strong review, deterministic oracle 12/12, **19 model calls**, ~69 s, ~20.46 internal AI credits.
+- **Scenario 04 / CI #610:** real missing-token BLOCKED path, Terra recovery coordinator + operator guidance + retry, A/B convergence + Terra strong review, workspace/recovery oracle fully green, **25 model calls**, ~74 s, ~19.90 internal AI credits.
+- **Scenario 05 / CI #615:** normal implementation while preserving pre-existing user state byte-for-byte, A/B convergence + Terra strong review, deterministic oracle fully green, **17 model calls**, ~42 s, ~13.39 internal AI credits.
+
+These runs use explicit selectable models and are release evidence, unlike the earlier `auto` diagnostics. They also demonstrate why the per-turn fuse is the most important runaway guard: all healthy role turns stayed below 10 calls while legitimate whole-run work could exceed the original Free-era total/credit envelope.
