@@ -35,6 +35,10 @@ test('architecture model preflight ignores unused roles but keeps active-role fa
     ['workerA', 'reviewer'],
   );
   assert.deepEqual(
+    architectureRelevantModelIssues('implementer-reviewer', issues, { recoveryPolicy: 'strong-coordinator' }).map((item) => item.role),
+    ['coordinator', 'workerA', 'reviewer'],
+  );
+  assert.deepEqual(
     architectureRelevantModelIssues('peer-competition', issues).map((item) => item.role),
     ['workerA', 'workerB'],
   );
@@ -71,11 +75,16 @@ test('session model record captures actual role/model provenance from production
   });
 });
 
-test('normalized summary combines result, oracle, efficiency and audit events', () => {
+test('normalized summary combines result, recovery policy, oracle, efficiency and audit events', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'convergent-architecture-summary-'));
   writeJson(path.join(root, 'result.json'), {
     status: 'complete',
-    architecture: { id: 'implementer-reviewer', topology: 'implementer -> reviewer', selectors: { implementer: 'strong', reviewer: 'strong' } },
+    architecture: {
+      id: 'implementer-reviewer',
+      topology: 'implementer -> reviewer',
+      recoveryPolicy: 'strong-coordinator',
+      selectors: { implementer: 'strong', reviewer: 'strong' },
+    },
     actualRoleModels: [{ agent: 'Worker A', role: 'workerA', modelId: 'terra', modelName: 'Terra', reasoningEffort: 'low' }],
     usage: { calls: 9, turns: 2, elapsedMs: 42000, aiCredits: 14.8, inputTokens: 100, outputTokens: 20, reasoningTokens: 3, cacheReadTokens: 50, cacheWriteTokens: 10, maxContextTokens: 19000 },
     budget: { chatRequestsUsed: 3 },
@@ -89,20 +98,23 @@ test('normalized summary combines result, oracle, efficiency and audit events', 
   fs.mkdirSync(audit, { recursive: true });
   fs.writeFileSync(path.join(audit, 'events.jsonl'), [
     JSON.stringify({ type: 'worker_pass_result', changed: true }),
+    JSON.stringify({ type: 'recovery_decision' }),
     JSON.stringify({ type: 'strong_review_result', review: { findings: [] } }),
   ].join('\n') + '\n');
 
   const row = summarizeArm(root);
   assert.equal(row.architecture, 'implementer-reviewer');
+  assert.equal(row.recoveryPolicy, 'strong-coordinator');
   assert.equal(row.oraclePass, true);
   assert.equal(row.modelCalls, 9);
   assert.equal(row.aiCredits, 14.8);
   assert.equal(row.chatRequestDelta, 3);
   assert.equal(row.reviewerCycles, 1);
+  assert.equal(row.recoveryReports, 1);
   assert.equal(row.workerPasses, 1);
   assert.equal(row.actualRoleModels[0].modelId, 'terra');
 
   const csv = toCsv([row]);
-  assert.match(csv, /^architecture,oraclePass,/);
-  assert.match(csv, /implementer-reviewer,true,2,2,9/);
+  assert.match(csv, /^architecture,recoveryPolicy,oraclePass,/);
+  assert.match(csv, /implementer-reviewer,strong-coordinator,true,2,2,9/);
 });
