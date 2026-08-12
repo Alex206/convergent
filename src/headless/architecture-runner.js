@@ -20,6 +20,8 @@ const {
 } = require('./runner');
 const {
   ARCHITECTURES,
+  RECOVERY_POLICIES,
+  normalizeRecoveryPolicy,
   ExperimentalTopologyEngine,
 } = require('./topologies');
 const {
@@ -29,7 +31,7 @@ const {
 } = require('./architecture-catalog');
 const { DefaultCopilotEngine } = require('./default-copilot-engine');
 
-function architectureRelevantModelIssues(architecture, issues = []) {
+function architectureRelevantModelIssues(architecture, issues = [], options = {}) {
   const id = normalizeBenchmarkArchitecture(architecture);
   let roles;
   if (id === COPILOT_DEFAULT || id === ARCHITECTURES.SINGLE_AGENT) {
@@ -43,11 +45,18 @@ function architectureRelevantModelIssues(architecture, issues = []) {
   } else {
     roles = new Set(['coordinator', 'workerA', 'workerB', 'reviewer']);
   }
+  if (
+    id !== COPILOT_DEFAULT
+    && id !== ARCHITECTURES.CONVERGENT_V02
+    && normalizeRecoveryPolicy(options.recoveryPolicy) === RECOVERY_POLICIES.STRONG_COORDINATOR
+  ) {
+    roles.add('coordinator');
+  }
   return (issues ?? []).filter((issue) => roles.has(issue.role));
 }
 
-function assertArchitectureRoleModels(architecture, resolution) {
-  const relevant = architectureRelevantModelIssues(architecture, resolution?.issues);
+function assertArchitectureRoleModels(architecture, resolution, options = {}) {
+  const relevant = architectureRelevantModelIssues(architecture, resolution?.issues, options);
   return assertHeadlessRoleModels({ ...resolution, issues: relevant });
 }
 
@@ -99,7 +108,7 @@ async function runArchitectureBenchmark(options, dependencies = {}) {
   try {
     const available = await client.listModels();
     resolution = resolveHeadlessRoleModels(options, available);
-    relevantIssues = architectureRelevantModelIssues(architecture, resolution.issues);
+    relevantIssues = architectureRelevantModelIssues(architecture, resolution.issues, options);
     await fs.writeFile(
       path.join(options.outputDir, 'models.json'),
       `${JSON.stringify({
@@ -119,7 +128,7 @@ async function runArchitectureBenchmark(options, dependencies = {}) {
       }, null, 2)}\n`,
       'utf8',
     );
-    assertArchitectureRoleModels(architecture, resolution);
+    assertArchitectureRoleModels(architecture, resolution, options);
   } catch (error) {
     if (ownsClient) await client.stop().catch(() => {});
     throw error;
@@ -252,6 +261,8 @@ async function runArchitectureBenchmark(options, dependencies = {}) {
     engine = new ExperimentalTopologyEngine({
       ...commonEngineOptions,
       architecture,
+      recoveryPolicy: options.recoveryPolicy,
+      maxExperimentalRecoveryAttempts: options.maxExperimentalRecoveryAttempts,
       experimentalRoute: options.experimentalRoute ?? 'standard',
       experimentalRisk: options.experimentalRisk ?? 'medium',
     });
