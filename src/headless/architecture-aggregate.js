@@ -15,12 +15,12 @@ function variantKey(run) {
 }
 
 function mean(values) {
-  if (!values.length) return 0;
-  return values.reduce((sum, value) => sum + Number(value || 0), 0) / values.length;
+  if (!values.length) return null;
+  return values.reduce((sum, value) => sum + Number(value), 0) / values.length;
 }
 
 function median(values) {
-  if (!values.length) return 0;
+  if (!values.length) return null;
   const ordered = values.map(Number).sort((a, b) => a - b);
   const middle = Math.floor(ordered.length / 2);
   return ordered.length % 2 ? ordered[middle] : (ordered[middle - 1] + ordered[middle]) / 2;
@@ -44,6 +44,12 @@ function numeric(run, field) {
   return Number.isFinite(value) ? value : 0;
 }
 
+function optionalNumeric(run, field) {
+  if (run?.[field] === null || run?.[field] === undefined) return null;
+  const value = Number(run[field]);
+  return Number.isFinite(value) ? value : null;
+}
+
 function aggregateRuns(runs = []) {
   const groups = new Map();
   for (const run of runs) {
@@ -65,9 +71,9 @@ function aggregateRuns(runs = []) {
     const n = items.length;
     const interval = wilsonInterval(passes, n);
     const fields = [
-      'modelCalls', 'aiCredits', 'elapsedMs', 'inputTokens', 'outputTokens',
+      'modelCalls', 'elapsedMs', 'inputTokens', 'outputTokens',
       'reasoningTokens', 'cacheReadTokens', 'cacheWriteTokens', 'maxContextTokens',
-      'promptSends', 'toolCalls', 'turns', 'reviewerCycles', 'reviewerFindings',
+      'promptSends', 'toolCalls', 'turns', 'premiumRequestCost', 'reviewerCycles', 'reviewerFindings',
       'workerPasses', 'convergenceEvents', 'recoveryReports',
     ];
     const averages = {};
@@ -77,7 +83,12 @@ function aggregateRuns(runs = []) {
       averages[field] = mean(values);
       medians[field] = median(values);
     }
-    const totalCredits = items.reduce((sum, run) => sum + numeric(run, 'aiCredits'), 0);
+    const creditValues = items.map((run) => optionalNumeric(run, 'aiCredits')).filter((value) => value !== null);
+    averages.aiCredits = mean(creditValues);
+    medians.aiCredits = median(creditValues);
+
+    const creditDataComplete = creditValues.length === n;
+    const totalKnownCredits = creditValues.reduce((sum, value) => sum + value, 0);
     const totalCalls = items.reduce((sum, run) => sum + numeric(run, 'modelCalls'), 0);
     const totalInputTokens = items.reduce((sum, run) => sum + numeric(run, 'inputTokens'), 0);
     const totalElapsedMs = items.reduce((sum, run) => sum + numeric(run, 'elapsedMs'), 0);
@@ -90,10 +101,12 @@ function aggregateRuns(runs = []) {
       failures: n - passes,
       passRate: n ? passes / n : 0,
       passRateWilson95: interval,
+      creditDataComplete,
+      creditSamples: creditValues.length,
       averages,
       medians,
       observedCostPerSuccess: passes ? {
-        aiCredits: totalCredits / passes,
+        aiCredits: creditDataComplete ? totalKnownCredits / passes : null,
         modelCalls: totalCalls / passes,
         inputTokens: totalInputTokens / passes,
         elapsedMs: totalElapsedMs / passes,
@@ -102,7 +115,11 @@ function aggregateRuns(runs = []) {
     };
   }).sort((a, b) => {
     if (a.passRate !== b.passRate) return b.passRate - a.passRate;
-    return a.observedCostPerSuccess?.aiCredits - b.observedCostPerSuccess?.aiCredits;
+    const aCredits = a.observedCostPerSuccess?.aiCredits;
+    const bCredits = b.observedCostPerSuccess?.aiCredits;
+    if (aCredits === null || aCredits === undefined) return 1;
+    if (bCredits === null || bCredits === undefined) return -1;
+    return aCredits - bCredits;
   });
 }
 
@@ -128,7 +145,7 @@ function main(argv = process.argv.slice(2)) {
     generatedAt: new Date().toISOString(),
     totalRuns: runs.length,
     groups,
-    warning: 'Small-n stochastic benchmark statistics are descriptive. Wilson intervals show uncertainty; do not choose a production architecture from one scenario alone.',
+    warning: 'Small-n stochastic benchmark statistics are descriptive. Wilson intervals show uncertainty; missing accumulated AI-credit data is never treated as zero cost.',
   };
   fs.mkdirSync(path.dirname(path.resolve(outputFile)), { recursive: true });
   fs.writeFileSync(path.resolve(outputFile), `${JSON.stringify(output, null, 2)}\n`, 'utf8');
@@ -144,6 +161,8 @@ module.exports = {
   mean,
   median,
   wilsonInterval,
+  numeric,
+  optionalNumeric,
   aggregateRuns,
   loadResultFiles,
   main,
