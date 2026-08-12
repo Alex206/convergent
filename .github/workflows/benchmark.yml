@@ -1,0 +1,268 @@
+name: Convergent Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: Benchmark markdown path inside convergent-test-repo
+        required: true
+        default: benchmarks/03-dependency-ordering.md
+        type: string
+      flow:
+        description: Convergent execution flow
+        required: true
+        default: fast
+        type: choice
+        options:
+          - fast
+          - auto
+          - thorough
+      target_ref:
+        description: convergent-test-repo ref to benchmark from
+        required: true
+        default: main
+        type: string
+      limit_policy:
+        description: Behavior at soft worker/reviewer limits
+        required: true
+        default: pause
+        type: choice
+        options:
+          - pause
+          - continue
+      max_model_calls:
+        description: Hard total model-call fuse for this benchmark run
+        required: true
+        default: '36'
+        type: string
+      max_model_calls_per_turn:
+        description: Hard model-call fuse for one Convergent agent prompt/turn
+        required: true
+        default: '10'
+        type: string
+      max_chat_requests:
+        description: Hard Copilot chat-request quota delta allowed during this benchmark
+        required: true
+        default: '12'
+        type: string
+      max_ai_credits:
+        description: Soft reported AI-credit boundary checked at safe workflow boundaries
+        required: true
+        default: '35'
+        type: string
+      answers_json:
+        description: JSON array of scripted answers for expected headless clarification/recovery prompts
+        required: true
+        default: '[]'
+        type: string
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+      COPILOT_PLUGIN_DIR_ONLY: 'true'
+      CONVERGENT_HEADLESS_ANSWERS_JSON: ${{ inputs.answers_json }}
+    steps:
+      - name: Require benchmark credentials
+        shell: bash
+        env:
+          BENCHMARK_REPO_TOKEN: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+        run: |
+          if [[ -z "${COPILOT_GITHUB_TOKEN}" ]]; then
+            echo "Repository secret COPILOT_GITHUB_TOKEN is required for a real headless Copilot SDK benchmark." >&2
+            exit 2
+          fi
+          if [[ -z "${BENCHMARK_REPO_TOKEN}" ]]; then
+            echo "Repository secret BENCHMARK_REPO_TOKEN is required with read-only Contents access to Alex206/convergent-test-repo." >&2
+            exit 2
+          fi
+
+      - name: Checkout Convergent
+        uses: actions/checkout@v6
+
+      - name: Checkout benchmark target
+        uses: actions/checkout@v6
+        with:
+          repository: Alex206/convergent-test-repo
+          ref: ${{ inputs.target_ref }}
+          path: benchmark-target
+          token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+
+      - name: Prepare Scenario 05 pre-existing workspace state
+        if: endsWith(inputs.scenario, '05-preexisting-workspace-state.md')
+        shell: bash
+        run: |
+          mkdir -p benchmark-target/.vscode
+          printf '%s\n' '{"files.trimTrailingWhitespace":true}' > benchmark-target/.vscode/settings.json
+          printf '%s\n' 'local benchmark note' > benchmark-target/notes.local
+          test "$(cat benchmark-target/.vscode/settings.json)" = '{"files.trimTrailingWhitespace":true}'
+          test "$(cat benchmark-target/notes.local)" = 'local benchmark note'
+          git -C benchmark-target check-ignore -q notes.local
+          git -C benchmark-target status --short --untracked-files=all
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Install Convergent dependencies
+        run: npm ci
+
+      - name: Record exact runtime versions
+        shell: bash
+        env:
+          BENCHMARK_OUTPUT: ${{ runner.temp }}/convergent-benchmark
+        run: |
+          mkdir -p "${BENCHMARK_OUTPUT}"
+          node - <<'NODE' > "${BENCHMARK_OUTPUT}/runtime-versions.json"
+          const { runtimeVersionInfo } = require('./src/copilot/version-info');
+          process.stdout.write(`${JSON.stringify(runtimeVersionInfo(), null, 2)}\n`);
+          NODE
+
+      - name: Run Convergent headless benchmark
+        id: benchmark
+        timeout-minutes: 10
+        shell: bash
+        env:
+          BENCHMARK_OUTPUT: ${{ runner.temp }}/convergent-benchmark
+        run: |
+          set -o pipefail
+          mkdir -p "${BENCHMARK_OUTPUT}"
+          node src/headless/cli.js \
+            --workspace "${GITHUB_WORKSPACE}/benchmark-target" \
+            --prompt-file "${GITHUB_WORKSPACE}/benchmark-target/${{ inputs.scenario }}" \
+            --output-dir "${BENCHMARK_OUTPUT}" \
+            --flow "${{ inputs.flow }}" \
+            --audit-level full \
+            --limit-policy "${{ inputs.limit_policy }}" \
+            --max-model-calls "${{ inputs.max_model_calls }}" \
+            --max-model-calls-per-turn "${{ inputs.max_model_calls_per_turn }}" \
+            --max-chat-requests "${{ inputs.max_chat_requests }}" \
+            --max-ai-credits "${{ inputs.max_ai_credits }}" \
+            2>&1 | tee "${BENCHMARK_OUTPUT}/runner.log"
+
+      - name: Summarize benchmark efficiency
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          BENCHMARK_OUTPUT: ${{ runner.temp }}/convergent-benchmark
+        run: |
+          events="$(find "${BENCHMARK_OUTPUT}/audit" -name events.jsonl -type f 2>/dev/null | head -n 1)"
+          if [[ -n "${events}" ]]; then
+            node src/headless/efficiency-summary.js "${events}" "${BENCHMARK_OUTPUT}/efficiency-summary.json" > "${BENCHMARK_OUTPUT}/efficiency-summary.log"
+          else
+            echo "No trajectory events available; benchmark may have failed during preflight." > "${BENCHMARK_OUTPUT}/efficiency-summary.log"
+          fi
+
+      - name: Independently validate benchmark target tests
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          BENCHMARK_OUTPUT: ${{ runner.temp }}/convergent-benchmark
+        run: |
+          mkdir -p "${BENCHMARK_OUTPUT}"
+          set -o pipefail
+          (
+            cd benchmark-target
+            python3 -B -m unittest discover -s tests -v
+          ) 2>&1 | tee "${BENCHMARK_OUTPUT}/target-validation.log"
+
+      - name: Run deterministic scenario acceptance oracle
+        if: always()
+        id: acceptance
+        continue-on-error: true
+        shell: bash
+        env:
+          BENCHMARK_OUTPUT: ${{ runner.temp }}/convergent-benchmark
+          SCENARIO: ${{ inputs.scenario }}
+        run: |
+          mkdir -p "${BENCHMARK_OUTPUT}"
+          case "${SCENARIO}" in
+            *03-dependency-ordering.md)
+              node src/headless/scenario03-acceptance.js \
+                "${GITHUB_WORKSPACE}/benchmark-target" \
+                "${BENCHMARK_OUTPUT}/scenario-acceptance.json"
+              ;;
+            *04-blocked-external-validation.md)
+              events="$(find "${BENCHMARK_OUTPUT}/audit" -name events.jsonl -type f 2>/dev/null | head -n 1)"
+              test -n "${events}" || { echo 'Scenario 04 requires trajectory events.' >&2; exit 2; }
+              node src/headless/scenario04-acceptance.js \
+                "${GITHUB_WORKSPACE}/benchmark-target" \
+                "${events}" \
+                "${BENCHMARK_OUTPUT}/scenario-acceptance.json"
+              ;;
+            *05-preexisting-workspace-state.md)
+              node src/headless/scenario05-acceptance.js \
+                "${GITHUB_WORKSPACE}/benchmark-target" \
+                "${BENCHMARK_OUTPUT}/scenario-acceptance.json"
+              ;;
+            *)
+              node - <<'NODE' > "${BENCHMARK_OUTPUT}/scenario-acceptance.json"
+              const result = {
+                ok: true,
+                dedicatedOracle: false,
+                note: 'No dedicated deterministic acceptance oracle is registered for this scenario; target unit tests remain the independent validation evidence.',
+              };
+              process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+              NODE
+              ;;
+          esac
+
+      - name: Capture final target workspace
+        if: always()
+        shell: bash
+        env:
+          BENCHMARK_OUTPUT: ${{ runner.temp }}/convergent-benchmark
+        run: |
+          mkdir -p "${BENCHMARK_OUTPUT}"
+          git -C benchmark-target status --porcelain=v1 --untracked-files=all > "${BENCHMARK_OUTPUT}/final-status.txt" || true
+          git -C benchmark-target diff --binary --no-ext-diff > "${BENCHMARK_OUTPUT}/final-diff.patch" || true
+          tar --exclude=.git -czf "${BENCHMARK_OUTPUT}/workspace.tar.gz" -C benchmark-target .
+
+      - name: Upload benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: convergent-${{ inputs.flow }}-${{ github.run_number }}
+          path: ${{ runner.temp }}/convergent-benchmark
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Require complete benchmark and registered acceptance
+        if: always()
+        shell: bash
+        env:
+          BENCHMARK_OUTPUT: ${{ runner.temp }}/convergent-benchmark
+        run: |
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const root = process.env.BENCHMARK_OUTPUT;
+          const resultPath = path.join(root, 'result.json');
+          const acceptancePath = path.join(root, 'scenario-acceptance.json');
+          if (!fs.existsSync(resultPath)) {
+            console.error('Benchmark did not produce result.json.');
+            process.exit(2);
+          }
+          const result = JSON.parse(fs.readFileSync(resultPath, 'utf8'));
+          if (result.status !== 'complete') {
+            console.error(`Convergent benchmark status is ${result.status}: ${result.error ?? 'no error'}`);
+            process.exit(3);
+          }
+          if (!fs.existsSync(acceptancePath)) {
+            console.error('Benchmark did not produce scenario-acceptance.json.');
+            process.exit(4);
+          }
+          const acceptance = JSON.parse(fs.readFileSync(acceptancePath, 'utf8'));
+          if (!acceptance.ok) {
+            console.error('Deterministic scenario acceptance failed.');
+            process.exit(5);
+          }
+          console.log('Convergent benchmark completed and independent acceptance evidence is green.');
+          NODE

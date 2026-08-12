@@ -2,23 +2,37 @@
   "name": "convergent",
   "displayName": "Convergent",
   "description": "Adaptive multi-agent implementation and adversarial review workflows powered by GitHub Copilot.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "alex206",
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "MIT",
   "engines": {
     "vscode": "^1.102.0",
     "node": ">=22.12.0"
   },
-  "categories": ["Other"],
-  "keywords": ["copilot", "agents", "review", "orchestration", "workflow"],
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "copilot",
+    "agents",
+    "review",
+    "orchestration",
+    "workflow"
+  ],
   "main": "./src/extension.js",
   "activationEvents": [
     "onChatParticipant:convergent.workflow",
     "onCommand:convergent.start",
+    "onCommand:convergent.resume",
     "onCommand:convergent.stop",
+    "onCommand:convergent.steer",
+    "onCommand:convergent.selectFlow",
     "onCommand:convergent.showModels",
     "onCommand:convergent.showUsage",
-    "onCommand:convergent.showOutput"
+    "onCommand:convergent.showDiagnostics",
+    "onCommand:convergent.showOutput",
+    "onCommand:convergent.openLastAudit",
+    "onCommand:convergent.revealLastAudit"
   ],
   "contributes": {
     "chatParticipants": [
@@ -31,21 +45,91 @@
         "commands": [
           {
             "name": "implement",
-            "description": "Classify, plan, and execute a task using the proportionate Convergent workflow"
+            "description": "Classify, plan, and execute a task using the default Convergent flow"
+          },
+          {
+            "name": "fast",
+            "description": "Run a focused flow that asks sooner before spending more review iterations"
+          },
+          {
+            "name": "auto",
+            "description": "Run the balanced adaptive Convergent flow"
+          },
+          {
+            "name": "thorough",
+            "description": "Run a broader assurance-focused Convergent flow"
+          },
+          {
+            "name": "resume",
+            "description": "Resume the last interrupted workflow from its safest saved checkpoint"
           }
         ]
       }
     ],
     "commands": [
-      { "command": "convergent.start", "title": "Convergent: Start Workflow" },
-      { "command": "convergent.stop", "title": "Convergent: Stop Active Workflow" },
-      { "command": "convergent.showModels", "title": "Convergent: Show Available Copilot Models" },
-      { "command": "convergent.showUsage", "title": "Convergent: Show AI Usage" },
-      { "command": "convergent.showOutput", "title": "Convergent: Show Agent Log" }
+      {
+        "command": "convergent.start",
+        "title": "Convergent: Start Workflow"
+      },
+      {
+        "command": "convergent.resume",
+        "title": "Convergent: Resume Last Workflow"
+      },
+      {
+        "command": "convergent.stop",
+        "title": "Convergent: Stop Active Workflow"
+      },
+      {
+        "command": "convergent.steer",
+        "title": "Convergent: Steer Active Agent"
+      },
+      {
+        "command": "convergent.selectFlow",
+        "title": "Convergent: Select Default Flow"
+      },
+      {
+        "command": "convergent.showModels",
+        "title": "Convergent: Show Available Copilot Models"
+      },
+      {
+        "command": "convergent.showUsage",
+        "title": "Convergent: Show AI Usage"
+      },
+      {
+        "command": "convergent.showDiagnostics",
+        "title": "Convergent: Show Diagnostics"
+      },
+      {
+        "command": "convergent.showOutput",
+        "title": "Convergent: Show Agent Log"
+      },
+      {
+        "command": "convergent.openLastAudit",
+        "title": "Convergent: Open Last Trajectory Audit"
+      },
+      {
+        "command": "convergent.revealLastAudit",
+        "title": "Convergent: Reveal Last Trajectory Audit Folder"
+      }
     ],
     "configuration": {
       "title": "Convergent",
       "properties": {
+        "convergent.flow": {
+          "type": "string",
+          "enum": [
+            "fast",
+            "auto",
+            "thorough"
+          ],
+          "default": "auto",
+          "enumDescriptions": [
+            "Focused inspection/review with short autonomous tranches; ask the user sooner before spending more iterations.",
+            "Balanced adaptive workflow.",
+            "Broader first review and larger autonomous convergence/review tranches for maximum assurance."
+          ],
+          "description": "Default execution flow. Override one run with @convergent /fast, /auto, or /thorough. Fast changes review depth/iteration policy, not necessarily model price."
+        },
         "convergent.models.coordinator": {
           "type": "string",
           "default": "strong",
@@ -53,13 +137,13 @@
         },
         "convergent.models.workerA": {
           "type": "string",
-          "default": "cheap-a",
-          "description": "Persistent worker A model selector. cheap-a prefers GPT-5.6 Luna when available for low-cost tool-heavy implementation passes, then other low-cost models."
+          "default": "adaptive",
+          "description": "Worker A model selector. adaptive resolves after each task is classified: trivial/low uses the cheap tier, normal low-risk standard work uses an economical capable tier, medium/high-risk Fast work may promote capability, and high-risk work uses the stronger implementation tier. An exact model id/name or explicit preset overrides adaptation."
         },
         "convergent.models.workerB": {
           "type": "string",
-          "default": "cheap-b",
-          "description": "Persistent worker B model selector. cheap-b prefers a different low-cost model from Worker A when one is available."
+          "default": "adaptive-diverse",
+          "description": "Worker B model selector. adaptive-diverse scales capability with task route/risk and avoids Worker A's selected model when a suitable alternative exists. An exact model id/name or explicit preset overrides adaptation; cheap-b keeps its existing low-cost diversified behavior."
         },
         "convergent.models.reviewer": {
           "type": "string",
@@ -68,7 +152,10 @@
         },
         "convergent.routingMode": {
           "type": "string",
-          "enum": ["adaptive", "full"],
+          "enum": [
+            "adaptive",
+            "full"
+          ],
           "default": "adaptive",
           "enumDescriptions": [
             "Let the strong coordinator classify read-only, trivial, standard, and high-risk tasks; the engine enforces minimum review levels and escalation.",
@@ -78,7 +165,10 @@
         },
         "convergent.reasoningMode": {
           "type": "string",
-          "enum": ["adaptive", "model-default"],
+          "enum": [
+            "adaptive",
+            "model-default"
+          ],
           "default": "adaptive",
           "enumDescriptions": [
             "Use low/medium/high reasoning effort according to role and route when the selected model advertises support. The coordinator uses medium effort by default.",
@@ -91,25 +181,116 @@
           "default": 8,
           "minimum": 2,
           "maximum": 30,
-          "description": "Maximum A/B review/fix passes per convergence cycle, excluding the initial implementation pass."
+          "description": "Soft A/B convergence limit per review/fix tranche. In fast flow the first tranche is capped at 3; when reached, Convergent asks whether to continue or pause."
         },
         "convergent.maxReviewerCycles": {
           "type": "number",
           "default": 3,
           "minimum": 1,
-          "maximum": 10,
-          "description": "Maximum strong-review remediation cycles per implementation task."
+          "maximum": 20,
+          "description": "Soft strong-review cycle limit per tranche. Fast flow allows the initial review plus one automatic remediation/delta re-review before asking whether to spend more; auto/thorough use their configured/profile tranche."
+        },
+        "convergent.maxAiCredits": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 100000,
+          "description": "Optional soft AI-credit budget for one run. 0 disables the budget. When reported Copilot usage reaches the budget at a safe workflow boundary, Convergent asks whether to add another budget tranche, continue without a budget, or pause and resume later. Credit reporting can lag live token usage."
+        },
+        "convergent.taskCommits": {
+          "type": "string",
+          "enum": [
+            "off",
+            "safe"
+          ],
+          "default": "off",
+          "enumDescriptions": [
+            "Do not create Git commits automatically.",
+            "After an accepted modifying task, create a checkpoint commit only when that task started with a clean worktree. Pre-existing dirty worktrees are never swept into an automatic commit."
+          ],
+          "description": "Optional task-boundary checkpoint commits. Safe commits make the next task's HEAD the previous accepted task, keeping normal Git diffs task-local while preserving existing dirty user work."
+        },
+        "convergent.audit.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Write a rotating local trajectory audit under the extension global-storage directory. The normal VS Code Chat/Output UI remains compact."
+        },
+        "convergent.audit.level": {
+          "type": "string",
+          "enum": [
+            "metadata",
+            "full"
+          ],
+          "default": "metadata",
+          "enumDescriptions": [
+            "Store event structure, sizes and SHA-256 hashes for large prompt/message/tool payloads without retaining their full text.",
+            "Store full local prompt/message/tool payloads (large individual payloads are still bounded). Useful for deep optimization audits; may contain repository source/output."
+          ],
+          "description": "Trajectory audit detail level. Full is local but can contain source code, model messages, commands, and tool output."
+        },
+        "convergent.audit.maxRuns": {
+          "type": "number",
+          "default": 10,
+          "minimum": 1,
+          "maximum": 100,
+          "description": "Maximum number of trajectory-audit run directories retained before oldest-first rotation."
+        },
+        "convergent.audit.maxSizeMB": {
+          "type": "number",
+          "default": 250,
+          "minimum": 10,
+          "maximum": 10000,
+          "description": "Approximate maximum total size of retained Convergent trajectory audits; oldest completed runs are removed first."
+        },
+        "convergent.audit.maxAgeDays": {
+          "type": "number",
+          "default": 14,
+          "minimum": 1,
+          "maximum": 365,
+          "description": "Maximum age of retained trajectory-audit runs."
+        },
+        "convergent.agentInactivityTimeoutSeconds": {
+          "type": "number",
+          "default": 180,
+          "minimum": 30,
+          "maximum": 3600,
+          "description": "Seconds with no observed agent, usage, or tool activity before Convergent asks whether to keep waiting or abort the current agent turn. This is an inactivity watchdog, not a maximum total turn duration."
         },
         "convergent.agentTurnTimeoutSeconds": {
           "type": "number",
           "default": 180,
           "minimum": 30,
-          "maximum": 900,
-          "description": "Maximum time to wait for one Copilot agent turn. Structured reports already submitted before a late session.idle timeout are preserved."
+          "maximum": 3600,
+          "deprecationMessage": "Use convergent.agentInactivityTimeoutSeconds. Copilot SDK sendAndWait timeout is a wall-clock limit and is no longer used as the Convergent stall detector.",
+          "description": "Deprecated compatibility setting. If explicitly configured while the new inactivity setting is not, its value is used as the inactivity threshold."
+        },
+        "convergent.toolStallTimeoutSeconds": {
+          "type": "number",
+          "default": 120,
+          "minimum": 30,
+          "maximum": 1800,
+          "description": "Seconds a running Copilot tool may produce no progress before Convergent shows the tool/command details and asks whether to continue waiting or abort the current agent turn."
+        },
+        "convergent.toolStallGraceSeconds": {
+          "type": "number",
+          "default": 10,
+          "minimum": 1,
+          "maximum": 120,
+          "description": "Fallback grace period used only when an interactive stall decision UI is unavailable and Convergent must use bounded steering/cancellation."
+        },
+        "convergent.heartbeatSeconds": {
+          "type": "number",
+          "default": 30,
+          "minimum": 5,
+          "maximum": 300,
+          "description": "Interval for diagnostic heartbeats in the Convergent Output channel. Routine 'working' heartbeats are not appended repeatedly to Chat; only meaningful long-tool status is surfaced there."
         },
         "convergent.permissionMode": {
           "type": "string",
-          "enum": ["workspace", "ask"],
+          "enum": [
+            "workspace",
+            "ask"
+          ],
           "default": "workspace",
           "enumDescriptions": [
             "Automatically approve normal workspace reads, writes, and commands; still ask for risky operations.",
@@ -119,7 +300,11 @@
         },
         "convergent.runtimeTransport": {
           "type": "string",
-          "enum": ["auto", "inprocess", "stdio"],
+          "enum": [
+            "auto",
+            "inprocess",
+            "stdio"
+          ],
           "default": "auto",
           "enumDescriptions": [
             "Use stdio under a real Node process and the SDK in-process transport inside a VS Code/Electron extension host.",
@@ -133,16 +318,29 @@
   },
   "scripts": {
     "test": "node --test",
-    "check": "node --check src/extension.js && node --check src/orchestrator/engine.js && node --check src/orchestrator/routing.js && node --check src/orchestrator/usage.js && node --check src/ui/vscode-ui.js && node --check src/copilot/session-factory.js && node --check src/copilot/runtime.js",
-    "package": "npx @vscode/vsce package"
+    "benchmark": "node src/headless/cli.js",
+    "benchmark:models": "node src/headless/model-preflight.js",
+    "check": "node --check src/extension.js && node --check src/orchestrator/engine.js && node --check src/orchestrator/model-resolver.js && node --check src/orchestrator/resumable-engine.js && node --check src/orchestrator/resume.js && node --check src/orchestrator/control.js && node --check src/orchestrator/task-commit.js && node --check src/orchestrator/request-preflight.js && node --check src/orchestrator/routing.js && node --check src/orchestrator/flow.js && node --check src/orchestrator/audit.js && node --check src/orchestrator/workspace-baseline.js && node --check src/orchestrator/task-change-manifest.js && node --check src/orchestrator/usage.js && node --check src/ui/vscode-ui.js && node --check src/copilot/tools.js && node --check src/copilot/batch-search-tool.js && node --check src/copilot/batch-view-tool.js && node --check src/copilot/session-factory.js && node --check src/copilot/session-guard.js && node --check src/copilot/runtime.js && node --check src/headless/ui.js && node --check src/headless/model-policy.js && node --check src/headless/model-preflight.js && node --check src/headless/runner.js && node --check src/headless/cli.js && node --check src/headless/efficiency-summary.js && node --check src/headless/scenario03-acceptance.js && node --check scripts/package-vsix.js && node --check src/orchestrator/report-blocker.js && node --check src/headless/scenario04-acceptance.js && node --check src/headless/scenario05-acceptance.js",
+    "package": "node scripts/package-vsix.js",
+    "package:list": "vsce ls --tree"
   },
   "dependencies": {
     "@github/copilot-sdk": "1.0.8"
   },
   "devDependencies": {
-    "@vscode/vsce": "^3.6.0"
+    "@vscode/vsce": "3.9.2"
   },
-  "repository": { "type": "git", "url": "https://github.com/Alex206/convergent.git" },
-  "bugs": { "url": "https://github.com/Alex206/convergent/issues" },
+  "allowScripts": {
+    "@vscode/vsce-sign": true,
+    "keytar": true,
+    "koffi": true
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Alex206/convergent.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Alex206/convergent/issues"
+  },
   "homepage": "https://github.com/Alex206/convergent#readme"
 }

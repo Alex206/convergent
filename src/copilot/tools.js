@@ -25,6 +25,63 @@ function normalizeStringList(value) {
   return values.map(toText).map((item) => item.trim()).filter(Boolean);
 }
 
+function normalizePlanTask(value = {}) {
+  const task = value && typeof value === 'object' ? value : {};
+  return {
+    id: toText(task.id).trim(),
+    title: toText(task.title).trim(),
+    description: toText(task.description).trim(),
+    acceptanceCriteria: normalizeStringList(task.acceptanceCriteria),
+    route: toText(task.route).trim(),
+    risk: toText(task.risk).trim(),
+    routingReason: toText(task.routingReason).trim(),
+    inspectionHints: normalizeStringList(task.inspectionHints).slice(0, 12),
+    result: toText(task.result).trim(),
+  };
+}
+
+function normalizePlan(args = {}) {
+  const rawTasks = Array.isArray(args.tasks) ? args.tasks : [];
+  return {
+    summary: toText(args.summary).trim(),
+    tasks: rawTasks.map(normalizePlanTask),
+  };
+}
+
+function validatePlan(plan) {
+  const routes = new Set(['read_only', 'trivial', 'standard', 'high_risk']);
+  const risks = new Set(['low', 'medium', 'high']);
+  if (!plan.summary) return 'Plan summary is required.';
+  if (!plan.tasks.length) return 'Plan requires at least one task.';
+
+  const seenIds = new Set();
+  for (let index = 0; index < plan.tasks.length; index += 1) {
+    const task = plan.tasks[index];
+    const label = task.id || `task ${index + 1}`;
+    if (!task.id) return `Task ${index + 1} requires a non-empty id.`;
+    if (seenIds.has(task.id)) return `Task id '${task.id}' is duplicated.`;
+    seenIds.add(task.id);
+    if (!task.title) return `Task '${label}' requires a non-empty title.`;
+    if (!task.description) return `Task '${label}' requires a non-empty description.`;
+    if (!task.acceptanceCriteria.length) {
+      return `Task '${label}' requires acceptanceCriteria as a non-empty top-level array. Do not embed AcceptanceCriteria text inside description.`;
+    }
+    if (!routes.has(task.route)) {
+      return `Task '${label}' requires top-level route to be one of read_only, trivial, standard, high_risk.`;
+    }
+    if (!risks.has(task.risk)) {
+      return `Task '${label}' requires top-level risk to be one of low, medium, high.`;
+    }
+    if (!task.routingReason) {
+      return `Task '${label}' requires a non-empty top-level routingReason.`;
+    }
+    if (task.route === 'read_only' && !task.result) {
+      return `Read-only task '${label}' requires a completed top-level result; planning inspection must not be deferred as a later task.`;
+    }
+  }
+  return null;
+}
+
 function normalizePassReport(args = {}) {
   const allowedVerdicts = new Set(['clean', 'changed', 'blocked']);
   const verdict = allowedVerdicts.has(args.verdict) ? args.verdict : 'blocked';
@@ -82,9 +139,122 @@ function validateReviewReport(report) {
   return null;
 }
 
+function normalizeRecoveryReport(args = {}) {
+  const allowedActions = new Set(['peer', 'retry', 'ask_user', 'pause']);
+  const action = allowedActions.has(args.action) ? args.action : 'pause';
+  return {
+    action,
+    rationale: toText(args.rationale).trim() || 'No recovery rationale was provided.',
+    question: toText(args.question).trim(),
+    guidance: toText(args.guidance).trim(),
+  };
+}
+
+function validateRecoveryReport(report) {
+  if (report.action === 'ask_user' && !report.question) {
+    return 'ASK_USER requires a concrete question for the operator.';
+  }
+  return null;
+}
+
+function decodeXmlText(value) {
+  return String(value ?? '')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&amp;/gi, '&')
+    .trim();
+}
+
+function lastXmlBlock(text, rootTag) {
+  const source = String(text ?? '');
+  const pattern = new RegExp(`<${rootTag}\\b[^>]*>([\\s\\S]*?)<\\/${rootTag}>`, 'gi');
+  let match;
+  let last = null;
+  while ((match = pattern.exec(source)) !== null) last = match[1];
+  return last;
+}
+
+function xmlTag(block, tagName) {
+  const match = new RegExp(`<${tagName}\\b[^>]*>([\\s\\S]*?)<\\/${tagName}>`, 'i').exec(String(block ?? ''));
+  return match ? decodeXmlText(match[1]) : null;
+}
+
+function parseSerializedList(value) {
+  if (value === null || value === undefined) return null;
+  const text = decodeXmlText(value);
+  if (!text || text === '[]') return [];
+  try {
+    const parsed = JSON.parse(text);
+    if (Array.isArray(parsed)) return parsed;
+  } catch {
+    // Fall through to bullet/newline parsing.
+  }
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim().replace(/^[-*]\s+/, ''))
+    .filter(Boolean);
+}
+
+function recoverPassReportFromText(content) {
+  const block = lastXmlBlock(content, 'report_pass');
+  if (block === null) return null;
+  const verdict = xmlTag(block, 'verdict');
+  const summary = xmlTag(block, 'summary');
+  const findings = parseSerializedList(xmlTag(block, 'findings'));
+  const checks = parseSerializedList(xmlTag(block, 'checks'));
+  if (verdict === null || summary === null || findings === null || checks === null) return null;
+
+  const report = normalizePassReport({
+    verdict: verdict.toLowerCase(),
+    summary,
+    findings,
+    checks,
+  });
+  return validatePassReport(report) ? null : report;
+}
+
+function recoverReviewReportFromText(content) {
+  const block = lastXmlBlock(content, 'report_review');
+  if (block === null) return null;
+  const verdict = xmlTag(block, 'verdict');
+  const summary = xmlTag(block, 'summary');
+  const findingsText = xmlTag(block, 'findings');
+  const checks = parseSerializedList(xmlTag(block, 'checks'));
+  if (verdict === null || summary === null || findingsText === null || checks === null) return null;
+
+  let findings = [];
+  const findingBlocks = [...String(findingsText).matchAll(/<finding\b[^>]*>([\s\S]*?)<\/finding>/gi)];
+  if (findingBlocks.length) {
+    findings = findingBlocks.map((match) => ({
+      severity: (xmlTag(match[1], 'severity') ?? 'medium').toLowerCase(),
+      title: xmlTag(match[1], 'title') ?? 'Review finding',
+      description: xmlTag(match[1], 'description') ?? '',
+      ...(xmlTag(match[1], 'file') ? { file: xmlTag(match[1], 'file') } : {}),
+    }));
+  } else {
+    findings = parseSerializedList(findingsText) ?? [];
+  }
+
+  const report = normalizeReviewReport({
+    verdict: verdict.toLowerCase(),
+    summary,
+    findings,
+    checks,
+  });
+  return validateReviewReport(report) ? null : report;
+}
+
+function recoverSerializedReport(content, toolName) {
+  if (toolName === 'report_pass') return recoverPassReportFromText(content);
+  if (toolName === 'report_review') return recoverReviewReportFromText(content);
+  return null;
+}
+
 function createPlanTool(defineTool, sink) {
   return defineTool('report_plan', {
-    description: 'Submit the final structured plan and per-task workflow classification to the Convergent orchestrator. Call exactly once.',
+    description: 'Submit the final structured plan and per-task workflow classification to the Convergent orchestrator. Call exactly once with every required task field as a real top-level JSON property, not embedded in description text.',
     parameters: {
       type: 'object',
       properties: {
@@ -102,6 +272,12 @@ function createPlanTool(defineTool, sink) {
               route: { type: 'string', enum: ['read_only', 'trivial', 'standard', 'high_risk'] },
               risk: { type: 'string', enum: ['low', 'medium', 'high'] },
               routingReason: { type: 'string' },
+              inspectionHints: {
+                type: 'array',
+                maxItems: 12,
+                items: { type: 'string' },
+                description: 'Optional bounded non-authoritative repository-relative EXISTING files, paths, symbols, or tests actually observed during planning. Do not put proposed/new files here; those belong in description or acceptance criteria. These are Worker A starting locators, not transcript/tool output.',
+              },
               result: {
                 type: 'string',
                 description: 'Required for read_only tasks: the coordinator answer/result after performing the necessary inspection.',
@@ -118,8 +294,11 @@ function createPlanTool(defineTool, sink) {
     skipPermission: true,
     defer: 'never',
     handler: async (args) => {
-      sink.value = args;
-      return { accepted: true, taskCount: Array.isArray(args?.tasks) ? args.tasks.length : 0 };
+      const plan = normalizePlan(args);
+      const error = validatePlan(plan);
+      if (error) return { accepted: false, error, retry: true };
+      sink.value = plan;
+      return { accepted: true, taskCount: plan.tasks.length };
     },
   });
 }
@@ -201,13 +380,54 @@ function createReviewTool(defineTool, sink) {
   });
 }
 
+function createRecoveryTool(defineTool, sink) {
+  return defineTool('report_recovery', {
+    description: 'Choose the next deterministic recovery action for a blocked Convergent worker/reviewer. Do not implement or edit the task.',
+    parameters: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['peer', 'retry', 'ask_user', 'pause'] },
+        rationale: { type: 'string' },
+        question: {
+          type: 'string',
+          description: 'Required only for ask_user: one concrete question the operator can answer in free text.',
+        },
+        guidance: {
+          type: 'string',
+          description: 'Concise instruction/context to inject into the selected agent on retry/peer continuation.',
+        },
+      },
+      required: ['action', 'rationale', 'question', 'guidance'],
+      additionalProperties: false,
+    },
+    skipPermission: true,
+    defer: 'never',
+    handler: async (args) => {
+      const report = normalizeRecoveryReport(args);
+      const error = validateRecoveryReport(report);
+      if (error) return { accepted: false, error, retry: true };
+      sink.value = report;
+      return { accepted: true };
+    },
+  });
+}
+
 module.exports = {
   createPlanTool,
   createPassTool,
   createReviewTool,
+  createRecoveryTool,
   normalizeStringList,
+  normalizePlanTask,
+  normalizePlan,
+  validatePlan,
   normalizePassReport,
   validatePassReport,
   normalizeReviewReport,
   validateReviewReport,
+  normalizeRecoveryReport,
+  validateRecoveryReport,
+  recoverPassReportFromText,
+  recoverReviewReportFromText,
+  recoverSerializedReport,
 };
