@@ -1,0 +1,113 @@
+{
+  "schemaVersion": 1,
+  "benchmark": "scenario03-dependency-ordering",
+  "repetition": 1,
+  "targetRepository": "Alex206/convergent-test-repo",
+  "targetSha": "1f38b2606f306ef4902d6159e8c9b7f3d8fe9aef",
+  "hardEnvelope": {
+    "maxModelCalls": 30,
+    "maxModelCallsPerTurn": 10,
+    "maxChatRequests": 12,
+    "perArmTimeoutSeconds": 300,
+    "maxAiCredits": 0
+  },
+  "sourceRun": {
+    "workflowRunId": 31585500714,
+    "artifactId": 9136971996,
+    "artifactDigest": "sha256:12f5f00e7f826e38efe9bd1b31424193557006c65604d983e59e26f9d3ad2b9d",
+    "harnessSha": "e6dcc50d5f27c430009dd05419ea688eae28e4de"
+  },
+  "runs": [
+    {
+      "arm": "copilot-default-auto",
+      "architecture": "copilot-default",
+      "selectors": { "defaultAgent": "auto" },
+      "actualRoleModels": [
+        {
+          "agent": "Default Copilot agent",
+          "role": "default-agent",
+          "requestedModel": "auto",
+          "routedModels": ["claude-sonnet-5"]
+        }
+      ],
+      "runStatus": "budget_exceeded",
+      "oraclePass": false,
+      "oracleChecksPassed": 10,
+      "oracleChecksTotal": 12,
+      "failedChecks": [
+        {
+          "name": "reject invalid depends_on shapes",
+          "error": "depends_on=None did not raise ConfigError"
+        },
+        {
+          "name": "unconstrained tasks preserve input order",
+          "error": "observed ['z', 'base', 'dependent', 'a', 'm']"
+        }
+      ],
+      "modelCalls": 10,
+      "promptSends": 1,
+      "toolCalls": 12,
+      "turns": 0,
+      "elapsedMs": 47407,
+      "hasAiCreditData": false,
+      "aiCredits": null,
+      "premiumRequestCost": 10,
+      "inputTokens": 231148,
+      "outputTokens": 4435,
+      "reasoningTokens": 874,
+      "cacheReadTokens": 204928,
+      "cacheWriteTokens": 26200,
+      "maxContextTokens": 20961,
+      "budgetBreach": {
+        "kind": "turn",
+        "calls": 10,
+        "limit": 10,
+        "boundary": "tool_complete",
+        "toolName": "edit"
+      }
+    },
+    {
+      "arm": "copilot-default-terra",
+      "architecture": "copilot-default",
+      "selectors": { "defaultAgent": "strong" },
+      "actualRoleModels": [
+        {
+          "agent": "Default Copilot agent",
+          "role": "default-agent",
+          "requestedModel": "gpt-5.6-terra",
+          "routedModels": ["gpt-5.6-terra"]
+        }
+      ],
+      "runStatus": "complete",
+      "oraclePass": false,
+      "oracleChecksPassed": 11,
+      "oracleChecksTotal": 12,
+      "failedChecks": [
+        {
+          "name": "unconstrained tasks preserve input order",
+          "error": "observed ['z', 'a', 'base', 'm', 'dependent']"
+        }
+      ],
+      "modelCalls": 6,
+      "promptSends": 1,
+      "toolCalls": 15,
+      "turns": 1,
+      "elapsedMs": 42519,
+      "hasAiCreditData": true,
+      "aiCredits": 11.75411,
+      "premiumRequestCost": 0,
+      "inputTokens": 101497,
+      "outputTokens": 3813,
+      "reasoningTokens": 1224,
+      "cacheReadTokens": 79108,
+      "cacheWriteTokens": 22371,
+      "maxContextTokens": 22496
+    }
+  ],
+  "notes": [
+    "These are neutral Copilot SDK baselines: no Convergent systemMessage, custom tools, availableTools allowlist, hooks, role prompt, or structured report tool was supplied.",
+    "The Auto baseline omitted the model field entirely and routed all observed assistant.usage calls to claude-sonnet-5.",
+    "The Auto baseline hit the matched 10-call per-turn cap before session.idle. Its accumulated AI-credit checkpoint is therefore unavailable; aiCredits is null and must not be interpreted as zero cost.",
+    "The explicit-Terra default baseline finished but missed the same subtle stable-order acceptance rule seen in one Convergent Worker-only Terra repetition."
+  ]
+}
