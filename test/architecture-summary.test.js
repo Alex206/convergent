@@ -67,6 +67,7 @@ test('session model record captures actual role/model provenance from production
     modelName: 'GPT-5.6 Terra',
     reasoningEffort: 'low',
     sessionId: 's1',
+    routedModels: [],
   });
 });
 
