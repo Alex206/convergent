@@ -69,7 +69,7 @@ jobs:
                 --architecture "${architecture}" \
                 --recovery-policy "${recovery}" \
                 --workspace "${GITHUB_WORKSPACE}/target-${target}" \
-                --prompt-file "${GITHUB_WORKSPACE}/target-${target}/benchmarks/04-blocker-recovery.md" \
+                --prompt-file "${GITHUB_WORKSPACE}/target-${target}/benchmarks/04-blocked-external-validation.md" \
                 --output-dir "${out}" \
                 --flow fast \
                 --coordinator strong \
