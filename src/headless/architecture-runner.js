@@ -25,6 +25,34 @@ const {
   ExperimentalTopologyEngine,
 } = require('./topologies');
 
+function architectureRelevantModelIssues(architecture, issues = []) {
+  const id = normalizeArchitecture(architecture);
+  const roles = id === ARCHITECTURES.SINGLE_AGENT
+    ? new Set(['workerA'])
+    : id === ARCHITECTURES.IMPLEMENTER_REVIEWER
+      ? new Set(['workerA', 'reviewer'])
+      : new Set(['coordinator', 'workerA', 'workerB', 'reviewer']);
+  return (issues ?? []).filter((issue) => roles.has(issue.role));
+}
+
+function assertArchitectureRoleModels(architecture, resolution) {
+  const relevant = architectureRelevantModelIssues(architecture, resolution?.issues);
+  return assertHeadlessRoleModels({ ...resolution, issues: relevant });
+}
+
+function sessionModelRecord(event = {}) {
+  if (event.type !== 'session_create') return null;
+  return {
+    agent: event.agent ?? null,
+    role: event.role ?? null,
+    taskId: event.taskId ?? null,
+    modelId: event.model ?? null,
+    modelName: event.modelName ?? null,
+    reasoningEffort: event.reasoningEffort ?? null,
+    sessionId: event.sessionId ?? null,
+  };
+}
+
 async function runArchitectureBenchmark(options, dependencies = {}) {
   const architecture = normalizeArchitecture(options.architecture);
   const metadata = architectureMetadata(architecture, options);
@@ -41,9 +69,11 @@ async function runArchitectureBenchmark(options, dependencies = {}) {
 
   const flow = flowPolicy(options.flow, options);
   let resolution;
+  let relevantIssues = [];
   try {
     const available = await client.listModels();
     resolution = resolveHeadlessRoleModels(options, available);
+    relevantIssues = architectureRelevantModelIssues(architecture, resolution.issues);
     await fs.writeFile(
       path.join(options.outputDir, 'models.json'),
       `${JSON.stringify({
@@ -58,11 +88,12 @@ async function runArchitectureBenchmark(options, dependencies = {}) {
         availableCount: resolution.available.length,
         available: resolution.available,
         resolved: { coordinator: resolution.coordinator, reviewer: resolution.reviewer },
-        issues: resolution.issues,
+        relevantIssues,
+        ignoredUnusedRoleIssues: resolution.issues.filter((issue) => !relevantIssues.includes(issue)),
       }, null, 2)}\n`,
       'utf8',
     );
-    assertHeadlessRoleModels(resolution);
+    assertArchitectureRoleModels(architecture, resolution);
   } catch (error) {
     if (ownsClient) await client.stop().catch(() => {});
     throw error;
@@ -112,6 +143,7 @@ async function runArchitectureBenchmark(options, dependencies = {}) {
 
   const checkpointPath = path.join(options.outputDir, 'checkpoint.json');
   const controller = new AbortController();
+  const actualRoleModels = [];
   let engine = null;
   let budgetExceeded = null;
 
@@ -143,6 +175,8 @@ async function runArchitectureBenchmark(options, dependencies = {}) {
 
   const ui = new HeadlessWorkflowUi({
     eventSink: (event) => {
+      const sessionModel = sessionModelRecord(event);
+      if (sessionModel) actualRoleModels.push(sessionModel);
       void audit.record({ architecture, ...event });
       budget.handle(event);
     },
@@ -221,7 +255,15 @@ async function runArchitectureBenchmark(options, dependencies = {}) {
     const usage = engine.getUsageSummary();
     const workspace = await gitSnapshot(options.workspace, options.outputDir).catch((error) => ({ error: error.message }));
     const budgetState = budget.snapshot();
-    await audit.finish({ status, usage, stats: engine.stats, error: errorText, budget: budgetState, architecture: metadata });
+    await audit.finish({
+      status,
+      usage,
+      stats: engine.stats,
+      error: errorText,
+      budget: budgetState,
+      architecture: metadata,
+      actualRoleModels,
+    });
     await fs.writeFile(
       path.join(options.outputDir, 'result.json'),
       `${JSON.stringify({
@@ -229,6 +271,7 @@ async function runArchitectureBenchmark(options, dependencies = {}) {
         status,
         flow: flow.mode,
         architecture: metadata,
+        actualRoleModels,
         promptFile: options.promptFile ?? null,
         auditDir,
         usage,
@@ -249,5 +292,8 @@ async function runArchitectureBenchmark(options, dependencies = {}) {
 }
 
 module.exports = {
+  architectureRelevantModelIssues,
+  assertArchitectureRoleModels,
+  sessionModelRecord,
   runArchitectureBenchmark,
 };
