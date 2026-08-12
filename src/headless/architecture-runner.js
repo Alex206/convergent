@@ -27,11 +27,18 @@ const {
 
 function architectureRelevantModelIssues(architecture, issues = []) {
   const id = normalizeArchitecture(architecture);
-  const roles = id === ARCHITECTURES.SINGLE_AGENT
-    ? new Set(['workerA'])
-    : id === ARCHITECTURES.IMPLEMENTER_REVIEWER
-      ? new Set(['workerA', 'reviewer'])
-      : new Set(['coordinator', 'workerA', 'workerB', 'reviewer']);
+  let roles;
+  if (id === ARCHITECTURES.SINGLE_AGENT) {
+    roles = new Set(['workerA']);
+  } else if (id === ARCHITECTURES.IMPLEMENTER_REVIEWER) {
+    roles = new Set(['workerA', 'reviewer']);
+  } else if (id === ARCHITECTURES.PEER_COMPETITION) {
+    roles = new Set(['workerA', 'workerB']);
+  } else if (id === ARCHITECTURES.PEER_COMPETITION_REVIEWER) {
+    roles = new Set(['workerA', 'workerB', 'reviewer']);
+  } else {
+    roles = new Set(['coordinator', 'workerA', 'workerB', 'reviewer']);
+  }
   return (issues ?? []).filter((issue) => roles.has(issue.role));
 }
 
