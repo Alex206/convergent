@@ -15,6 +15,17 @@ test('variant key is stable across selector object insertion order', () => {
   );
 });
 
+test('variant key keeps recovery policy as an independent experiment dimension', () => {
+  assert.notEqual(
+    variantKey({ architecture: 'implementer-reviewer', recoveryPolicy: 'none', selectors: { implementer: 'strong', reviewer: 'strong' } }),
+    variantKey({ architecture: 'implementer-reviewer', recoveryPolicy: 'strong-coordinator', selectors: { implementer: 'strong', reviewer: 'strong' } }),
+  );
+  assert.match(
+    variantKey({ architecture: 'convergent-v02', selectors: {} }),
+    /recovery=strong-coordinator/,
+  );
+});
+
 test('Wilson interval remains bounded and reflects small-n uncertainty', () => {
   const oneOfTwo = wilsonInterval(1, 2);
   assert.ok(oneOfTwo.low > 0);
@@ -76,6 +87,7 @@ test('aggregate reports pass rate, average cost and observed cost per successful
   assert.equal(reviewer.n, 2);
   assert.equal(reviewer.passes, 2);
   assert.equal(reviewer.passRate, 1);
+  assert.equal(reviewer.recoveryPolicy, 'none');
   assert.equal(reviewer.averages.aiCredits, 15);
   assert.equal(reviewer.observedCostPerSuccess.aiCredits, 15);
   assert.deepEqual(reviewer.sourceRepetitions, [1, 2]);
