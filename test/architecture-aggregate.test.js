@@ -87,3 +87,26 @@ test('aggregate reports pass rate, average cost and observed cost per successful
   assert.equal(single.observedCostPerSuccess.aiCredits, 17);
   assert.equal(single.observedCostPerSuccess.modelCalls, 10);
 });
+
+test('missing accumulated AI-credit data is never treated as zero cost', () => {
+  const [group] = aggregateRuns([
+    {
+      repetition: 1,
+      architecture: 'copilot-default',
+      selectors: { defaultAgent: 'auto' },
+      oraclePass: false,
+      modelCalls: 10,
+      aiCredits: null,
+      hasAiCreditData: false,
+      premiumRequestCost: 10,
+      elapsedMs: 47,
+      inputTokens: 230,
+    },
+  ]);
+  assert.equal(group.creditDataComplete, false);
+  assert.equal(group.creditSamples, 0);
+  assert.equal(group.averages.aiCredits, null);
+  assert.equal(group.medians.aiCredits, null);
+  assert.equal(group.observedCostPerSuccess, null);
+  assert.equal(group.averages.premiumRequestCost, 10);
+});
