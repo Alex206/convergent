@@ -56,6 +56,7 @@ function actualModels(result) {
       modelId: entry.modelId,
       modelName: entry.modelName,
       reasoningEffort: entry.reasoningEffort,
+      routedModels: Array.isArray(entry.routedModels) ? [...entry.routedModels] : [],
     }));
   }
   return (result?.usage?.agents ?? []).map((agent) => ({
@@ -64,6 +65,7 @@ function actualModels(result) {
     modelId: agent.modelId ?? null,
     modelName: agent.model ?? null,
     reasoningEffort: null,
+    routedModels: [],
   }));
 }
 
@@ -78,6 +80,7 @@ function summarizeArm(dir) {
   const events = eventStats(findEventsFile(root));
   const usage = result.usage ?? {};
   const budget = result.budget ?? {};
+  const hasAiCreditData = usage.hasCreditData !== false;
 
   return {
     architecture: result.architecture?.id ?? path.basename(root),
@@ -95,7 +98,9 @@ function summarizeArm(dir) {
     toolCalls: Number(efficiency.toolCalls ?? 0),
     turns: Number(usage.turns ?? 0),
     elapsedMs: Number(usage.elapsedMs ?? 0),
-    aiCredits: Number(usage.aiCredits ?? 0),
+    hasAiCreditData,
+    aiCredits: hasAiCreditData ? Number(usage.aiCredits ?? 0) : null,
+    premiumRequestCost: Number(usage.premiumRequestCost ?? 0),
     inputTokens: Number(usage.inputTokens ?? 0),
     outputTokens: Number(usage.outputTokens ?? 0),
     reasoningTokens: Number(usage.reasoningTokens ?? 0),
@@ -120,7 +125,7 @@ function csvCell(value) {
 function toCsv(rows) {
   const columns = [
     'architecture', 'oraclePass', 'oracleChecksPassed', 'oracleChecksTotal',
-    'modelCalls', 'promptSends', 'toolCalls', 'turns', 'elapsedMs', 'aiCredits',
+    'modelCalls', 'promptSends', 'toolCalls', 'turns', 'elapsedMs', 'hasAiCreditData', 'aiCredits', 'premiumRequestCost',
     'inputTokens', 'outputTokens', 'reasoningTokens', 'cacheReadTokens', 'cacheWriteTokens',
     'maxContextTokens', 'chatRequestDelta', 'reviewerCycles', 'reviewerFindings',
     'workerPasses', 'workerChangedPasses', 'convergenceEvents', 'recoveryReports',
