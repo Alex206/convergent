@@ -13,7 +13,11 @@ const {
   queueRecoveryInstruction,
 } = require('../orchestrator/recovery-engine');
 const { formatTaskChangeManifest } = require('../orchestrator/task-change-manifest');
-const { SessionFactory } = require('../copilot/session-factory');
+const { ExperimentalSessionFactory } = require('./experimental-session-factory');
+const {
+  OperatorCredentialGuard,
+  reconcileCredentialIntegrityReport,
+} = require('./operator-credential-guard');
 
 const ARCHITECTURES = Object.freeze({
   SINGLE_AGENT: 'single-agent',
@@ -167,6 +171,9 @@ class ExperimentalTopologyEngine extends RecoveryConvergentEngine {
     this.maxExperimentalRecoveryAttempts = Math.max(1, Number(options.maxExperimentalRecoveryAttempts) || 2);
     this.experimentalRoute = options.experimentalRoute ?? 'standard';
     this.experimentalRisk = options.experimentalRisk ?? 'medium';
+    this.operatorCredentialGuard = new OperatorCredentialGuard({
+      environment: options.environment ?? process.env,
+    });
     if (
       this.recoveryPolicy !== RECOVERY_POLICIES.NONE
       && [ARCHITECTURES.PEER_COMPETITION, ARCHITECTURES.PEER_COMPETITION_REVIEWER].includes(this.architecture)
@@ -180,7 +187,7 @@ class ExperimentalTopologyEngine extends RecoveryConvergentEngine {
   }
 
   createFactory() {
-    return new SessionFactory({
+    return new ExperimentalSessionFactory({
       client: this.client,
       sdk: this.sdk,
       workspace: this.workspace,
@@ -191,7 +198,30 @@ class ExperimentalTopologyEngine extends RecoveryConvergentEngine {
       usage: this.usage,
       runId: this.runId,
       reasoningMode: this.reasoningMode,
+      operatorCredentialGuard: this.operatorCredentialGuard,
     });
+  }
+
+  async consultRecoveryCoordinator(...args) {
+    const decision = await super.consultRecoveryCoordinator(...args);
+    const authorized = this.operatorCredentialGuard.authorizeFromOperatorGuidance(decision.guidance);
+    if (authorized.length) {
+      this.stats.operatorCredentialAuthorizations = (this.stats.operatorCredentialAuthorizations ?? 0) + authorized.length;
+      this.ui?.log?.(`Operator credential context authorized validation use for: ${authorized.join(', ')}.`);
+    }
+    return decision;
+  }
+
+  async runWorkerPass(worker, ...args) {
+    const result = await super.runWorkerPass(worker, ...args);
+    const violations = this.operatorCredentialGuard.consumeViolations(worker.name);
+    const reconciled = reconcileCredentialIntegrityReport(result.report, violations, `Worker ${worker.name}`);
+    if (reconciled.correction) this.ui?.log?.(reconciled.correction);
+    return {
+      ...result,
+      report: reconciled.report,
+      credentialIntegrityCorrection: reconciled.correction,
+    };
   }
 
   async reviewPass(reviewer, task, implementationPass, reviewCycle, routing, taskContext) {
@@ -220,8 +250,11 @@ class ExperimentalTopologyEngine extends RecoveryConvergentEngine {
     const afterReview = await this.revisionProvider(this.workspace);
     const usage = await this.finishTurn(reviewer, startedAt);
     if (beforeReview !== afterReview) throw new Error('Strong reviewer changed the workspace despite the read-only contract.');
-    this.ui.reviewResult?.(review, reviewCycle, { durationMs: Date.now() - startedAt, usage });
-    return review;
+    const violations = this.operatorCredentialGuard.consumeViolations('Strong reviewer');
+    const reconciled = reconcileCredentialIntegrityReport(review, violations, 'Strong reviewer');
+    if (reconciled.correction) this.ui?.log?.(reconciled.correction);
+    this.ui.reviewResult?.(reconciled.report, reviewCycle, { durationMs: Date.now() - startedAt, usage });
+    return reconciled.report;
   }
 
   async recoverBlockedImplementer(worker, task, blockedPass, routing, taskContext, label = 'Implementer') {
