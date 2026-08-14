@@ -8,6 +8,17 @@ function deniesBlockerLanguage(value) {
   return /\b(?:not|no longer|was not|is not)\s+blocked\b|\bno\s+blockers?\b/i.test(value);
 }
 
+function explicitValidationSuccess(value) {
+  const candidate = text(value);
+  return /\b(?:required\s+|external\s+)?(?:validator|validation|check)\b.{0,50}\b(?:passes|passed|succeeds|succeeded|successful|clean)\b/i.test(candidate)
+    || /\b(?:passes|passed|succeeds|succeeded|successful|clean)\b.{0,30}\b(?:required\s+|external\s+)?(?:validator|validation|check)\b/i.test(candidate);
+}
+
+function strongUnresolvedBlockerLanguage(value) {
+  const candidate = text(value);
+  return /\b(?:blocked|blocker|unavailable|not configured|unset|prerequisite|failed|failure|error|non[- ]zero)\b|\bexit(?:ed| code)?\s+[1-9]\d*\b/i.test(candidate);
+}
+
 function namedCredentialPrerequisite(value) {
   const candidate = text(value);
   if (!candidate) return false;
@@ -20,14 +31,23 @@ function validationBlockerEvidence(value) {
   const candidate = text(value);
   if (!candidate || deniesBlockerLanguage(candidate)) return false;
   if (/\bBLOCKED\s*:/i.test(candidate)) return true;
-  if (namedCredentialPrerequisite(candidate)) return true;
+
+  const successful = explicitValidationSuccess(candidate);
+  const strongUnresolved = strongUnresolvedBlockerLanguage(candidate);
+
+  if (namedCredentialPrerequisite(candidate)) {
+    if (successful && !strongUnresolved) return false;
+    return true;
+  }
   if (/\bblocked as expected\b/i.test(candidate)
     && /\b(?:missing|unavailable|not configured|unset|required|prerequisite|credential|token|secret|environment)\b/i.test(candidate)) {
     return true;
   }
   const validationContext = /\b(?:required|external)\b.{0,80}\b(?:validation|validator|check)\b|\b(?:validation|validator|check)\b.{0,80}\b(?:required|external)\b/i;
-  const unresolved = /\b(?:blocked|blocker|unavailable|not configured|missing|unset|prerequisite|non[- ]zero)\b|\bexit(?:ed| code)?\s+[1-9]\d*\b/i;
-  return validationContext.test(candidate) && unresolved.test(candidate);
+  const unresolved = /\b(?:blocked|blocker|unavailable|not configured|missing|unset|prerequisite|failed|failure|error|non[- ]zero)\b|\bexit(?:ed| code)?\s+[1-9]\d*\b/i;
+  if (!validationContext.test(candidate) || !unresolved.test(candidate)) return false;
+  if (successful && !strongUnresolved) return false;
+  return true;
 }
 
 function validationIdentity(value) {
@@ -127,6 +147,8 @@ function reconcileExplicitValidationBlocker(report = {}) {
 }
 
 module.exports = {
+  explicitValidationSuccess,
+  strongUnresolvedBlockerLanguage,
   namedCredentialPrerequisite,
   validationBlockerEvidence,
   validationIdentity,
