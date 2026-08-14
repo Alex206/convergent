@@ -321,7 +321,7 @@ class ConvergentEngine {
       this.checkCancelled();
       const task = plan.tasks[index];
       const routing = routings[index];
-      const policy = routePolicy(routing.route, routing.risk);
+      const policy = routePolicy(routing.route, routing.risk, routing.architecture);
       this.ui.taskStarted(task, index + 1, plan.tasks.length, routing, policy);
 
       if (routing.route === 'read_only') {

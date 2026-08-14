@@ -9,6 +9,7 @@ const {
 } = require('./report-blocker');
 const { pauseWorkflow } = require('./control');
 const { SessionFactory } = require('../copilot/session-factory');
+const { runArchitectureAssessment, formatArchitectureAssessment } = require('./architecture-advisor');
 
 function checkpointPass(pass) {
   if (!pass) return null;
@@ -51,6 +52,16 @@ function appendTaskChangeManifestPrompt(prompt, manifest) {
   ].join('\n');
 }
 
+function taskWithArchitectureAssessment(task, assessment) {
+  if (!assessment) return task;
+  return {
+    ...task,
+    description: [task.description, '', formatArchitectureAssessment(assessment)]
+      .filter(Boolean)
+      .join('\n'),
+  };
+}
+
 class RecoveryConvergentEngine extends ResumableConvergentEngine {
   constructor(options) {
     super(options);
@@ -74,10 +85,34 @@ class RecoveryConvergentEngine extends ResumableConvergentEngine {
 
   async runTask(factory, task, taskSessionKey, routing, taskResumeState = null) {
     const previousContext = this.activeTaskChangeContext;
+    const savedAssessment = taskResumeState?.routing?.architectureAssessment ?? null;
+    let effectiveRouting = savedAssessment
+      ? { ...routing, architectureAssessment: savedAssessment }
+      : { ...routing };
+
+    if (effectiveRouting.needsArchitect && !effectiveRouting.architectureAssessment) {
+      const assessment = await runArchitectureAssessment(this, factory, task, effectiveRouting);
+      effectiveRouting = { ...effectiveRouting, architectureAssessment: assessment };
+      await this.saveTaskCheckpoint({
+        stage: 'architecture_assessed',
+        routing: effectiveRouting,
+      });
+    }
+
+    const effectiveTask = taskWithArchitectureAssessment(
+      task,
+      effectiveRouting.architectureAssessment,
+    );
     const taskContext = await this.createTaskContext(factory);
     this.activeTaskChangeContext = taskContext;
     try {
-      return await super.runTask(factory, task, taskSessionKey, routing, taskResumeState);
+      return await super.runTask(
+        factory,
+        effectiveTask,
+        taskSessionKey,
+        effectiveRouting,
+        taskResumeState,
+      );
     } finally {
       this.activeTaskChangeContext = previousContext;
     }
@@ -302,4 +337,5 @@ module.exports = {
   RecoveryConvergentEngine,
   queueRecoveryInstruction,
   appendTaskChangeManifestPrompt,
+  taskWithArchitectureAssessment,
 };

@@ -607,7 +607,7 @@ class ResumableConvergentEngine extends ConvergentEngine {
       this.checkCancelled();
       const task = plan.tasks[index];
       const routing = routings[index];
-      const policy = routePolicy(routing.route, routing.risk);
+      const policy = routePolicy(routing.route, routing.risk, routing.architecture);
 
       let taskResumeState = null;
       if (resumeState?.currentTaskIndex === index && resumeState.taskState) {
