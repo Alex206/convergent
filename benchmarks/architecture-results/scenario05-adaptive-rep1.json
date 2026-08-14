@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "benchmark": "scenario05-preexisting-workspace-state",
+  "variant": "production-cost-candidate",
+  "repetition": 1,
+  "targetRepository": "Alex206/convergent-test-repo",
+  "targetSha": "1f38b2606f306ef4902d6159e8c9b7f3d8fe9aef",
+  "sourceRun": {
+    "workflowRunId": 31783589875,
+    "artifactId": 9212622196,
+    "artifactDigest": "sha256:718828e97a56f26cde7a38b210feaf0c488ce2e09ba0e30a47afeede088156cc",
+    "harnessSha": "7e73a32f19984e13890e2f8a58643790732f0b0d"
+  },
+  "run": {
+    "architecture": "implementer-reviewer",
+    "recoveryPolicy": "strong-coordinator",
+    "workerASelector": "adaptive",
+    "experimentalRisk": "low",
+    "reviewerSelector": "strong",
+    "runStatus": "complete",
+    "oraclePass": true,
+    "oracleChecksPassed": 9,
+    "oracleChecksTotal": 9,
+    "modelCalls": 11,
+    "elapsedMs": 21386,
+    "aiCredits": 4.496724,
+    "inputTokens": 123615,
+    "outputTokens": 1434,
+    "reasoningTokens": 195,
+    "cacheReadTokens": 97887,
+    "cacheWriteTokens": 25695,
+    "actualRoleModels": [
+      { "agent": "Worker A", "role": "workerA", "modelId": "gpt-5.6-luna", "reasoningEffort": "low" },
+      { "agent": "Strong reviewer", "role": "reviewer", "modelId": "gpt-5.6-terra", "reasoningEffort": "low" }
+    ]
+  },
+  "comparisonToMatchedScenario05Rep1": {
+    "controlledTerraImplementerReviewer": {
+      "oraclePass": true,
+      "modelCalls": 10,
+      "aiCredits": 10.23286,
+      "inputTokens": 127650,
+      "elapsedMs": 19405
+    },
+    "releasedV02": {
+      "oraclePass": true,
+      "modelCalls": 21,
+      "aiCredits": 12.511227,
+      "inputTokens": 224552,
+      "elapsedMs": 45818
+    },
+    "adaptiveImplementerReviewerRelativeToReleasedV02": {
+      "modelCallsReductionPercent": 47.619,
+      "aiCreditsReductionPercent": 64.0585,
+      "inputTokensReductionPercent": 44.9504,
+      "wallTimeReductionPercent": 53.324
+    },
+    "adaptiveImplementerReviewerRelativeToTerraImplementerReviewer": {
+      "modelCallsChangePercent": 10.0,
+      "aiCreditsReductionPercent": 56.056,
+      "inputTokensReductionPercent": 3.161,
+      "wallTimeChangePercent": 10.2087
+    }
+  },
+  "interpretation": [
+    "Adaptive routing selected GPT-5.6 Luna for the low-risk implementer while retaining GPT-5.6 Terra for independent review, and the full Scenario 05 behavior/workspace-safety oracle still passed.",
+    "Compared with the matched released-v0.2 Scenario 05 run, the production-cost candidate used about 64% fewer AI credits, 48% fewer model calls, 45% fewer input tokens, and 53% less wall time.",
+    "Compared with the controlled Terra/Terra implementer-reviewer arm, adaptive routing cut credits by about 56% while using similar tokens and one extra model call; the stochastic wall time was about 10% higher.",
+    "This supports separating topology policy from model policy: a simple implementer-reviewer topology can keep an economical adaptive implementer while reserving the strongest model for independent review and conditional recovery."
+  ]
+}
