@@ -1,0 +1,94 @@
+{
+  "schemaVersion": 1,
+  "benchmark": "scenario01-small-duration-parser",
+  "repetition": 1,
+  "targetRepository": "Alex206/convergent-test-repo",
+  "targetSha": "1f38b2606f306ef4902d6159e8c9b7f3d8fe9aef",
+  "sourceRun": {
+    "workflowRunId": 31783780708,
+    "artifactId": 9212738158,
+    "artifactDigest": "sha256:5a36734af3d5a80ba15cd73c6ff03e65796736603774b95b3095d7b80898dfe3",
+    "harnessSha": "faf6b1c7c1bb0f5dcb0084a89b62b2a63aaf567d"
+  },
+  "externalOracle": {
+    "checks": [
+      "parse_duration is publicly exported and handles seconds/minutes/hours plus surrounding whitespace",
+      "zero, negative, malformed, and unsupported inputs raise ValueError",
+      "complete unittest suite passes"
+    ]
+  },
+  "runs": [
+    {
+      "arm": "adaptive-single-agent",
+      "architecture": "single-agent",
+      "recoveryPolicy": "strong-coordinator",
+      "runStatus": "complete",
+      "workspaceOraclePass": true,
+      "targetUnitTests": "15/15 passed",
+      "modelCalls": 13,
+      "aiCredits": 4.350894,
+      "inputTokens": 154092,
+      "elapsedMs": 28152,
+      "actualRoleModels": [
+        { "agent": "Worker A", "role": "workerA", "modelId": "gpt-5.6-luna", "reasoningEffort": "low" },
+        { "agent": "Recovery coordinator", "role": "conditional-recovery", "modelId": "gpt-5.6-terra", "reasoningEffort": "medium" }
+      ],
+      "trajectoryFinding": "Worker A's first structured report said BLOCKED even though its summary said the parser was implemented/exported and its only validation evidence said all 15 tests passed. A strong recovery retry then returned CLEAN without a substantive implementation blocker.",
+      "classification": "correct-workspace-with-spurious-blocked-recovery"
+    },
+    {
+      "arm": "adaptive-implementer-reviewer",
+      "architecture": "implementer-reviewer",
+      "recoveryPolicy": "strong-coordinator",
+      "runStatus": "failed",
+      "workspaceOraclePass": true,
+      "targetUnitTests": "15/15 passed",
+      "modelCalls": 18,
+      "aiCredits": 7.211293,
+      "inputTokens": 222957,
+      "elapsedMs": 41598,
+      "actualRoleModels": [
+        { "agent": "Worker A", "role": "workerA", "modelId": "gpt-5.6-luna", "reasoningEffort": "low" },
+        { "agent": "Strong reviewer", "role": "reviewer", "modelId": "gpt-5.6-terra", "reasoningEffort": "low" },
+        { "agent": "Recovery coordinator", "role": "conditional-recovery", "modelId": "gpt-5.6-terra", "reasoningEffort": "medium" }
+      ],
+      "trajectoryFinding": "The implementation was externally correct, but Worker A returned the same semantically unsupported BLOCKED verdict through two recovery retries despite repeatedly stating that all requirements were satisfied, tests passed, and no actionable issues remained. The engine hit the bounded recovery-attempt cap before independent review could become the normal acceptance gate.",
+      "classification": "spurious-blocked-recovery-loop"
+    },
+    {
+      "arm": "released-v02-reference",
+      "architecture": "convergent-v02",
+      "runStatus": "complete",
+      "workspaceOraclePass": true,
+      "targetUnitTests": "16/16 passed",
+      "modelCalls": 22,
+      "aiCredits": 13.211608,
+      "inputTokens": 256369,
+      "elapsedMs": 49561,
+      "actualRoleModels": [
+        { "agent": "Coordinator", "role": "coordinator", "modelId": "gpt-5.6-terra", "reasoningEffort": "medium" },
+        { "agent": "Worker A", "role": "workerA", "modelId": "gpt-5.6-luna", "reasoningEffort": "low" },
+        { "agent": "Worker B", "role": "workerB", "modelId": "gpt-5.4-mini", "reasoningEffort": "low" },
+        { "agent": "Strong reviewer", "role": "reviewer", "modelId": "gpt-5.6-terra", "reasoningEffort": "low" },
+        { "agent": "Recovery coordinator", "role": "recovery-coordinator", "modelId": "gpt-5.6-terra", "reasoningEffort": "medium" }
+      ],
+      "trajectoryFinding": "Worker A emitted the same unsupported BLOCKED shape after a correct implementation. Released v0.2 survived by spending a recovery-coordinator decision and handing off to Worker B, after which peer convergence and strong review completed.",
+      "classification": "correct-via-peer-escape-from-spurious-blocked"
+    }
+  ],
+  "comparison": {
+    "singleAgentRelativeToReleasedV02": {
+      "modelCallsReductionPercent": 40.9091,
+      "aiCreditsReductionPercent": 67.0678,
+      "inputTokensReductionPercent": 39.8952,
+      "wallTimeReductionPercent": 43.1977,
+      "bothWorkspaceOraclesPass": true
+    }
+  },
+  "interpretation": [
+    "For this deliberately small task, the adaptive single-agent path was externally correct and dramatically cheaper than released v0.2 even after paying for one unnecessary recovery turn.",
+    "All three initial Worker A sessions used GPT-5.6 Luna and produced the same contradictory BLOCKED pattern despite completion/no-issue summaries and passing checks. This points to a structured-report semantic-integrity problem rather than an implementation-quality problem.",
+    "The released peer topology's apparent robustness partly came from escaping a noisy agent verdict through another agent, which is much more expensive than deterministically reconciling a self-contradictory structured report.",
+    "A conservative experimental report-integrity invariant should therefore be tested before using this repetition to argue that peer/recovery agents are intrinsically required for trivial work."
+  ]
+}
