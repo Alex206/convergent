@@ -1,0 +1,250 @@
+name: Temporary Scenario 06 Architecture Probe
+
+on:
+  pull_request:
+    types:
+      - synchronize
+
+jobs:
+  compare:
+    if: github.event.pull_request.head.ref == 'agent/architecture-benchmark-matrix'
+    runs-on: ubuntu-latest
+    timeout-minutes: 22
+    permissions:
+      contents: read
+    env:
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+      COPILOT_PLUGIN_DIR_ONLY: 'true'
+      BENCHMARK_REPO_TOKEN: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+      TARGET_SHA: 8b4f92f0a06cb1dbbd128f5e87e009b0be66c8cb
+      OUTPUT_ROOT: /tmp/scenario06-architecture
+      CONVERGENT_HEADLESS_ANSWERS_JSON: '[]'
+    steps:
+      - name: Require benchmark credentials
+        shell: bash
+        run: |
+          test -n "${COPILOT_GITHUB_TOKEN}" || exit 2
+          test -n "${BENCHMARK_REPO_TOKEN}" || exit 2
+      - name: Checkout Convergent
+        uses: actions/checkout@v6
+      - name: Checkout economical target
+        uses: actions/checkout@v6
+        with:
+          repository: Alex206/convergent-test-repo
+          ref: ${{ env.TARGET_SHA }}
+          path: target-economical
+          token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+      - name: Checkout v0.2 target
+        uses: actions/checkout@v6
+        with:
+          repository: Alex206/convergent-test-repo
+          ref: ${{ env.TARGET_SHA }}
+          path: target-v02
+          token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - run: npm ci
+
+      - name: Run economical Luna implementer plus Terra reviewer
+        id: economical
+        continue-on-error: true
+        timeout-minutes: 8
+        shell: bash
+        run: |
+          mkdir -p "${OUTPUT_ROOT}/economical-a1"
+          set +e
+          node src/headless/architecture-cli.js \
+            --workspace "${GITHUB_WORKSPACE}/target-economical" \
+            --prompt-file "${GITHUB_WORKSPACE}/target-economical/benchmarks/06-task-environment-overrides.md" \
+            --output-dir "${OUTPUT_ROOT}/economical-a1" \
+            --architecture implementer-reviewer \
+            --recovery-policy strong-coordinator \
+            --flow fast \
+            --worker-a balanced-a \
+            --reviewer strong \
+            --experimental-risk medium \
+            --audit-level full \
+            --limit-policy pause \
+            --max-model-calls 42 \
+            --max-model-calls-per-turn 10 \
+            --max-chat-requests 14 \
+            --max-ai-credits 0 \
+            2>&1 | tee "${OUTPUT_ROOT}/economical-a1/runner.log"
+          code=${PIPESTATUS[0]}
+          printf '{"runExit":%s}\n' "${code}" > "${OUTPUT_ROOT}/economical-a1/arm-status.json"
+          exit "${code}"
+
+      - name: Run released v0.2 reference
+        id: v02
+        continue-on-error: true
+        timeout-minutes: 9
+        shell: bash
+        run: |
+          mkdir -p "${OUTPUT_ROOT}/convergent-v02"
+          set +e
+          node src/headless/architecture-cli.js \
+            --workspace "${GITHUB_WORKSPACE}/target-v02" \
+            --prompt-file "${GITHUB_WORKSPACE}/target-v02/benchmarks/06-task-environment-overrides.md" \
+            --output-dir "${OUTPUT_ROOT}/convergent-v02" \
+            --architecture convergent-v02 \
+            --flow fast \
+            --coordinator strong \
+            --worker-a adaptive \
+            --worker-b adaptive-diverse \
+            --reviewer strong \
+            --audit-level full \
+            --limit-policy pause \
+            --max-model-calls 42 \
+            --max-model-calls-per-turn 10 \
+            --max-chat-requests 14 \
+            --max-ai-credits 0 \
+            2>&1 | tee "${OUTPUT_ROOT}/convergent-v02/runner.log"
+          code=${PIPESTATUS[0]}
+          printf '{"runExit":%s}\n' "${code}" > "${OUTPUT_ROOT}/convergent-v02/arm-status.json"
+          exit "${code}"
+
+      - name: Run independent Scenario 06 oracle
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          for pair in "economical-a1 target-economical" "convergent-v02 target-v02"; do
+            set -- ${pair}; arm="$1"; target="$2"; out="${OUTPUT_ROOT}/${arm}"
+            TARGET="${GITHUB_WORKSPACE}/${target}" OUTPUT="${out}/scenario06-acceptance.json" python3 - <<'PY'
+          import json, os, subprocess, sys
+          root = os.environ['TARGET']
+          probe = r'''
+          import json, os, sys
+          from dataclasses import fields
+          from taskflow import Attempt, ConfigError, TaskSpec, build_attempts, parse_task, plan_summary, task_summary
+          result = {"checks": []}
+          def check(name, fn):
+              try:
+                  fn(); result["checks"].append({"name": name, "ok": True})
+              except Exception as exc:
+                  result["checks"].append({"name": name, "ok": False, "error": f"{type(exc).__name__}: {exc}"})
+          def model_compatibility():
+              assert fields(TaskSpec)[-1].name == "environment"
+              old = TaskSpec("build", ("echo", "ok"), 30, 2, ("ci",), False)
+              assert old.environment == ()
+              parsed = parse_task({"name":"plain","command":["echo"]})
+              assert parsed.environment == ()
+          def parser_contract():
+              data = {
+                  "name":"env-task",
+                  "command":["python","tool.py"],
+                  "retries":2,
+                  "environment": {
+                      " FOO ": "  value with spaces  ",
+                      "EMPTY": "",
+                      "API_TOKEN": "super-secret-token-value",
+                  },
+              }
+              task = parse_task(data)
+              assert task.environment == (
+                  ("FOO", "  value with spaces  "),
+                  ("EMPTY", ""),
+                  ("API_TOKEN", "super-secret-token-value"),
+              ), task.environment
+              invalid = [
+                  {"environment": []},
+                  {"environment": {"": "x"}},
+                  {"environment": {"   ": "x"}},
+                  {"environment": {1: "x"}},
+                  {"environment": {"FOO": 7}},
+                  {"environment": {"FOO": "one", " FOO ": "two"}},
+              ]
+              for extra in invalid:
+                  payload = {"name":"bad","command":["echo"], **extra}
+                  try: parse_task(payload)
+                  except ConfigError: pass
+                  else: raise AssertionError(f"expected ConfigError for {extra!r}")
+          def attempt_contract():
+              assert fields(Attempt)[-1].name == "environment"
+              direct = Attempt(1, ("echo",), 15)
+              assert direct.environment == ()
+              task = parse_task({
+                  "name":"retry",
+                  "command":["echo"],
+                  "retries":2,
+                  "environment":{"A":"1","B":" two "},
+              })
+              attempts = build_attempts(task)
+              assert [a.number for a in attempts] == [1,2,3]
+              assert all(a.environment == (("A","1"),("B"," two ")) for a in attempts)
+          def reporting_contract():
+              secret = "super-secret-token-value"
+              task = parse_task({
+                  "name":"secure",
+                  "command":["echo"],
+                  "environment":{"FIRST":secret,"SECOND":"  private value  "},
+              })
+              summary = task_summary(task)
+              plan = plan_summary([task])
+              assert "env=FIRST,SECOND" in summary, summary
+              assert summary.index("FIRST") < summary.index("SECOND")
+              assert secret not in summary and secret not in plan
+              assert "private value" not in summary and "private value" not in plan
+              assert "env=-" in task_summary(TaskSpec("plain", ("echo",)))
+          def no_process_environment_mutation():
+              key = "CONVERGENT_SCENARIO06_SHOULD_NOT_EXIST_7FBD"
+              assert key not in os.environ
+              task = parse_task({"name":"x","command":["echo"],"environment":{key:"value"}})
+              build_attempts(task); task_summary(task); plan_summary([task])
+              assert key not in os.environ
+          check("TaskSpec field/default preserves old positional construction", model_compatibility)
+          check("config parser normalizes names, preserves values/order, and rejects invalid mappings", parser_contract)
+          check("Attempt compatibility and retry propagation", attempt_contract)
+          check("reporting exposes names/order but never values", reporting_contract)
+          check("feature never mutates process environment", no_process_environment_mutation)
+          result["ok"] = all(c["ok"] for c in result["checks"])
+          print(json.dumps(result)); sys.exit(0 if result["ok"] else 1)
+          '''
+          completed = subprocess.run([sys.executable, '-B', '-c', probe], cwd=root, text=True, capture_output=True)
+          try: behavior = json.loads(completed.stdout.strip() or '{}')
+          except Exception: behavior = {"ok": False, "checks": [], "parseError": completed.stdout, "stderr": completed.stderr}
+          tests = subprocess.run([sys.executable, '-B', '-m', 'unittest', 'discover', '-s', 'tests', '-v'], cwd=root, text=True, capture_output=True)
+          report = {"ok": bool(behavior.get("ok")) and tests.returncode == 0, "behavior": behavior, "unitTestsExit": tests.returncode, "unitTestsTail": (tests.stdout + tests.stderr)[-6000:]}
+          with open(os.environ['OUTPUT'], 'w', encoding='utf8') as f: json.dump(report, f, indent=2); f.write('\n')
+          sys.exit(0 if report["ok"] else 1)
+          PY
+            events="$(find "${out}/audit" -name events.jsonl -type f 2>/dev/null | head -n 1)"
+            if [[ -n "${events}" ]]; then node src/headless/efficiency-summary.js "${events}" "${out}/efficiency-summary.json" > "${out}/efficiency-summary.log" 2>&1 || true; fi
+          done
+          exit 0
+
+      - name: Build compact comparison
+        if: always()
+        shell: bash
+        run: |
+          OUTPUT_ROOT="${OUTPUT_ROOT}" node - <<'NODE' | tee "${OUTPUT_ROOT}/summary.log"
+          const fs = require('node:fs'); const path = require('node:path'); const root = process.env.OUTPUT_ROOT;
+          const runs = ['economical-a1', 'convergent-v02'].map((arm) => {
+            const result = JSON.parse(fs.readFileSync(path.join(root, arm, 'result.json'), 'utf8'));
+            const acceptance = JSON.parse(fs.readFileSync(path.join(root, arm, 'scenario06-acceptance.json'), 'utf8'));
+            const status = JSON.parse(fs.readFileSync(path.join(root, arm, 'arm-status.json'), 'utf8'));
+            return { arm, architecture: result.architecture?.id, runStatus: result.status, runExit: status.runExit, oraclePass: acceptance.ok === true, oracleChecksPassed: (acceptance.behavior?.checks ?? []).filter((x) => x.ok).length, oracleChecksTotal: (acceptance.behavior?.checks ?? []).length, usage: result.usage, actualRoleModels: result.actualRoleModels, stats: result.stats, error: result.error };
+          });
+          const summary = { targetSha: process.env.TARGET_SHA, scenario: 6, runs }; fs.writeFileSync(path.join(root, 'summary.json'), JSON.stringify(summary, null, 2) + '\n'); console.log(JSON.stringify(summary, null, 2));
+          NODE
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scenario06-stage2-${{ github.run_number }}
+          path: /tmp/scenario06-architecture
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Report result
+        if: always()
+        shell: bash
+        run: |
+          SUMMARY="${OUTPUT_ROOT}/summary.json" node - <<'NODE'
+          const fs = require('node:fs'); const data = JSON.parse(fs.readFileSync(process.env.SUMMARY, 'utf8'));
+          for (const r of data.runs ?? []) console.log(`${r.arm}: status=${r.runStatus} oracle=${r.oraclePass} checks=${r.oracleChecksPassed}/${r.oracleChecksTotal} calls=${r.usage?.calls} credits=${r.usage?.aiCredits} input=${r.usage?.inputTokens} elapsedMs=${r.usage?.elapsedMs}`);
+          if ((data.runs ?? []).length !== 2) process.exit(1);
+          NODE
