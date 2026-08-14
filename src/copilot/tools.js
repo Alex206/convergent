@@ -34,6 +34,7 @@ function normalizePlanTask(value = {}) {
     acceptanceCriteria: normalizeStringList(task.acceptanceCriteria),
     route: toText(task.route).trim(),
     risk: toText(task.risk).trim(),
+    architectureSignificance: toText(task.architectureSignificance).trim(),
     routingReason: toText(task.routingReason).trim(),
     inspectionHints: normalizeStringList(task.inspectionHints).slice(0, 12),
     result: toText(task.result).trim(),
@@ -51,6 +52,7 @@ function normalizePlan(args = {}) {
 function validatePlan(plan) {
   const routes = new Set(['read_only', 'trivial', 'standard', 'high_risk']);
   const risks = new Set(['low', 'medium', 'high']);
+  const architectureSignificances = new Set(['low', 'medium', 'high']);
   if (!plan.summary) return 'Plan summary is required.';
   if (!plan.tasks.length) return 'Plan requires at least one task.';
 
@@ -71,6 +73,9 @@ function validatePlan(plan) {
     }
     if (!risks.has(task.risk)) {
       return `Task '${label}' requires top-level risk to be one of low, medium, high.`;
+    }
+    if (task.architectureSignificance && !architectureSignificances.has(task.architectureSignificance)) {
+      return `Task '${label}' architectureSignificance must be one of low, medium, high when provided.`;
     }
     if (!task.routingReason) {
       return `Task '${label}' requires a non-empty top-level routingReason.`;
@@ -277,6 +282,11 @@ function createPlanTool(defineTool, sink) {
               acceptanceCriteria: { type: 'array', items: { type: 'string' }, minItems: 1 },
               route: { type: 'string', enum: ['read_only', 'trivial', 'standard', 'high_risk'] },
               risk: { type: 'string', enum: ['low', 'medium', 'high'] },
+              architectureSignificance: {
+                type: 'string',
+                enum: ['low', 'medium', 'high'],
+                description: 'Structural significance independent from failure impact/risk. Use high only for subsystem/boundary/interface/ownership changes that justify a read-only software architect specialist.',
+              },
               routingReason: { type: 'string' },
               inspectionHints: {
                 type: 'array',
