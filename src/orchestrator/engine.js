@@ -4,6 +4,12 @@ const { workspaceRevision, assertGitRepository } = require('./revision');
 const { normalizeTaskRoute, routePolicy } = require('./routing');
 const { UsageTracker } = require('./usage');
 const { SessionFactory } = require('../copilot/session-factory');
+const { OperatorCredentialGuard, reconcileCredentialIntegrityReport } = require('../copilot/operator-credential-guard');
+const { reconcileUnsupportedBlockedReport } = require('./report-integrity');
+const {
+  reconcileExplicitValidationBlocker,
+  reconcileSupersededValidationBlocker,
+} = require('./report-blocker');
 const {
   captureWorkspaceChangeState,
   buildTaskChangeManifest,
@@ -128,6 +134,37 @@ function mutatingToolDelta(beforeSnapshot, afterSnapshot) {
   return Math.max(0, successfulMutatingToolCalls(afterSnapshot) - successfulMutatingToolCalls(beforeSnapshot));
 }
 
+function reconcileDeterministicIntegrity(report, {
+  changed = false,
+  role = 'Agent',
+  credentialViolations = [],
+  validationEvidence = [],
+} = {}) {
+  let current = report;
+  const corrections = [];
+
+  let result = reconcileCredentialIntegrityReport(current, credentialViolations, role);
+  current = result.report;
+  if (result.correction) corrections.push(result.correction);
+
+  result = reconcileExplicitValidationBlocker(current);
+  current = result.report;
+  if (result.correction) corrections.push(result.correction);
+
+  result = reconcileSupersededValidationBlocker(current, validationEvidence, { changed, role });
+  current = result.report;
+  if (result.correction) corrections.push(result.correction);
+
+  const consistency = reconcileUnsupportedBlockedReport(current, { changed, role });
+  current = consistency.report;
+  if (consistency.correction) corrections.push(consistency.correction);
+  return {
+    report: current,
+    correction: corrections.length ? corrections.join(' ') : null,
+    corrections,
+  };
+}
+
 function reconcileWorkerReport(report, changed, workerName, beforeSnapshot, afterSnapshot) {
   if (report.verdict === 'clean' && report.findings?.length) {
     throw new Error(`Worker ${workerName} reported CLEAN with actionable findings.`);
@@ -199,6 +236,7 @@ class ConvergentEngine {
     agentTurnTimeoutMs = 180_000,
     routingMode = 'adaptive',
     reasoningMode = 'adaptive',
+    operatorCredentialGuard = null,
     signal,
     revisionProvider = workspaceRevision,
     changeStateProvider = captureWorkspaceChangeState,
@@ -215,6 +253,7 @@ class ConvergentEngine {
     this.agentTurnTimeoutMs = agentTurnTimeoutMs;
     this.routingMode = routingMode;
     this.reasoningMode = reasoningMode;
+    this.operatorCredentialGuard = operatorCredentialGuard ?? new OperatorCredentialGuard();
     this.signal = signal;
     this.revisionProvider = revisionProvider;
     this.changeStateProvider = changeStateProvider;
@@ -265,11 +304,8 @@ class ConvergentEngine {
     }
   }
 
-  async run(userRequest) {
-    await assertGitRepository(this.workspace);
-    this.checkCancelled();
-
-    const factory = new SessionFactory({
+  sessionFactory() {
+    return new SessionFactory({
       client: this.client,
       sdk: this.sdk,
       workspace: this.workspace,
@@ -280,7 +316,15 @@ class ConvergentEngine {
       usage: this.usage,
       runId: this.runId,
       reasoningMode: this.reasoningMode,
+      operatorCredentialGuard: this.operatorCredentialGuard,
     });
+  }
+
+  async run(userRequest) {
+    await assertGitRepository(this.workspace);
+    this.checkCancelled();
+
+    const factory = this.sessionFactory();
 
     this.ui.phase('Planning', 'Coordinator is inspecting the repository, classifying risk, and choosing the proportionate workflow.');
     const coordinator = await factory.createCoordinator();
@@ -438,7 +482,7 @@ class ConvergentEngine {
       const beforeReview = await this.revisionProvider(this.workspace);
       const changeManifest = await this.currentTaskChangeManifest(taskContext);
       const startedAt = Date.now();
-      const review = await requireReport(
+      let review = await requireReport(
         reviewer.session,
         reviewer.sink,
         [
@@ -457,6 +501,16 @@ class ConvergentEngine {
         'report_review',
         this.agentTurnTimeoutMs,
       );
+      const reviewIntegrity = reconcileDeterministicIntegrity(review, {
+        changed: false,
+        role: 'Strong reviewer',
+        credentialViolations: this.operatorCredentialGuard?.consumeViolations('Strong reviewer') ?? [],
+        validationEvidence: evidence,
+      });
+      review = reviewIntegrity.report;
+      if (reviewIntegrity.correction) {
+        this.ui?.log?.(`Strong reviewer verdict reconciled by Convergent: ${reviewIntegrity.correction}`);
+      }
       const afterReview = await this.revisionProvider(this.workspace);
       const usage = await this.finishTurn(reviewer, startedAt);
       const durationMs = Date.now() - startedAt;
@@ -551,21 +605,29 @@ class ConvergentEngine {
     const usage = await this.finishTurn(worker, startedAt);
     const durationMs = Date.now() - startedAt;
     const changed = before !== after;
-    const reconciled = reconcileWorkerReport(submittedReport, changed, worker.name, beforeGuard, afterGuard);
+    const workspaceReconciled = reconcileWorkerReport(submittedReport, changed, worker.name, beforeGuard, afterGuard);
+    const integrityReconciled = reconcileDeterministicIntegrity(workspaceReconciled.report, {
+      changed,
+      role: `Worker ${worker.name}`,
+      credentialViolations: this.operatorCredentialGuard?.consumeViolations(`Worker ${worker.name}`) ?? [],
+      validationEvidence: peerPass?.revision === after ? evidenceFromPass(peerPass) : [],
+    });
+    const corrections = [workspaceReconciled.correction, integrityReconciled.correction].filter(Boolean);
+    const correction = corrections.length ? corrections.join(' ') : null;
     const changeManifest = await this.currentTaskChangeManifest(taskContext);
 
-    if (reconciled.correction) {
-      this.ui?.log?.(`Worker ${worker.name} verdict reconciled by Convergent: ${reconciled.correction}`);
+    if (correction) {
+      this.ui?.log?.(`Worker ${worker.name} verdict reconciled by Convergent: ${correction}`);
     }
 
     return {
       worker: worker.name,
-      report: reconciled.report,
+      report: integrityReconciled.report,
       changed,
       revision: after,
       durationMs,
       usage,
-      verdictCorrection: reconciled.correction,
+      verdictCorrection: correction,
       changeManifest,
     };
   }
@@ -598,6 +660,7 @@ module.exports = {
   successfulMutatingToolCalls,
   mutatingToolDelta,
   reconcileWorkerReport,
+  reconcileDeterministicIntegrity,
   sendAndCaptureReport,
   MAX_INSPECTION_HINTS,
 };

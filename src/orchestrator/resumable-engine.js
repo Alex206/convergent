@@ -11,7 +11,6 @@ const {
 } = require('./engine');
 const { assertGitRepository } = require('./revision');
 const { normalizeTaskRoute, routePolicy } = require('./routing');
-const { SessionFactory } = require('../copilot/session-factory');
 const { RESUME_STATE_VERSION, defaultStats } = require('./resume');
 const { pauseWorkflow } = require('./control');
 const { isWorkingTreeClean, createTaskCommit } = require('./task-commit');
@@ -515,18 +514,7 @@ class ResumableConvergentEngine extends ConvergentEngine {
     await assertGitRepository(this.workspace);
     this.checkCancelled();
 
-    const factory = new SessionFactory({
-      client: this.client,
-      sdk: this.sdk,
-      workspace: this.workspace,
-      models: this.models,
-      permissionHandler: this.permissionHandler,
-      userInputHandler: this.userInputHandler,
-      ui: this.ui,
-      usage: this.usage,
-      runId: this.runId,
-      reasoningMode: this.reasoningMode,
-    });
+    const factory = this.sessionFactory();
 
     let coordinator = null;
     let plan;

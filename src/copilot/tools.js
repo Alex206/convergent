@@ -83,17 +83,20 @@ function validatePlan(plan) {
 }
 
 function normalizePassReport(args = {}) {
-  const allowedVerdicts = new Set(['clean', 'changed', 'blocked']);
-  const verdict = allowedVerdicts.has(args.verdict) ? args.verdict : 'blocked';
+  const verdict = toText(args.verdict).trim().toLowerCase();
   return {
     verdict,
-    summary: toText(args.summary).trim() || (verdict === 'blocked' ? 'Agent returned an invalid structured verdict.' : ''),
+    summary: toText(args.summary).trim() || (verdict === 'blocked' ? 'Agent reported a blocker without a summary.' : ''),
     findings: normalizeStringList(args.findings),
     checks: normalizeStringList(args.checks),
   };
 }
 
 function validatePassReport(report) {
+  const allowedVerdicts = new Set(['clean', 'changed', 'blocked']);
+  if (!allowedVerdicts.has(report.verdict)) {
+    return `Pass report verdict '${report.verdict || '<empty>'}' is invalid; expected clean, changed, or blocked.`;
+  }
   if ((report.verdict === 'clean' || report.verdict === 'changed') && report.findings.length) {
     return `${report.verdict.toUpperCase()} requires findings=[] because findings are reserved for unresolved actionable issues. Put resolved issues, peer disagreements, and non-actionable observations in summary.`;
   }
@@ -116,8 +119,7 @@ function normalizeReviewFinding(value) {
 }
 
 function normalizeReviewReport(args = {}) {
-  const allowedVerdicts = new Set(['clean', 'findings', 'blocked']);
-  const verdict = allowedVerdicts.has(args.verdict) ? args.verdict : 'blocked';
+  const verdict = toText(args.verdict).trim().toLowerCase();
   const rawFindings = args.findings === undefined || args.findings === null || args.findings === ''
     ? []
     : Array.isArray(args.findings) ? args.findings : [args.findings];
@@ -130,6 +132,10 @@ function normalizeReviewReport(args = {}) {
 }
 
 function validateReviewReport(report) {
+  const allowedVerdicts = new Set(['clean', 'findings', 'blocked']);
+  if (!allowedVerdicts.has(report.verdict)) {
+    return `Review report verdict '${report.verdict || '<empty>'}' is invalid; expected clean, findings, or blocked.`;
+  }
   if (report.verdict === 'clean' && report.findings.length) {
     return 'CLEAN requires findings=[]. Put resolved/non-actionable observations in summary.';
   }

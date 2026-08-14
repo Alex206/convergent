@@ -3,12 +3,8 @@
 const { ResumableConvergentEngine } = require('./resumable-engine');
 const { requireReport, taskPrompt, formatValidationEvidence } = require('./engine');
 const { formatTaskChangeManifest } = require('./task-change-manifest');
-const {
-  reconcileExplicitValidationBlocker,
-  operatorPrerequisiteEvidence,
-} = require('./report-blocker');
+const { operatorPrerequisiteEvidence } = require('./report-blocker');
 const { pauseWorkflow } = require('./control');
-const { SessionFactory } = require('../copilot/session-factory');
 
 function checkpointPass(pass) {
   if (!pass) return null;
@@ -58,18 +54,7 @@ class RecoveryConvergentEngine extends ResumableConvergentEngine {
   }
 
   recoveryFactory() {
-    return new SessionFactory({
-      client: this.client,
-      sdk: this.sdk,
-      workspace: this.workspace,
-      models: this.models,
-      permissionHandler: this.permissionHandler,
-      userInputHandler: this.userInputHandler,
-      ui: this.ui,
-      usage: this.usage,
-      runId: this.runId,
-      reasoningMode: this.reasoningMode,
-    });
+    return this.sessionFactory();
   }
 
   async runTask(factory, task, taskSessionKey, routing, taskResumeState = null) {
@@ -84,7 +69,7 @@ class RecoveryConvergentEngine extends ResumableConvergentEngine {
   }
 
   async runWorkerPass(worker, task, mode, findings, peerPass = null, taskContext = null) {
-    const result = await super.runWorkerPass(
+    return super.runWorkerPass(
       worker,
       task,
       mode,
@@ -92,15 +77,6 @@ class RecoveryConvergentEngine extends ResumableConvergentEngine {
       peerPass,
       taskContext ?? this.activeTaskChangeContext,
     );
-    const reconciled = reconcileExplicitValidationBlocker(result.report);
-    if (reconciled.correction) {
-      this.ui?.log?.(`Worker ${worker.name} verdict reconciled by Convergent: ${reconciled.correction}`);
-    }
-    return {
-      ...result,
-      report: reconciled.report,
-      validationBlockerCorrection: reconciled.correction,
-    };
   }
 
   async consultRecoveryCoordinator(task, kind, detail, { allowPeer = false } = {}) {
@@ -193,8 +169,20 @@ class RecoveryConvergentEngine extends ResumableConvergentEngine {
       const guidance = [report.guidance, operatorAnswer ? `Operator context: ${operatorAnswer}` : '']
         .filter(Boolean)
         .join('\n');
+      const authorizedCredentialNames = this.operatorCredentialGuard?.authorizeFromOperatorGuidance(guidance) ?? [];
+      if (authorizedCredentialNames.length) {
+        this.ui?.log?.(`Operator recovery authorized credential variable name(s) for retry: ${authorizedCredentialNames.join(', ')}.`);
+      }
       this.ui?.log?.(`Recovery coordinator decision for ${kind} on ${task.id}: ${report.action}; ${report.rationale}`);
-      this.ui?.audit?.({ type: 'recovery_decision', taskId: task.id, kind, report, operatorAnswer });
+      this.ui?.audit?.({
+        type: 'recovery_decision',
+        taskId: task.id,
+        kind,
+        report,
+        operatorAnswer,
+        operatorContextProvided: Boolean(operatorAnswer),
+        authorizedCredentialNames,
+      });
       return { action: report.action, rationale: report.rationale, guidance };
     } finally {
       await coordinator.session.disconnect?.().catch(() => {});
