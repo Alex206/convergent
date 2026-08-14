@@ -4,6 +4,7 @@ const { ResumableConvergentEngine } = require('./resumable-engine');
 const { requireReport, taskPrompt, formatValidationEvidence } = require('./engine');
 const { formatTaskChangeManifest } = require('./task-change-manifest');
 const { operatorPrerequisiteEvidence } = require('./report-blocker');
+const { usesPeerConvergence } = require('./routing');
 const { pauseWorkflow } = require('./control');
 
 function checkpointPass(pass) {
@@ -83,7 +84,7 @@ class RecoveryConvergentEngine extends ResumableConvergentEngine {
     const factory = this.recoveryFactory();
     const coordinator = await factory.createRecoveryCoordinator(task.id, kind);
     this.sessions.push(coordinator.session);
-    const allowed = allowPeer ? 'peer, retry, ask_user, or pause' : 'retry, ask_user, or pause (peer is not available for this required reviewer gate)';
+    const allowed = allowPeer ? 'peer, retry, ask_user, or pause' : 'retry, ask_user, or pause (peer is not available for this recovery path)';
     let operatorAnswer = '';
 
     try {
@@ -204,14 +205,15 @@ class RecoveryConvergentEngine extends ResumableConvergentEngine {
       `Worker ${blockedWorker.name} could not fully complete or validate task ${task.id}. The current workspace fingerprint is preserved${result.changed ? ' and contains worker changes' : ''}; the strong coordinator will assess recovery before another expensive agent turn.`,
     );
 
+    const allowPeer = Boolean(peerWorker) && usesPeerConvergence(routing);
     const decision = await this.consultRecoveryCoordinator(task, `worker-${blockedWorker.name}`, {
       changed: result.changed,
       workspaceFingerprint: result.revision,
       summary: result.report?.summary,
       checks: result.report?.checks ?? [],
-    }, { allowPeer: true });
+    }, { allowPeer });
 
-    if (decision.action === 'peer') {
+    if (decision.action === 'peer' && allowPeer) {
       queueRecoveryInstruction(peerWorker.session, decision.guidance || decision.rationale);
       return { action: 'peer', guidance: decision.guidance };
     }

@@ -63,16 +63,26 @@ function normalizeTaskRoute(task, routingMode = 'adaptive') {
     reasons.push('read-only route requires the coordinator to provide a result');
   }
 
+  const peerConvergence = route === 'high_risk'
+    || (routingMode === 'full' && route !== 'read_only');
+
   return {
     route,
     risk,
+    peerConvergence,
     requestedRoute: requested,
     reason: [task?.routingReason, ...reasons].filter(Boolean).join('; '),
     overridden: route !== requested,
   };
 }
 
-function routePolicy(route, risk = 'medium') {
+function usesPeerConvergence(routing) {
+  if (!routing) return false;
+  if (typeof routing.peerConvergence === 'boolean') return routing.peerConvergence;
+  return routing.route === 'high_risk';
+}
+
+function routePolicy(route, risk = 'medium', peerConvergence = route === 'high_risk') {
   const normalizedRisk = normalizeRisk(risk);
   switch (route) {
     case 'read_only':
@@ -84,7 +94,7 @@ function routePolicy(route, risk = 'medium') {
       };
     case 'trivial':
       return {
-        description: 'Worker A implements a clearly text/documentation-only edit, then Worker B performs one independent review. Any B change escalates to the full standard workflow.',
+        description: 'Worker A implements a clearly text/documentation-only edit, then Worker B performs one independent review. Any B change escalates to the standard strong-review workflow.',
         workerMode: 'single_peer_review',
         strongReview: false,
         efforts: { workerA: 'low', workerB: 'low' },
@@ -98,9 +108,21 @@ function routePolicy(route, risk = 'medium') {
       };
     case 'standard':
     default:
+      if (peerConvergence) {
+        return {
+          description: 'Full-routing override: Worker A/B convergence plus persistent strong review.',
+          workerMode: 'converge',
+          strongReview: true,
+          efforts: {
+            workerA: 'low',
+            workerB: 'low',
+            reviewer: normalizedRisk === 'low' ? 'low' : 'medium',
+          },
+        };
+      }
       return {
-        description: 'Full A/B convergence plus persistent strong review.',
-        workerMode: 'converge',
+        description: 'Worker A implements, then an independent strong reviewer validates the exact current revision. Reviewer findings return to the same Worker A for bounded remediation and delta re-review.',
+        workerMode: 'implementer_review',
         strongReview: true,
         efforts: {
           workerA: 'low',
@@ -137,6 +159,7 @@ module.exports = {
   RISKS,
   normalizeTaskRoute,
   routePolicy,
+  usesPeerConvergence,
   chooseReasoningEffort,
   isClearlyTrivialChange,
   hasHighRiskSemantics,

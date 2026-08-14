@@ -1,7 +1,7 @@
 'use strict';
 
 const { workspaceRevision, assertGitRepository } = require('./revision');
-const { normalizeTaskRoute, routePolicy } = require('./routing');
+const { normalizeTaskRoute, routePolicy, usesPeerConvergence } = require('./routing');
 const { UsageTracker } = require('./usage');
 const { SessionFactory } = require('../copilot/session-factory');
 const { OperatorCredentialGuard, reconcileCredentialIntegrityReport } = require('../copilot/operator-credential-guard');
@@ -365,7 +365,7 @@ class ConvergentEngine {
       this.checkCancelled();
       const task = plan.tasks[index];
       const routing = routings[index];
-      const policy = routePolicy(routing.route, routing.risk);
+      const policy = routePolicy(routing.route, routing.risk, routing.peerConvergence);
       this.ui.taskStarted(task, index + 1, plan.tasks.length, routing, policy);
 
       if (routing.route === 'read_only') {
@@ -443,15 +443,16 @@ class ConvergentEngine {
     let workerB;
     let reviewer;
     const route = routing.route;
+    const peerConvergence = usesPeerConvergence(routing);
     try {
       workerA = await factory.createWorker(taskSessionKey, 'A', route, routing.risk);
-      workerB = await factory.createWorker(taskSessionKey, 'B', route, routing.risk);
+      if (peerConvergence) workerB = await factory.createWorker(taskSessionKey, 'B', route, routing.risk);
       reviewer = await factory.createReviewer(taskSessionKey, route, routing.risk);
       const taskContext = await this.createTaskContext(factory);
-      this.sessions.push(workerA.session, workerB.session, reviewer.session);
+      this.sessions.push(...[workerA?.session, workerB?.session, reviewer?.session].filter(Boolean));
       this.ui.agentConfiguration([
         { role: 'A', model: workerA.model.name ?? workerA.model.id, effort: workerA.reasoningEffort },
-        { role: 'B', model: workerB.model.name ?? workerB.model.id, effort: workerB.reasoningEffort },
+        ...(workerB ? [{ role: 'B', model: workerB.model.name ?? workerB.model.id, effort: workerB.reasoningEffort }] : []),
         { role: 'Strong reviewer', model: reviewer.model.name ?? reviewer.model.id, effort: reviewer.reasoningEffort },
       ]);
 
@@ -459,8 +460,12 @@ class ConvergentEngine {
       this.ui.passResult('A', initial.report, initial.changed, initial.revision, initial);
       if (initial.report.verdict === 'blocked') throw new Error(`Worker A is blocked: ${initial.report.summary}`);
 
-      const convergence = await this.convergeWorkers(task, workerA, workerB, workerB, initial, taskContext);
-      await this.runStrongReview(task, workerA, workerB, reviewer, convergence.evidence, routing, taskContext);
+      let evidence = evidenceFromPass(initial);
+      if (peerConvergence) {
+        const convergence = await this.convergeWorkers(task, workerA, workerB, workerB, initial, taskContext);
+        evidence = convergence.evidence;
+      }
+      await this.runStrongReview(task, workerA, workerB, reviewer, evidence, routing, taskContext);
       return { route, escalated: false };
     } finally {
       await this.disposeTaskSessions([workerA?.session, workerB?.session, reviewer?.session]);
@@ -477,6 +482,7 @@ class ConvergentEngine {
     taskContext = null,
   ) {
     let evidence = [...initialEvidence];
+    const peerConvergence = usesPeerConvergence(routing);
     for (let reviewCycle = 1; reviewCycle <= this.maxReviewerCycles; reviewCycle += 1) {
       this.checkCancelled();
       const beforeReview = await this.revisionProvider(this.workspace);
@@ -488,7 +494,9 @@ class ConvergentEngine {
         [
           taskPrompt(task),
           '',
-          `Worker A and Worker B approved current revision ${beforeReview.slice(0, 12)}.`,
+          peerConvergence
+            ? `Worker A and Worker B approved current revision ${beforeReview.slice(0, 12)}.`
+            : `Worker A produced current revision ${beforeReview.slice(0, 12)}; you are the independent acceptance gate for this standard task.`,
           `Task workflow: ${routing.route}; task risk: ${routing.risk}.`,
           formatValidationEvidence(evidence),
           changeManifest ? `\n${formatTaskChangeManifest(changeManifest, 'Deterministic task change manifest for this review')}` : '',
@@ -524,14 +532,23 @@ class ConvergentEngine {
         throw new Error(`Strong review still has findings after ${this.maxReviewerCycles} remediation cycles.`);
       }
 
-      this.ui.phase('Remediation', `Strong reviewer returned ${review.findings.length} finding(s); Worker A remediates, then A/B convergence repeats.`);
+      this.ui.phase(
+        'Remediation',
+        peerConvergence
+          ? `Strong reviewer returned ${review.findings.length} finding(s); Worker A remediates, then A/B convergence repeats.`
+          : `Strong reviewer returned ${review.findings.length} finding(s); Worker A remediates, then the same strong reviewer performs a delta re-check.`,
+      );
       const remediation = await this.runWorkerPass(workerA, task, 'FIX_STRONG_REVIEW_FINDINGS', review.findings, null, taskContext);
       this.ui.passResult('A', remediation.report, remediation.changed, remediation.revision, remediation);
       if (remediation.report.verdict === 'blocked') {
         throw new Error(`Worker A is blocked during strong-review remediation: ${remediation.report.summary}`);
       }
-      const convergence = await this.convergeWorkers(task, workerA, workerB, workerB, remediation, taskContext);
-      evidence = convergence.evidence;
+      if (peerConvergence) {
+        const convergence = await this.convergeWorkers(task, workerA, workerB, workerB, remediation, taskContext);
+        evidence = convergence.evidence;
+      } else {
+        evidence = evidenceFromPass(remediation);
+      }
     }
   }
 
