@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 1,
+  "benchmark": "scenario01-small-duration-parser",
+  "repetition": 2,
+  "variant": "report-integrity-guarded",
+  "targetRepository": "Alex206/convergent-test-repo",
+  "targetSha": "1f38b2606f306ef4902d6159e8c9b7f3d8fe9aef",
+  "sourceRun": {
+    "workflowRunId": 31784517587,
+    "artifactId": 9212982797,
+    "artifactDigest": "sha256:9adf3f6f3b463b68af3b741aca7ba8d7470fe89ba1ee7bc879be8dfe84f6354d",
+    "harnessSha": "0d8c1bdbda73b63e4a1e385197e5dd5f22b7dfc6"
+  },
+  "runs": [
+    {
+      "arm": "adaptive-single-agent",
+      "architecture": "single-agent",
+      "runStatus": "complete",
+      "oraclePass": false,
+      "modelCalls": 5,
+      "aiCredits": 0.572485,
+      "inputTokens": 65563,
+      "elapsedMs": 12066,
+      "recoveryReports": 0,
+      "actualRoleModels": [
+        { "agent": "Worker A", "role": "workerA", "modelId": "gpt-5.6-luna", "reasoningEffort": "low" }
+      ],
+      "finding": "The implementation accepted internal whitespace between the integer and unit (`1 s`) because its regex used whitespace between the numeric and unit groups. Its focused tests and full repository unittest suite all passed, but the independent oracle correctly rejected this malformed input.",
+      "classification": "completed-but-contract-defect-missed-by-self-tests"
+    },
+    {
+      "arm": "adaptive-implementer-reviewer",
+      "architecture": "implementer-reviewer",
+      "runStatus": "complete",
+      "oraclePass": true,
+      "modelCalls": 11,
+      "aiCredits": 4.449582,
+      "inputTokens": 123814,
+      "elapsedMs": 23990,
+      "recoveryReports": 0,
+      "actualRoleModels": [
+        { "agent": "Worker A", "role": "workerA", "modelId": "gpt-5.6-luna", "reasoningEffort": "low" },
+        { "agent": "Strong reviewer", "role": "reviewer", "modelId": "gpt-5.6-terra", "reasoningEffort": "low" }
+      ],
+      "finding": "The implementation used a strict adjacent integer/unit regex, all repository tests passed, the independent oracle passed, and the strong reviewer returned CLEAN. Conditional recovery remained completely dormant.",
+      "classification": "correct-normal-path-with-independent-review"
+    }
+  ],
+  "releasedV02ReferenceFromScenario01Rep1": {
+    "oraclePass": true,
+    "modelCalls": 22,
+    "aiCredits": 13.211608,
+    "inputTokens": 256369,
+    "elapsedMs": 49561,
+    "note": "The released reference required recovery/peer escape from a spurious initial BLOCKED verdict. It was not rerun in repetition 2 to avoid unnecessary inference spend."
+  },
+  "comparison": {
+    "guardedAdaptiveImplementerReviewerRelativeToReleasedV02Reference": {
+      "modelCallsReductionPercent": 50.0,
+      "aiCreditsReductionPercent": 66.3207,
+      "inputTokensReductionPercent": 51.7048,
+      "wallTimeReductionPercent": 51.595,
+      "bothOraclesPass": true
+    },
+    "singleAgentRelativeToReleasedV02Reference": {
+      "modelCallsReductionPercent": 77.2727,
+      "aiCreditsReductionPercent": 95.6668,
+      "inputTokensReductionPercent": 74.4263,
+      "wallTimeReductionPercent": 75.6542,
+      "singleAgentOraclePass": false
+    }
+  },
+  "interpretation": [
+    "The deterministic report-integrity guard eliminated the spurious BLOCKED/recovery behavior in both efficient arms, so the comparison now measures implementation/review quality rather than report-verdict noise.",
+    "The single adaptive Luna worker was extraordinarily cheap but failed an independent contract edge case that its own tests missed. This argues against using single-agent as the general modifying-task default even for small changes without a stronger deterministic acceptance oracle.",
+    "Adaptive Luna implementer plus independent Terra review passed with no coordinator, no Worker B, and no recovery while using roughly half the calls/tokens/time and one third of the credits of the released-v0.2 reference run.",
+    "The reviewer did not need remediation in this specific repetition because its implementer happened to produce the correct strict regex; the value of independent review therefore remains primarily supported by the broader Scenario 03 evidence and the single-agent failure rate rather than a direct reviewer fix in this run."
+  ]
+}
