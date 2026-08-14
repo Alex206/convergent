@@ -1,0 +1,200 @@
+name: Temporary Scenario 05 Architecture Probe
+
+on:
+  pull_request:
+    types:
+      - synchronize
+
+jobs:
+  compare:
+    if: github.event.pull_request.head.ref == 'agent/architecture-benchmark-matrix'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+      COPILOT_PLUGIN_DIR_ONLY: 'true'
+      BENCHMARK_REPO_TOKEN: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+      TARGET_SHA: 1f38b2606f306ef4902d6159e8c9b7f3d8fe9aef
+      OUTPUT_ROOT: /tmp/scenario05-architecture
+      CONVERGENT_HEADLESS_ANSWERS_JSON: '[]'
+    steps:
+      - name: Require benchmark credentials
+        shell: bash
+        run: |
+          test -n "${COPILOT_GITHUB_TOKEN}" || { echo 'COPILOT_GITHUB_TOKEN is required.' >&2; exit 2; }
+          test -n "${BENCHMARK_REPO_TOKEN}" || { echo 'BENCHMARK_REPO_TOKEN is required.' >&2; exit 2; }
+
+      - name: Checkout Convergent
+        uses: actions/checkout@v6
+
+      - name: Checkout cheap-arm target
+        uses: actions/checkout@v6
+        with:
+          repository: Alex206/convergent-test-repo
+          ref: ${{ env.TARGET_SHA }}
+          path: target-implementer-reviewer
+          token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+
+      - name: Checkout v0.2 target
+        uses: actions/checkout@v6
+        with:
+          repository: Alex206/convergent-test-repo
+          ref: ${{ env.TARGET_SHA }}
+          path: target-v02
+          token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+
+      - name: Prepare identical pre-existing user state
+        shell: bash
+        run: |
+          for target in target-implementer-reviewer target-v02; do
+            mkdir -p "${target}/.vscode"
+            printf '%s\n' '{"files.trimTrailingWhitespace":true}' > "${target}/.vscode/settings.json"
+            printf '%s\n' 'local benchmark note' > "${target}/notes.local"
+            git -C "${target}" check-ignore -q notes.local
+            test "$(cat "${target}/.vscode/settings.json")" = '{"files.trimTrailingWhitespace":true}'
+            test "$(cat "${target}/notes.local")" = 'local benchmark note'
+          done
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run implementer-reviewer plus dormant conditional recovery
+        id: cheap
+        continue-on-error: true
+        timeout-minutes: 7
+        shell: bash
+        run: |
+          mkdir -p "${OUTPUT_ROOT}/implementer-reviewer"
+          set +e
+          node src/headless/architecture-cli.js \
+            --workspace "${GITHUB_WORKSPACE}/target-implementer-reviewer" \
+            --prompt-file "${GITHUB_WORKSPACE}/target-implementer-reviewer/benchmarks/05-preexisting-workspace-state.md" \
+            --output-dir "${OUTPUT_ROOT}/implementer-reviewer" \
+            --architecture implementer-reviewer \
+            --recovery-policy strong-coordinator \
+            --flow fast \
+            --coordinator strong \
+            --worker-a strong \
+            --reviewer strong \
+            --audit-level full \
+            --limit-policy pause \
+            --max-model-calls 40 \
+            --max-model-calls-per-turn 10 \
+            --max-chat-requests 12 \
+            --max-ai-credits 0 \
+            2>&1 | tee "${OUTPUT_ROOT}/implementer-reviewer/runner.log"
+          code=${PIPESTATUS[0]}
+          printf '{"runExit":%s}\n' "${code}" > "${OUTPUT_ROOT}/implementer-reviewer/arm-status.json"
+          exit "${code}"
+
+      - name: Run released v0.2 reference architecture
+        id: v02
+        continue-on-error: true
+        timeout-minutes: 7
+        shell: bash
+        run: |
+          mkdir -p "${OUTPUT_ROOT}/convergent-v02"
+          set +e
+          node src/headless/architecture-cli.js \
+            --workspace "${GITHUB_WORKSPACE}/target-v02" \
+            --prompt-file "${GITHUB_WORKSPACE}/target-v02/benchmarks/05-preexisting-workspace-state.md" \
+            --output-dir "${OUTPUT_ROOT}/convergent-v02" \
+            --architecture convergent-v02 \
+            --recovery-policy strong-coordinator \
+            --flow fast \
+            --coordinator strong \
+            --worker-a adaptive \
+            --worker-b adaptive-diverse \
+            --reviewer strong \
+            --audit-level full \
+            --limit-policy pause \
+            --max-model-calls 40 \
+            --max-model-calls-per-turn 10 \
+            --max-chat-requests 12 \
+            --max-ai-credits 0 \
+            2>&1 | tee "${OUTPUT_ROOT}/convergent-v02/runner.log"
+          code=${PIPESTATUS[0]}
+          printf '{"runExit":%s}\n' "${code}" > "${OUTPUT_ROOT}/convergent-v02/arm-status.json"
+          exit "${code}"
+
+      - name: Run deterministic Scenario 05 acceptance
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          node src/headless/scenario05-acceptance.js \
+            "${GITHUB_WORKSPACE}/target-implementer-reviewer" \
+            "${OUTPUT_ROOT}/implementer-reviewer/scenario05-acceptance.json" \
+            > "${OUTPUT_ROOT}/implementer-reviewer/acceptance.log" 2>&1
+          node src/headless/scenario05-acceptance.js \
+            "${GITHUB_WORKSPACE}/target-v02" \
+            "${OUTPUT_ROOT}/convergent-v02/scenario05-acceptance.json" \
+            > "${OUTPUT_ROOT}/convergent-v02/acceptance.log" 2>&1
+          for arm in implementer-reviewer convergent-v02; do
+            events="$(find "${OUTPUT_ROOT}/${arm}/audit" -name events.jsonl -type f 2>/dev/null | head -n 1)"
+            if [[ -n "${events}" ]]; then
+              node src/headless/efficiency-summary.js "${events}" "${OUTPUT_ROOT}/${arm}/efficiency-summary.json" > "${OUTPUT_ROOT}/${arm}/efficiency-summary.log" 2>&1 || true
+            fi
+          done
+          (cd target-implementer-reviewer && python3 -B -m unittest discover -s tests -v) > "${OUTPUT_ROOT}/implementer-reviewer/target-validation.log" 2>&1 || true
+          (cd target-v02 && python3 -B -m unittest discover -s tests -v) > "${OUTPUT_ROOT}/convergent-v02/target-validation.log" 2>&1 || true
+
+      - name: Build compact comparison
+        if: always()
+        shell: bash
+        run: |
+          OUTPUT_ROOT="${OUTPUT_ROOT}" node - <<'NODE' | tee "${OUTPUT_ROOT}/summary.log"
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const root = process.env.OUTPUT_ROOT;
+          const rows = ['implementer-reviewer', 'convergent-v02'].map((arm) => {
+            const result = JSON.parse(fs.readFileSync(path.join(root, arm, 'result.json'), 'utf8'));
+            const acceptance = JSON.parse(fs.readFileSync(path.join(root, arm, 'scenario05-acceptance.json'), 'utf8'));
+            const status = JSON.parse(fs.readFileSync(path.join(root, arm, 'arm-status.json'), 'utf8'));
+            return {
+              arm,
+              architecture: result.architecture?.id,
+              recoveryPolicy: result.architecture?.recoveryPolicy ?? (result.architecture?.id === 'convergent-v02' ? 'strong-coordinator' : 'none'),
+              runStatus: result.status,
+              runExit: status.runExit,
+              oraclePass: acceptance.ok === true,
+              oracleChecksPassed: [...(acceptance.behavior?.checks ?? []), ...(acceptance.workspaceState?.checks ?? [])].filter((x) => x.ok).length,
+              oracleChecksTotal: [...(acceptance.behavior?.checks ?? []), ...(acceptance.workspaceState?.checks ?? [])].length,
+              usage: result.usage,
+              actualRoleModels: result.actualRoleModels,
+              stats: result.stats,
+            };
+          });
+          const summary = { targetSha: process.env.TARGET_SHA, runs: rows };
+          fs.writeFileSync(path.join(root, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`);
+          console.log(JSON.stringify(summary, null, 2));
+          NODE
+
+      - name: Upload comparison evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scenario05-architecture-${{ github.run_number }}
+          path: /tmp/scenario05-architecture
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Require both architecture oracles
+        if: always()
+        shell: bash
+        run: |
+          SUMMARY="${OUTPUT_ROOT}/summary.json" node - <<'NODE'
+          const fs = require('node:fs');
+          const data = JSON.parse(fs.readFileSync(process.env.SUMMARY, 'utf8'));
+          for (const run of data.runs ?? []) {
+            console.log(`${run.architecture}: status=${run.runStatus} oracle=${run.oraclePass} calls=${run.usage?.calls} credits=${run.usage?.aiCredits} input=${run.usage?.inputTokens} elapsedMs=${run.usage?.elapsedMs}`);
+          }
+          if ((data.runs ?? []).length !== 2 || data.runs.some((run) => run.runStatus !== 'complete' || run.oraclePass !== true)) process.exit(1);
+          NODE
