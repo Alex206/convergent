@@ -2,7 +2,51 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createIntegritySink } = require('../src/headless/experimental-session-factory');
+const { createPassTool, createReviewTool } = require('../src/copilot/tools');
+const {
+  createIntegritySink,
+  normalizeStructuredVerdictArgs,
+  verdictNormalizingDefineTool,
+} = require('../src/headless/experimental-session-factory');
+
+function captureDefineTool(name, definition) {
+  return { name, ...definition };
+}
+
+test('normalizes structured verdict casing before core report normalization', () => {
+  assert.deepEqual(normalizeStructuredVerdictArgs({ verdict: ' CHANGED ', summary: 'done' }), {
+    verdict: 'changed',
+    summary: 'done',
+  });
+  assert.deepEqual(normalizeStructuredVerdictArgs({ verdict: 'CLEAN' }), { verdict: 'clean' });
+});
+
+test('experimental pass tool accepts uppercase CHANGED without turning it into BLOCKED', async () => {
+  const sink = createIntegritySink('Worker A');
+  const tool = createPassTool(verdictNormalizingDefineTool(captureDefineTool), sink);
+  const response = await tool.handler({
+    verdict: 'CHANGED',
+    summary: 'Implemented the requested feature.',
+    findings: [],
+    checks: ['Unit tests passed'],
+  });
+  assert.deepEqual(response, { accepted: true });
+  assert.equal(sink.value.verdict, 'changed');
+  assert.deepEqual(sink.corrections, []);
+});
+
+test('experimental review tool accepts uppercase CLEAN without turning it into BLOCKED', async () => {
+  const sink = createIntegritySink('Strong reviewer');
+  const tool = createReviewTool(verdictNormalizingDefineTool(captureDefineTool), sink);
+  const response = await tool.handler({
+    verdict: 'CLEAN',
+    summary: 'Independent review found no defects.',
+    findings: [],
+    checks: ['Focused validation passed'],
+  });
+  assert.deepEqual(response, { accepted: true });
+  assert.equal(sink.value.verdict, 'clean');
+});
 
 test('experimental report sink converts unsupported BLOCKED to CLEAN before recovery policy sees it', () => {
   const messages = [];
