@@ -35,8 +35,8 @@ function assignedEnvironmentNames(input) {
 }
 
 function mentionedSensitiveCredentialNames(text) {
-  const words = String(text ?? '').match(/\b[A-Za-z_][A-Za-z0-9_]*\b/g) ?? [];
-  return [...new Set(words.map((word) => word.toUpperCase()).filter(isSensitiveCredentialName))];
+  const words = String(text ?? '').match(/\b[A-Z][A-Z0-9_]*\b/g) ?? [];
+  return [...new Set(words.filter(isSensitiveCredentialName))];
 }
 
 function environmentHasCredential(environment, name) {
