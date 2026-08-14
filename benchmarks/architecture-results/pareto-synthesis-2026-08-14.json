@@ -1,0 +1,124 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-08-14",
+  "scope": "Post-0.2 headless architecture evaluation through Scenario 08",
+  "releasedReference": "Convergent 0.2.0",
+  "evidenceBoundary": {
+    "stageOneScenarios": [1, 2, 3, 4, 5],
+    "stageTwoScenarios": [6, 7, 8],
+    "note": "Scenario-specific deterministic oracles and exact fixture SHAs are retained in the individual result records. This synthesis does not pretend heterogeneous scenario repetitions are one IID statistical sample."
+  },
+  "findings": {
+    "independentStrongReview": {
+      "decision": "retain",
+      "confidence": "high within measured task classes",
+      "evidence": [
+        "Scenario 01 single-agent Luna missed malformed internal whitespace accepted by its own tests.",
+        "Scenario 03 single-agent executions missed the subtle stable-order contract in observed repetitions while reviewed executions passed.",
+        "Scenario 02 strong review found backwards-compatibility defects and drove successful remediation.",
+        "Scenario 06 strong review found missing requested regression coverage and drove successful same-implementer remediation."
+      ]
+    },
+    "persistentPlanningCoordinator": {
+      "decision": "remove from default cohesive-task path; activate conditionally",
+      "confidence": "moderate-high for cohesive tested tasks",
+      "evidence": [
+        "Across normal low/medium-risk scenarios the Luna->Terra reviewed route matched deterministic correctness while materially reducing AI-credit and usually call/token/latency cost versus released v0.2.",
+        "Scenario 06 is the important exception on raw calls/input: remediation made the lean route slightly larger there, yet it remained much cheaper in credits and faster while preserving correctness.",
+        "No completed cohesive-task benchmark has demonstrated unique semantic value from paying a planning coordinator before every task."
+      ],
+      "activateWhen": [
+        "requirements are ambiguous or conflicting",
+        "task requires nontrivial decomposition or architectural choice",
+        "cross-component scope cannot be represented as one cohesive acceptance boundary",
+        "recovery policy needs a strong coordinator after genuine BLOCKED evidence"
+      ]
+    },
+    "workerBPeerConvergence": {
+      "decision": "remove from default low/medium-risk path; retain as high-risk escalation",
+      "confidence": "high that it is not default-cost-efficient; preliminary positive evidence for high-risk escalation",
+      "evidence": [
+        "Peer topologies did not show a cost/correctness advantage on ordinary cohesive scenarios.",
+        "Scenario 08 produced the first direct unique-value event: GPT-5.4 mini Worker B found and fixed a real root-self path-containment defect in Luna Worker A's first security-boundary implementation before final Terra review.",
+        "The final peer run passed all six external security checks."
+      ],
+      "scenario08CostOfEscalationVersusLunaTerra": {
+        "callsIncreasePercent": 63.6364,
+        "creditsIncreasePercent": 28.9747,
+        "inputTokensIncreasePercent": 60.091,
+        "wallTimeIncreasePercent": 82.194
+      },
+      "activateWhen": [
+        "deterministic route/risk is high-risk, especially security, privilege, containment, destructive data, build/release integrity or cross-boundary behavior",
+        "strong reviewer and implementer disagree",
+        "same-implementer remediation repeatedly fails",
+        "task is broad enough that independent implementation context is likely to expose different assumptions"
+      ]
+    },
+    "singleAgentModifyingPath": {
+      "decision": "do not use as general default",
+      "confidence": "high",
+      "evidence": [
+        "Its cost is lowest but observed correctness misses make it failure-adjusted unattractive for general modifying work.",
+        "Keep only for deliberately narrow/read-only/trivial routes with strong deterministic acceptance gates."
+      ]
+    },
+    "conditionalRecovery": {
+      "decision": "retain on demand after deterministic BLOCKED",
+      "confidence": "high",
+      "evidence": [
+        "Policy-correct Scenario 04 runs show Luna->Terra plus on-demand Terra recovery preserves the operator-prerequisite trajectory at far lower average cost than historical passing v0.2 recovery runs.",
+        "Synthetic credential and blocked-validation experiments show prerequisite integrity must be deterministic engine policy, not merely prompt guidance."
+      ]
+    }
+  },
+  "routePolicyHypothesis": [
+    {
+      "route": "read_only",
+      "topology": "single suitable read-only agent or coordinator-only path",
+      "status": "not re-optimized by this benchmark; preserve conservative current behavior until separately measured"
+    },
+    {
+      "route": "trivial_modifying",
+      "topology": "GPT-5.6 Luna implementer -> independent review unless a narrowly defined deterministic bypass is proven safe",
+      "status": "review retained because Scenario 01 showed an unreviewed local-task miss"
+    },
+    {
+      "route": "standard_low_medium_risk",
+      "topology": "GPT-5.6 Luna implementer -> GPT-5.6 Terra reviewer -> bounded same-Luna remediation/delta review",
+      "status": "leading normal-path candidate"
+    },
+    {
+      "route": "high_risk",
+      "topology": "GPT-5.6 Luna Worker A <-> diversified Worker B convergence -> GPT-5.6 Terra reviewer",
+      "status": "leading assurance escalation candidate after Scenario 08; needs a few additional high-risk repetitions"
+    },
+    {
+      "route": "ambiguous_or_decomposable",
+      "topology": "on-demand strong planning coordinator before selecting standard/high-risk execution route",
+      "status": "conditional hypothesis; not justified as always-on"
+    },
+    {
+      "route": "blocked",
+      "topology": "on-demand GPT-5.6 Terra recovery coordinator, then retry/peer as dictated by blocker type",
+      "status": "supported by Scenario 04"
+    }
+  ],
+  "scenario08": {
+    "economicalReviewed": { "oracle": "6/6", "calls": 11, "credits": 6.132819, "inputTokens": 143682, "elapsedMs": 36454 },
+    "leanPeerReviewed": { "oracle": "6/6", "calls": 18, "credits": 7.909784, "inputTokens": 230022, "elapsedMs": 66417, "uniquePeerDefectDetection": true },
+    "releasedV02": { "oracle": "6/6", "calls": 16, "credits": 16.38928, "inputTokens": 182256, "elapsedMs": 62128 },
+    "interpretation": "On final-oracle metrics Luna->Terra is cheapest. The peer route pays a significant assurance premium but demonstrated unique semantic defect detection. Released v0.2 is far more expensive in AI credits than either lean route and its always-on coordinator is not supported by this task."
+  },
+  "paretoConclusion": {
+    "normalTasks": "Luna->Terra is the observed Pareto-leading default candidate: same deterministic correctness with much lower credit cost and usually lower calls/tokens/latency than v0.2.",
+    "highRiskTasks": "There is an assurance/cost frontier rather than one winner: Luna->Terra is cheapest; Luna<->diversified peer->Terra buys demonstrable independent defect discovery at a bounded premium. Use risk to choose between them.",
+    "releasedV02": "Keep as released stable reference until adaptive productization is implemented and validated; do not carry its full always-on topology forward by default based on current evidence."
+  },
+  "nextEvidence": [
+    "Run only a small number of additional high-risk repetitions/tasks to estimate how often peer escalation adds unique value; do not resume broad topology sweeps.",
+    "Define deterministic high-risk/escalation predicates in product policy.",
+    "Productize report/validation/credential integrity invariants from issue #8 in the normal tool/session boundary.",
+    "Then validate the adaptive route policy end-to-end before replacing released v0.2 orchestration."
+  ]
+}
