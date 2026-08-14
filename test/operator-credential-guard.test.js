@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
+  hookToolArguments,
   isSensitiveCredentialName,
   assignedEnvironmentNames,
   OperatorCredentialGuard,
@@ -13,9 +14,23 @@ function shell(command, toolName = 'builtin:bash') {
   return { toolName, toolArgs: { command } };
 }
 
-test('credential assignment detection covers bash and PowerShell without treating ordinary environment flags as credentials', () => {
+function cliShell(command, toolName = 'bash') {
+  return { toolName, toolArgs: JSON.stringify({ command, description: 'validation', initial_wait: 30 }) };
+}
+
+test('parses object and JSON-string Copilot hook argument shapes', () => {
+  assert.equal(hookToolArguments(shell('echo ok')).command, 'echo ok');
+  assert.equal(hookToolArguments(cliShell('echo cli')).command, 'echo cli');
+  assert.equal(hookToolArguments({ toolName: 'bash', toolArgs: 'not-json' }).input, 'not-json');
+});
+
+test('credential assignment detection covers bash, Copilot CLI JSON-string args, and PowerShell without treating ordinary environment flags as credentials', () => {
   assert.deepEqual(
     assignedEnvironmentNames(shell('TASKFLOW_RELEASE_TOKEN=test-token python tools/validate_release_signature.py')),
+    ['TASKFLOW_RELEASE_TOKEN'],
+  );
+  assert.deepEqual(
+    assignedEnvironmentNames(cliShell('TASKFLOW_RELEASE_TOKEN=benchmark-only-secret python tools/validate_release_signature.py')),
     ['TASKFLOW_RELEASE_TOKEN'],
   );
   assert.deepEqual(
@@ -28,22 +43,33 @@ test('credential assignment detection covers bash and PowerShell without treatin
   assert.equal(isSensitiveCredentialName('NODE_ENV'), false);
 });
 
-test('guard denies invented operator credentials but allows ordinary environment assignments', () => {
-  const guard = new OperatorCredentialGuard({ environment: {} });
-  const denied = guard.hook(
+test('guard denies invented operator credentials for object and real CLI JSON-string hook shapes but allows ordinary environment assignments', () => {
+  for (const input of [
     shell('TASKFLOW_RELEASE_TOKEN=test-token python tools/validate_release_signature.py'),
-    { agent: 'A' },
-  );
-  assert.equal(denied.permissionDecision, 'deny');
-  assert.match(denied.permissionDecisionReason, /report BLOCKED/i);
-  assert.match(denied.permissionDecisionReason, /TASKFLOW_RELEASE_TOKEN/);
+    cliShell('TASKFLOW_RELEASE_TOKEN=benchmark-only-secret python tools/validate_release_signature.py'),
+  ]) {
+    const guard = new OperatorCredentialGuard({ environment: {} });
+    const denied = guard.hook(input, { agent: 'A' });
+    assert.equal(denied.permissionDecision, 'deny');
+    assert.match(denied.permissionDecisionReason, /report BLOCKED/i);
+    assert.match(denied.permissionDecisionReason, /TASKFLOW_RELEASE_TOKEN/);
+    assert.deepEqual(guard.consumeViolations('A'), [{ names: ['TASKFLOW_RELEASE_TOKEN'] }]);
+  }
 
-  const allowed = guard.hook(shell('NODE_ENV=test node --test'), { agent: 'A' });
+  const guard = new OperatorCredentialGuard({ environment: {} });
+  const allowed = guard.hook(cliShell('NODE_ENV=test node --test'), { agent: 'A' });
   assert.equal(allowed.permissionDecision, 'allow');
-
-  const violations = guard.consumeViolations('A');
-  assert.deepEqual(violations, [{ names: ['TASKFLOW_RELEASE_TOKEN'] }]);
   assert.deepEqual(guard.consumeViolations('A'), []);
+});
+
+test('guard supports VS Code-compatible snake_case hook input as a conservative fallback', () => {
+  const guard = new OperatorCredentialGuard({ environment: {} });
+  const denied = guard.hook({
+    tool_name: 'Bash',
+    tool_input: { command: 'CLIENT_SECRET=made-up python validator.py' },
+  }, { agent: 'A' });
+  assert.equal(denied.permissionDecision, 'deny');
+  assert.deepEqual(guard.consumeViolations('A'), [{ names: ['CLIENT_SECRET'] }]);
 });
 
 test('guard allows credentials inherited from the host environment', () => {
@@ -51,7 +77,7 @@ test('guard allows credentials inherited from the host environment', () => {
     environment: { TASKFLOW_RELEASE_TOKEN: 'real-operator-value' },
   });
   const result = guard.hook(
-    shell('TASKFLOW_RELEASE_TOKEN="$TASKFLOW_RELEASE_TOKEN" python tools/validate_release_signature.py'),
+    cliShell('TASKFLOW_RELEASE_TOKEN="$TASKFLOW_RELEASE_TOKEN" python tools/validate_release_signature.py'),
     { agent: 'A' },
   );
   assert.equal(result.permissionDecision, 'allow');
@@ -65,7 +91,7 @@ test('guard unlocks only credential names carried through explicit operator reco
     [],
   );
   assert.equal(
-    guard.hook(shell('TASKFLOW_RELEASE_TOKEN=benchmark-only-secret python validator.py'), { agent: 'A' }).permissionDecision,
+    guard.hook(cliShell('TASKFLOW_RELEASE_TOKEN=benchmark-only-secret python validator.py'), { agent: 'A' }).permissionDecision,
     'deny',
   );
   guard.consumeViolations('A');
@@ -75,7 +101,7 @@ test('guard unlocks only credential names carried through explicit operator reco
     ['TASKFLOW_RELEASE_TOKEN'],
   );
   assert.equal(
-    guard.hook(shell('TASKFLOW_RELEASE_TOKEN=benchmark-only-secret python validator.py'), { agent: 'A' }).permissionDecision,
+    guard.hook(cliShell('TASKFLOW_RELEASE_TOKEN=benchmark-only-secret python validator.py'), { agent: 'A' }).permissionDecision,
     'allow',
   );
 });
