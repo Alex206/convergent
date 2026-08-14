@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "benchmark": "scenario07-one-shot-label-filter-bug",
+  "stage": 2,
+  "repetition": 1,
+  "targetRepository": "Alex206/convergent-test-repo",
+  "targetSha": "58f3f1d92793e78e862782466eaad4c56ba5a008",
+  "fixtureBranch": "benchmark/scenario07-one-shot-label-iterable",
+  "sourceRun": {
+    "workflowRunId": 31787582720,
+    "artifactId": 9214146828,
+    "artifactDigest": "sha256:ad0664344bed4dedec783bd7938ac8cec6b1e67dcc9078081cfc5b067516d67b",
+    "harnessSha": "58cd511baf1313d4404aa5e5980cbb1c41d9e9c7"
+  },
+  "fixturePrecondition": {
+    "baselineTestsPass": true,
+    "bugReproduced": true,
+    "symptom": "A generator yielding only 'ci' is consumed during validation, leaving an empty required-label set and selecting enabled tasks without the ci label."
+  },
+  "externalOracle": {
+    "checks": [
+      "generator/list/tuple required-label inputs are equivalent",
+      "multi-label and duplicate generator inputs preserve all-label semantics and input order",
+      "include_disabled semantics remain correct",
+      "invalid required-label values remain rejected",
+      "a one-shot required-label iterable is consumed exactly once",
+      "the tasks iterable itself may still be one-shot"
+    ]
+  },
+  "runs": [
+    {
+      "arm": "economical-a1",
+      "architecture": "implementer-reviewer",
+      "workerA": "GPT-5.6 Luna",
+      "reviewer": "GPT-5.6 Terra",
+      "runStatus": "complete",
+      "oraclePass": true,
+      "oracleChecksPassed": 6,
+      "oracleChecksTotal": 6,
+      "calls": 10,
+      "turns": 2,
+      "aiCredits": 4.576666,
+      "inputTokens": 112697,
+      "elapsedMs": 27320,
+      "recoveryReports": 0,
+      "reviewCycles": 1,
+      "remediationCycles": 0,
+      "implementation": "Materialize required_labels to a tuple exactly once before element validation and frozenset construction; add generator and duplicate-label regression coverage.",
+      "reviewFinding": "CLEAN. Terra confirmed that one-time materialization preserves existing validation, set-based duplicate semantics, input order, and disabled-task behavior.",
+      "roleUsage": [
+        { "role": "Worker A", "model": "GPT-5.6 Luna", "calls": 6, "aiCredits": 0.530266, "inputTokens": 71874 },
+        { "role": "Strong reviewer", "model": "GPT-5.6 Terra", "calls": 4, "aiCredits": 4.0464, "inputTokens": 40823 }
+      ]
+    },
+    {
+      "arm": "released-v02",
+      "architecture": "convergent-v02",
+      "runStatus": "complete",
+      "oraclePass": true,
+      "oracleChecksPassed": 6,
+      "oracleChecksTotal": 6,
+      "calls": 18,
+      "turns": 4,
+      "aiCredits": 15.552465,
+      "inputTokens": 193617,
+      "elapsedMs": 47193,
+      "recoveryReports": 0,
+      "reviewCycles": 1,
+      "implementation": "Coordinator localized the double-consumption defect; Terra Worker A materialized required_labels once and added broader regression coverage; GPT-5.4 mini Worker B returned CLEAN; Terra reviewer returned CLEAN.",
+      "roleUsage": [
+        { "role": "Coordinator", "model": "GPT-5.6 Terra", "calls": 3, "aiCredits": 4.76697, "inputTokens": 37999 },
+        { "role": "Worker A", "model": "GPT-5.6 Terra", "calls": 7, "aiCredits": 5.62583, "inputTokens": 74187 },
+        { "role": "Worker B", "model": "GPT-5.4 mini", "calls": 4, "aiCredits": 1.375125, "inputTokens": 42395 },
+        { "role": "Strong reviewer", "model": "GPT-5.6 Terra", "calls": 4, "aiCredits": 3.78454, "inputTokens": 39036 }
+      ]
+    }
+  ],
+  "economicalRelativeToReleasedV02": {
+    "modelCallsReductionPercent": 44.4444,
+    "aiCreditsReductionPercent": 70.5727,
+    "inputTokensReductionPercent": 41.7939,
+    "wallTimeReductionPercent": 42.1101,
+    "bothOraclePass": true
+  },
+  "interpretation": [
+    "The leading economical topology successfully localized and fixed a bug that was invisible to the fixture's baseline unit suite but exposed by a production-style one-shot iterable.",
+    "Both architectures reached the same root cause and passed the same six-check external oracle. The persistent coordinator and Worker B did not discover an additional defect or cause remediation in this repetition.",
+    "Economical Luna implementer plus Terra review used about 71% fewer AI credits, 44% fewer model calls, 42% fewer input tokens, and 42% less wall time than released v0.2.",
+    "Together with Scenario 06, stage two now covers both a larger cross-cutting feature where strong review drove remediation and a non-obvious bug-localization task where the economical implementation was correct on the first pass."
+  ]
+}
