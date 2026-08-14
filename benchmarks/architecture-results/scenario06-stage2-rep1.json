@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 1,
+  "benchmark": "scenario06-task-environment-overrides",
+  "stage": 2,
+  "repetition": 1,
+  "targetRepository": "Alex206/convergent-test-repo",
+  "targetSha": "8b4f92f0a06cb1dbbd128f5e87e009b0be66c8cb",
+  "sourceRun": {
+    "workflowRunId": 31787181139,
+    "artifactId": 9214033805,
+    "artifactDigest": "sha256:2a227c8a400faf922b22e43fedab03b8d7c51b5f96bdb349ccc362a899206a12",
+    "harnessSha": "c9d0c9d21aef0408ed926acb29f2c201f8a05b83"
+  },
+  "externalOracle": {
+    "checks": [
+      "TaskSpec environment is trailing/immutable/default-empty and preserves old positional construction",
+      "config environment mapping normalizes names, preserves values/order exactly, and rejects invalid/duplicate-normalized entries",
+      "Attempt environment is trailing/default-empty and build_attempts propagates the tuple to every retry",
+      "task_summary/plan_summary expose environment names in declaration order but never values",
+      "feature never mutates os.environ"
+    ]
+  },
+  "runs": [
+    {
+      "arm": "economical-a1",
+      "architecture": "implementer-reviewer",
+      "workerA": "GPT-5.6 Luna",
+      "reviewer": "GPT-5.6 Terra",
+      "runStatus": "complete",
+      "oraclePass": true,
+      "oracleChecksPassed": 5,
+      "oracleChecksTotal": 5,
+      "repositoryTests": "17/17 passed",
+      "calls": 21,
+      "turns": 4,
+      "aiCredits": 9.530607,
+      "inputTokens": 318997,
+      "elapsedMs": 69539,
+      "reviewCycles": 2,
+      "reviewerFinding": {
+        "severity": "medium",
+        "title": "Missing focused tests for environment parsing and propagation",
+        "effect": "The initial Luna implementation satisfied the runtime contract but largely omitted the focused regression coverage explicitly requested. Terra review identified the missing coverage; the same Luna implementer added parser/default/propagation/reporting/secret-non-disclosure tests; Terra delta review then returned CLEAN."
+      },
+      "roleUsage": [
+        { "role": "Worker A", "model": "GPT-5.6 Luna", "calls": 14, "aiCredits": 1.116267, "inputTokens": 202936 },
+        { "role": "Strong reviewer", "model": "GPT-5.6 Terra", "calls": 7, "aiCredits": 8.41434, "inputTokens": 116061 }
+      ]
+    },
+    {
+      "arm": "released-v02",
+      "architecture": "convergent-v02",
+      "runStatus": "complete",
+      "oraclePass": true,
+      "oracleChecksPassed": 5,
+      "oracleChecksTotal": 5,
+      "repositoryTests": "18/18 passed",
+      "calls": 20,
+      "turns": 4,
+      "aiCredits": 20.83114,
+      "inputTokens": 275372,
+      "elapsedMs": 83822,
+      "reviewCycles": 1,
+      "finding": "Coordinator planned the feature, Terra Worker A implemented it with focused tests in one pass, GPT-5.4 mini Worker B independently converged, and Terra strong review returned CLEAN.",
+      "roleUsage": [
+        { "role": "Coordinator", "model": "GPT-5.6 Terra", "calls": 3, "aiCredits": 3.62811, "inputTokens": 28974 },
+        { "role": "Worker A", "model": "GPT-5.6 Terra", "calls": 7, "aiCredits": 7.9259, "inputTokens": 86759 },
+        { "role": "Worker B", "model": "GPT-5.4 mini", "calls": 6, "aiCredits": 3.92463, "inputTokens": 109146 },
+        { "role": "Strong reviewer", "model": "GPT-5.6 Terra", "calls": 4, "aiCredits": 5.3525, "inputTokens": 50493 }
+      ]
+    }
+  ],
+  "economicalRelativeToReleasedV02": {
+    "aiCreditsReductionPercent": 54.2483,
+    "wallTimeReductionPercent": 17.0397,
+    "modelCallsChangePercent": 5.0,
+    "inputTokensChangePercent": 15.8422,
+    "bothOraclePass": true
+  },
+  "interpretation": [
+    "The leading economical topology survives the first larger stage-two cross-cutting feature and passes the independent compatibility/security oracle.",
+    "This run is important because the strong reviewer found a real omission in the cheap implementation: requested regression coverage was missing. Same-implementer remediation closed the gap without introducing a coordinator or Worker B.",
+    "The economical path used slightly more model calls and input tokens than v0.2 because it required a second implementation/review cycle, but it still used about 54% fewer AI credits and 17% less wall time.",
+    "The result strengthens the argument that independent strong review is the core assurance mechanism while the persistent coordinator/peer can remain conditional; it also shows that raw call/token count is not the only efficiency metric when model tier differs substantially."
+  ]
+}
