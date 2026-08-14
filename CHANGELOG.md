@@ -1,87 +1,105 @@
 # Changelog
 
-All notable Convergent changes are documented here. The 0.2.0 implementation and release-validation gates are complete on PR #4; the release remains unpublished until the PR is explicitly approved/merged and a release is explicitly authorized.
+All notable Convergent changes are documented here. Released versions are dated; development candidates remain marked `Unreleased` until an explicit merge/tag/release decision is made.
 
-## [0.2.0] - Unreleased
+## [0.3.0] - Unreleased
+
+### Adaptive orchestration
+
+- Replaced the permanent multi-agent assembly line with adaptive specialist activation.
+- Explicit cohesive modifying requests can be formed deterministically as one task without paying for a persistent strong planning call.
+- Strong planning remains mandatory for read-only/investigation work, ambiguity, unresolved choices/tradeoffs, obvious decomposition, architecture-high work, sensitive boundaries outside deterministic confidence, and oversized requests.
+- Added independent `architectureSignificance` classification and a conditional strong read-only software architect. Architecture significance is intentionally separate from failure-impact risk.
+- Changed the normal adaptive `standard` path to **Worker A → independent strong reviewer → bounded same-Worker-A remediation → reviewer delta re-check**.
+- Retained diversified Worker B peer convergence for `high_risk` work and explicit `routingMode=full`.
+- Retained trivial low-risk text/docs handling and escalation semantics.
+- Recovery coordinator creation is now genuinely on demand after a deterministic `BLOCKED` state instead of being justified by an always-present planner.
+- Normal and resumable execution share the same planning/session-factory boundaries so resume cannot silently change specialist activation policy.
+
+### Deterministic report, validation, and credential integrity
+
+- Structured verdict normalization is case-insensitive; unknown verdicts fail closed rather than being silently coerced.
+- Added conservative reconciliation for contradictory `BLOCKED` reports and for worker/reviewer reports whose own evidence says required/external validation is still unresolved.
+- Added a Copilot pre-tool credential-provenance guard that denies model-synthesized operator-controlled tokens/secrets/passwords/credentials, including live SDK hooks where `toolArgs` arrive as a JSON string.
+- Recovery authorizes credential **names** only; credential values are not persisted as provenance state.
+- Session-factory construction is centralized so normal, resume, and recovery paths share the same credential guard instance.
+- Successful required-validation evidence can be carried only for the **exact workspace revision** and matching validator identity.
+- A later credential-less rerun of the same validator cannot invalidate already-successful exact-revision evidence; a changed revision or different validator still requires fresh validation.
+- Validation language now distinguishes genuine missing-prerequisite blockers from successful negative-case coverage such as “token lookup fails clearly when missing” when the required external validator itself passed.
+
+### Efficiency and measured architecture evidence
+
+The architecture benchmark track separated topology from model policy and used deterministic external acceptance oracles. Across the measured scenarios:
+
+- an unreviewed single implementer missed a real edge case, so independent strong review remains the normal modifying-task gate;
+- strong review repeatedly found compatibility, stability, and regression-coverage defects worth fixing;
+- Worker B produced unique semantic/security value on the Scenario08 path-containment boundary, supporting high-risk-only peer activation rather than permanent A/B convergence;
+- persistent strong planning added substantial cost on cohesive tasks without demonstrating comparable unique value;
+- report/credential/validation invariants were more reliable when moved into code/tool boundaries than when delegated to additional agents.
+
+Representative live results:
+
+- **Plannerless Scenario02 standard path** (`31833238956`): GPT-5.6 Luna Worker A → Terra strong reviewer; no planning Coordinator, Architect, or Worker B; **12 model calls, 6.198468 AI credits, 150,644 input tokens, 30.858s**. The prior equivalent product path with persistent planning used 14 calls, 10.805286 credits, 181,616 input tokens, and 52.179s—about **43% fewer credits and 41% lower elapsed time** in the measured plannerless run.
+- **Scenario08 high-risk path** (`31831550343`): Terra Worker A ↔ GPT-5.4 mini Worker B → Terra reviewer; repository tests and independent path-containment oracle green.
+- **Plannerless Scenario04 recovery path** (`31833891448`): no persistent planner; Worker A → on-demand Terra recovery coordinator → authorized retry → Worker B → Terra reviewer; deterministic recovery/workspace oracle green; **20 model calls, 17.048493 credits, 67.608s**.
+
+### Packaging and validation
+
+- All clean product slices passed Linux and Windows tests/checks and platform-specific VSIX packaging before consolidation.
+- The consolidated 0.3 candidate remains deliberately unversioned at the package boundary: `package.json` stays at `0.2.0` until release is explicitly authorized.
+- Temporary benchmark/live-validation workflows are not part of the product candidate.
+
+### Deferred
+
+- A Convergent-owned deterministic `run_command` lifecycle with command/PID identity, streamed stdout/stderr, final exit status, timeout/cancel, and process-tree termination evidence remains issue #5 and is targeted after the adaptive-orchestration milestone.
+- Persistent headless service / AG-UI / Open WebUI / CopilotKit frontends remain later multi-frontend work; the current headless implementation is a benchmark/regression harness.
+
+## [0.2.0] - 2026-08-12
 
 ### Orchestration and correctness
 
-- Added a persistent strong coordinator that owns requirements clarification, acceptance-boundary planning, route/risk classification, and bounded repository inspection for the whole request.
-- Added deterministic `read_only`, `trivial`, `standard`, and `high_risk` routing with engine-enforced minimum safety levels.
-- Added `/fast`, `/auto`, and `/thorough` execution flows without allowing Fast to bypass strong coordinator/reviewer safety.
-- Added exact workspace fingerprints over HEAD plus staged, unstaged, and untracked state; A/B convergence requires both workers to approve the same fingerprint.
-- Added task-start workspace baselines that protect pre-existing dirty/staged/untracked user state.
-- Added deterministic task-change manifests and coordinator inspection hints so Worker B and the strong reviewer can begin from exact task-local changed paths.
-- Corrected resumable/recovery execution so the live `RecoveryConvergentEngine` path receives the same deterministic task-change context as the base engine.
-- Added structured worker/reviewer verdict reconciliation so unexplained workspace writes fail closed and valid writes cannot be mislabeled CLEAN.
-- Added Convergent-side semantic validation for `report_plan`; malformed SDK/custom-tool payloads are rejected with a structured retry instead of entering orchestration state and crashing later task execution.
+- Added the original persistent strong coordinator and deterministic `read_only`, `trivial`, `standard`, and `high_risk` routing model.
+- Added `/fast`, `/auto`, and `/thorough` execution flows.
+- Added exact workspace fingerprints over HEAD plus staged, unstaged, and untracked state; A/B convergence required both workers to approve the same fingerprint.
+- Added task-start workspace baselines protecting pre-existing dirty/staged/untracked user state.
+- Added deterministic task-change manifests and coordinator inspection hints.
+- Added structured worker/reviewer verdict reconciliation and semantic validation for `report_plan`.
 
 ### Recovery, resume, and control
 
 - Added persistent workflow checkpoints and `/resume` at safe planning/task/review/blocker boundaries.
-- Added structured worker/reviewer `BLOCKED` handling through a fresh strong read-only recovery coordinator.
-- Added immediate **Convergent: Steer Active Agent** control.
-- Replaced total wall-clock turn timeouts with event-driven tool-stall and agent-inactivity watchdogs plus bounded abort/disconnect.
-- Added optional safe task-boundary checkpoint commits that never sweep a pre-existing dirty worktree into an automatic commit.
-- Reconcile a worker's contradictory CLEAN/CHANGED report to `BLOCKED` when its own structured summary/check evidence says required validation is still blocked or unavailable.
-- Detect missing operator-controlled validation prerequisites such as tokens, credentials, secrets, and named `*_TOKEN`/`*_SECRET`/`*_CREDENTIAL` environment variables.
-- Prevent retry/peer recovery from simply repeating a blocked required validation when an operator-controlled prerequisite is still missing; operator guidance must be obtained first and is injected into the selected recovery turn.
+- Added structured `BLOCKED` handling through a fresh strong read-only recovery coordinator.
+- Added **Convergent: Steer Active Agent**.
+- Replaced wall-clock turn timeouts with event-driven tool-stall and agent-inactivity watchdogs.
+- Added optional safe task-boundary checkpoint commits.
+- Added operator-gated recovery for missing token/credential/secret/environment prerequisites.
 
 ### Review quality and efficiency
 
-- Worker B receives the peer technical position, validation evidence, and deterministic task-change manifest and is required in Fast mode to inspect the actual changed implementation rather than relying only on search/test repetition.
-- Strong review uses revision-scoped validation evidence and remediation-delta review instead of mechanically rerunning the same checks.
-- Fast planning minimizes task count and keeps cohesive implementation plus its acceptance tests together.
-- Headless Fast stops a plan with more than three tasks before Worker A starts, preventing pathological task multiplication from consuming worker/reviewer quota.
-- Tightened Fast worker guidance against redundant file reads, alternate-test-runner probing, and inspection of Copilot/Convergent runtime state for reassurance.
-- Added a workspace-confined `batch_view` inspection tool that can search several literal symbols, match tracked-file globs, and read resulting text files in one model-selected tool action. It bounds output, rejects `.git`/outside/symlink escapes and binary files, and canonicalizes absolute paths only when they remain inside the workspace.
-- Live explicit-model release validation reduced the historical Scenario 03 trajectory from an unfinished 108-call runaway to a complete A/B + strong-review workflow in 19 model calls.
+- Worker B received peer technical position, validation evidence, and deterministic task-change manifests.
+- Strong review used revision-scoped validation evidence and remediation-delta review.
+- Added workspace-confined `batch_view` for bounded multi-symbol search, tracked-file globbing, and multi-file reading.
+- Fast planning minimized task count and stopped pathological headless over-decomposition before worker execution.
 
-### Observability
+### Observability and headless harness
 
-- Added rotating local trajectory audits with manifests, JSONL events, summaries, and analysis output.
-- Audit events include prompts, model/reasoning configuration, model-call/token/cache/context usage, tool activity, A/B passes, strong-review cycles, blocker recovery, steering, and compaction.
-- Added a deterministic offline efficiency analyzer for prompt-to-underlying-model-call amplification, calls/tools per prompt, runtime/session model distribution, Copilot chat-quota delta, task progress, and serialized report recovery.
-- Benchmark evidence records exact Convergent, Copilot SDK, transitive Copilot CLI/runtime, Node, and host-runtime provenance.
+- Added rotating local trajectory audits with prompts/model/tool/token/cache/context/review/recovery/steering telemetry.
+- Added deterministic offline efficiency analysis.
+- Added the Node headless frontend using the real recovery/resume orchestration core.
+- Added models-only preflight, fail-closed explicit-model eligibility checks, hard model/chat-request fuses, and scenario-specific acceptance oracles.
 
-### Headless benchmark harness
+### 0.2 release evidence
 
-- Added a Node headless frontend that uses the real recovery/resume orchestration core while keeping benchmark audit/output outside the target repository.
-- Added separate least-privilege credentials for Copilot execution and private benchmark-repository checkout.
-- Added models-only `listModels()` preflight that creates no agent session and sends no prompt.
-- Headless benchmarks fail closed before inference when configured non-auto strong/adaptive roles would silently degrade to Copilot `auto`.
-- Added hard Fast safeguards for total underlying model calls, underlying model calls per Convergent prompt, and observed Copilot chat-request quota growth, plus a soft AI-credit boundary and independent outer workflow timeout.
-- Made hard model/request fuses phase-aware: an already-billed limit-th call may finish its selected tool action; accepted structured reports at a per-turn cap are preserved while only the session's post-report SDK continuation is cancelled; non-terminal cap hits stop before another model continuation; extra observed calls still fail closed immediately.
-- Added deterministic scenario-specific acceptance oracles for dependency ordering, blocked external validation/recovery, and pre-existing workspace-state safety.
-- Added non-authoritative bounded `auto` diagnostics for plan-only and Worker-A-only live-path measurement when a credential is ineligible for the configured strong/adaptive model policy.
-
-### 0.2 release-validation evidence
-
-The initial Copilot Free/`auto` Scenario 03 run (#403) was cancelled after about 8.8 minutes and 108 underlying model calls without completing. Those findings drove the planning, handoff, inspection, model-policy, and quota changes above.
-
-The final release-validation identity used Copilot Pro with 19 selectable models. The configured policy resolved explicitly to GPT-5.6 Terra for the coordinator and strong reviewer, adaptive Worker A, and GPT-5.4 mini for Worker B in the measured standard Fast tasks.
-
-- **Scenario 03 / CI #595 — dependency ordering:** complete standard task, exact A/B convergence, Terra strong review, deterministic oracle 12/12; **19 model calls**, about **69 s**, about **20.46 internal AI credits**.
-- **Scenario 04 / CI #610 — blocked external validation:** genuine BLOCKED worker path, Terra recovery coordinator, captured operator guidance, token-scoped retry, A/B convergence, Terra strong review, workspace + recovery oracle fully green; **25 model calls**, about **74 s**, about **19.90 internal AI credits**.
-- **Scenario 05 / CI #615 — pre-existing workspace state:** complete implementation with untracked `.vscode/settings.json` and ignored `notes.local` preserved byte-for-byte, exact A/B convergence, Terra strong review, deterministic oracle fully green; **17 model calls**, about **42 s**, about **13.39 internal AI credits**.
-
-All healthy individual agent turns stayed within the 10-call per-turn hard fuse. The measured Pro release runs also show that the older Free-era 12-credit soft boundary is too small for normal explicit-model A/B + strong-review work; benchmark operators should raise the whole-run/soft envelope deliberately while keeping the per-turn fuse and outer timeout bounded.
+- Scenario03 dependency ordering: exact A/B convergence + Terra review + deterministic oracle, 19 model calls.
+- Scenario04 blocked external validation: genuine BLOCKED → Terra recovery coordinator → operator guidance → retry → A/B convergence → Terra review.
+- Scenario05 pre-existing workspace state: dirty/untracked/ignored user state preserved byte-for-byte while implementation completed.
+- Windows x64 and Linux x64 locked-install packaging and VSIX payload verification passed.
 
 ### Packaging and reproducibility
 
-- Added a committed npm lockfile and changed CI/headless workflows to `npm ci` so transitive dependencies—including the bundled Copilot CLI/runtime selected by Copilot SDK 1.0.8—remain reproducible between benchmarks/builds.
-- Added host-derived platform-specific VSIX packaging so a package cannot be labeled as a generic fallback while containing only one platform's native Copilot runtime.
-- Added glibc/musl distinction for `linux-*` versus `alpine-*` VS Code targets.
-- CI verifies Linux x64 and Windows x64 dependency installs, VSIX target metadata, and the platform-specific Copilot runtime contained inside the produced archive.
-- Added platform-packaging regression tests and excluded packaging-only helpers/lock metadata from the VSIX runtime payload.
-- Synchronized `package.json` and the committed lockfile to the 0.2.0 release version without creating a tag or publishing a package.
-
-### Deferred
-
-- A fully stable Convergent-owned `run_command` contract with streamed stdout/stderr, final exit state/code, process-tree termination evidence, and safe stalled-command recovery remains targeted for 0.3.0 (issue #5).
-- Current Copilot SDK `session.rpc.shell.exec` / `shell.kill` primitives may be reused as backend pieces in 0.3 but do not replace the full required command lifecycle contract.
-- VS Code-selected coordinator-model convenience remains a later optional feature (issue #2).
-- Persistent headless service / AG-UI / Open WebUI / CopilotKit frontends remain later multi-frontend work; the current headless implementation is a benchmark/regression harness.
+- Added committed npm lockfile and `npm ci` CI/headless installs.
+- Added host-derived platform-specific VSIX packaging with glibc/musl distinction and native Copilot runtime verification.
+- Synchronized package metadata to release version `0.2.0`.
 
 ## [0.1.0]
 
