@@ -16,6 +16,18 @@ const { workerFlowInstructions, reviewerFlowInstructions } = require('../orchest
 const { createPassTool, createReviewTool } = require('../copilot/tools');
 const { reconcileUnsupportedBlockedReport } = require('./report-integrity-guard');
 
+function normalizeStructuredVerdictArgs(args) {
+  if (!args || typeof args !== 'object' || args.verdict === undefined || args.verdict === null) return args;
+  return { ...args, verdict: String(args.verdict).trim().toLowerCase() };
+}
+
+function verdictNormalizingDefineTool(defineTool) {
+  return (name, definition) => defineTool(name, {
+    ...definition,
+    handler: async (args) => definition.handler(normalizeStructuredVerdictArgs(args)),
+  });
+}
+
 function createIntegritySink(role, ui) {
   let value = null;
   const corrections = [];
@@ -54,7 +66,7 @@ class ExperimentalSessionFactory extends SessionFactory {
   async createWorker(taskId, worker, route = 'standard', risk = 'medium') {
     const safeTaskId = safeSessionPart(taskId);
     const sink = createIntegritySink(`Worker ${worker}`, this.ui);
-    const tool = createPassTool(this.sdk.defineTool, sink);
+    const tool = createPassTool(verdictNormalizingDefineTool(this.sdk.defineTool), sink);
     const batchView = this.batchViewTool();
     const isA = worker === 'A';
     const role = isA ? 'workerA' : 'workerB';
@@ -94,6 +106,7 @@ class ExperimentalSessionFactory extends SessionFactory {
       risk,
       operatorCredentialGuard: Boolean(this.operatorCredentialGuard),
       reportIntegrityGuard: true,
+      structuredVerdictNormalization: true,
     });
     return { session, guard, sink, name: worker, usageName: usageKey, model, reasoningEffort: effort };
   }
@@ -101,7 +114,7 @@ class ExperimentalSessionFactory extends SessionFactory {
   async createReviewer(taskId, route = 'standard', risk = 'medium') {
     const safeTaskId = safeSessionPart(taskId);
     const sink = createIntegritySink('Strong reviewer', this.ui);
-    const tool = createReviewTool(this.sdk.defineTool, sink);
+    const tool = createReviewTool(verdictNormalizingDefineTool(this.sdk.defineTool), sink);
     const batchView = this.batchViewTool();
     const model = this.models.reviewer;
     const desiredEffort = routePolicy(route, risk).efforts.reviewer;
@@ -139,9 +152,15 @@ class ExperimentalSessionFactory extends SessionFactory {
       risk,
       operatorCredentialGuard: Boolean(this.operatorCredentialGuard),
       reportIntegrityGuard: true,
+      structuredVerdictNormalization: true,
     });
     return { session, guard, sink, name, usageName: usageKey, model, reasoningEffort: effort };
   }
 }
 
-module.exports = { ExperimentalSessionFactory, createIntegritySink };
+module.exports = {
+  ExperimentalSessionFactory,
+  createIntegritySink,
+  normalizeStructuredVerdictArgs,
+  verdictNormalizingDefineTool,
+};
