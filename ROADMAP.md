@@ -1,6 +1,6 @@
 # Convergent roadmap
 
-Convergent uses minor versions for architectural milestones and `dev.N` versions for measured iteration within a milestone. The goal is to ship each milestone once its release gates are satisfied rather than extending a development series indefinitely.
+Convergent uses minor versions for architectural milestones. The goal is to ship each milestone once its measured release gates are satisfied rather than indefinitely extending one development line.
 
 ## 0.1.0 — working MVP
 
@@ -8,108 +8,119 @@ Initial usable VS Code/GitHub Copilot SDK multi-agent orchestrator.
 
 ## 0.2.0 — robust usable VS Code orchestrator
 
-The 0.2 line hardens convergence correctness, recovery, review quality, live steering, observability, resume behavior, packaging, and proportionate execution flows while preserving the core safety invariant:
+Released 2026-08-12.
+
+0.2 established the first production-shaped workflow and the safety/observability foundation used by later optimization work:
 
 ```text
 persistent strong coordinator
   -> Worker A / Worker B exact-fingerprint convergence
   -> persistent strong reviewer
-  -> A/B remediation when needed
-  -> same strong reviewer recheck
+  -> blocker recovery / resume / steering
 ```
 
-### Release-candidate state
+Key 0.2 capabilities include deterministic routing, task-change manifests, dirty-worktree protection, `/fast` `/auto` `/thorough`, strong blocker recovery, revision-scoped validation evidence, trajectory audits, a headless benchmark/regression harness, hard inference fuses, and reproducible Windows/Linux VSIX packaging.
 
-The implementation and live release-validation gates are complete on PR #4. Package metadata is synchronized to `0.2.0`; no merge, tag, marketplace publication, or GitHub release is implied by this state.
+The architecture benchmark work after release intentionally treated that pipeline as the reference rather than assuming every permanent role was still cost-effective.
 
-The 0.2 implementation includes:
+## 0.3.0 — adaptive orchestration
 
-- deterministic task-change manifests that hand exact task-local changed paths to Worker B and the strong reviewer;
-- bounded coordinator inspection hints and current-repository facts to reduce Worker A rediscovery;
-- workspace-confined `batch_view` for bounded multi-symbol search, tracked-file globbing, and multi-file reading in one tool action;
-- protection for task-start dirty/staged/untracked user state;
-- `/fast`, `/auto`, and `/thorough` proportionate execution profiles without weakening strong-role safety;
-- acceptance-boundary Fast planning that normally keeps cohesive implementation and acceptance tests in one modifying task;
-- a maximum-three-task headless Fast planning gate before workers start;
-- live recovery/resume execution carrying the same deterministic task-change context as the base engine;
-- fresh strong read-only recovery coordinators for worker/reviewer blockers;
-- Convergent-side semantic validation of `report_plan` before it becomes authoritative;
-- reconciliation of contradictory CLEAN/CHANGED worker reports when their own structured evidence says required validation is still blocked;
-- operator-gated recovery for missing token/credential/secret/environment prerequisites instead of unchanged retry loops;
-- trajectory audits over prompts, model calls, tokens/cache/context, tools, passes, reviews, recovery, steering, and compaction;
-- deterministic offline efficiency summaries and scenario-specific acceptance oracles;
-- fail-closed headless model-policy preflight;
-- phase-aware hard fuses for total model calls, calls per Convergent prompt, and observed Copilot chat-request growth, plus independent outer workflow timeouts;
-- reproducible `npm ci` installs from a committed lockfile that pins the transitive Copilot CLI/runtime;
-- host/platform-targeted VSIX packaging with Windows x64 and Linux x64 payload verification.
+Current integration candidate: PR #16.
 
-Accepted `report_plan`, `report_pass`, `report_review`, and `report_recovery` calls remain authoritative Convergent data. The current Copilot SDK/CLI agent loop may continue after a successful custom-tool result, so Convergent does not generally abort healthy persistent sessions merely to make report tools appear terminal. Headless quota enforcement has one measured exception: when an accepted structured report is selected by the exact limit-th call of a per-turn hard cap, Convergent preserves that report and cancels only that session's unnecessary post-report continuation. This avoids both losing already-paid useful work and permitting an over-budget next model continuation.
+Primary theme: **activate expensive specialists only when their measured value or deterministic risk requires them, while moving correctness invariants into application/tool boundaries.**
 
-### Benchmark evidence
+Target architecture:
 
-The first genuine autonomous headless Scenario 03 run (`#403`) under the earlier Copilot Free/`auto` identity was deliberately cancelled because `/fast` became pathological: 10 Convergent prompts expanded into 108 underlying model calls and consumed a material portion of the benchmark account quota before completion.
+```text
+ONE EXPLICIT COHESIVE MODIFYING REQUEST
+  deterministic plan
+        ↓
+  standard: Luna Worker A -> Terra strong reviewer
+                    ↕ same-A remediation
 
-That trajectory directly produced:
+HIGH-RISK / FULL
+  Worker A <-> diversified Worker B
+        ↓
+  Terra strong reviewer
 
-- compact acceptance-boundary planning;
-- a maximum-three-task Fast headless plan gate;
-- per-turn and whole-run underlying model-call fuses;
-- a hard observed Copilot chat-request quota-delta fuse;
-- deterministic offline prompt/model-call amplification analysis;
-- fail-closed role-model eligibility checks;
-- deterministic task-change handoffs across the live recovery/resume path;
-- `batch_view` to collapse serial repository discovery/read continuations;
-- tighter Fast worker guidance against redundant validation/runtime-state exploration.
+ARCHITECTURE-HIGH
+  strong read-only software architect
+        ↓
+  normal route-specific implementation/review path
 
-After the benchmark identity moved to Copilot Pro, the models-only preflight exposed 19 selectable models and the intended explicit role policy became eligible. The measured release-validation policy resolved GPT-5.6 Terra for the persistent coordinator and strong reviewer, adaptive Worker A, and GPT-5.4 mini for Worker B in the standard Fast scenarios.
+REAL DETERMINISTIC BLOCKED
+  on-demand strong recovery coordinator
+```
 
-Release evidence:
+### Candidate contents
 
-- **Scenario 03 / CI #595 — dependency ordering:** one standard task, exact A/B convergence, Terra strong review, deterministic dependency-ordering oracle 12/12; **19 model calls**, about **69 s**, about **20.46 internal AI credits**.
-- **Scenario 04 / CI #610 — blocked external validation:** genuine BLOCKED path, Terra recovery coordinator, operator guidance, token-scoped retry, A/B convergence, Terra strong review, deterministic workspace/recovery oracle fully green; **25 model calls**, about **74 s**, about **19.90 internal AI credits**.
-- **Scenario 05 / CI #615 — pre-existing workspace state:** normal implementation while untracked `.vscode/settings.json` and ignored `notes.local` remain byte-for-byte unchanged, exact A/B convergence, Terra strong review, deterministic oracle fully green; **17 model calls**, about **42 s**, about **13.39 internal AI credits**.
+- deterministic single-task formation for explicit cohesive modifying requests;
+- conditional strong planning coordinator for ambiguity, read-only investigation, decomposition, choices/tradeoffs, architecture-high work, sensitive boundaries outside deterministic confidence, and oversized requests;
+- `architectureSignificance` independent from failure-impact risk;
+- conditional strong read-only software architect;
+- normal `standard` path without permanent Worker B;
+- high-risk/full peer convergence retained;
+- same-Worker-A remediation after normal strong-review findings;
+- shared session-factory construction across base/resume/recovery execution;
+- case-insensitive structured verdict normalization and fail-closed unknown verdicts;
+- deterministic contradictory-BLOCKED and required-validation reconciliation;
+- operator-controlled credential provenance guard at the Copilot pre-tool boundary;
+- exact-revision + validator-identity successful validation carry;
+- disambiguation between real missing-prerequisite blockers and successful negative-case coverage.
 
-All healthy individual agent turns stayed below the 10-call per-turn hard fuse. The release runs also established that the earlier 12-credit soft benchmark boundary was too small for normal explicit-model strong-review work, so benchmark operators may raise only the whole-run/soft envelope while retaining the measured per-turn fuse and an independent workflow timeout.
+### Measured evidence
 
-### 0.2.0 release gates
+The architecture benchmark matrix covered small parsing work, multi-file feature work, stable ordering, blocked external validation/recovery, dirty workspace safety, a larger cohesive feature, a one-shot iterable bug, and a high-risk path-containment boundary.
 
-The planned gates are satisfied on the release-candidate branch:
+The measured conclusion is route-dependent rather than “more agents is always safer”:
 
-- dependency-ordering/nontrivial explicit-model benchmark: **passed (#595)**;
-- blocker/recovery benchmark: **passed (#610)**;
-- pre-existing workspace-state safety regression: **passed (#615)**;
-- correctness/safety defects exposed by those trajectories: **fixed and regression-tested**;
-- no known critical orchestration regression remains from the measured set;
-- Windows x64 and Linux x64 clean locked-install packaging: **green**;
-- package version synchronized to `0.2.0`;
-- release/benchmark documentation prepared.
+- **strong review remains valuable** and is retained for modifying work;
+- **persistent planning is not justified for every cohesive task**;
+- **Worker B is not justified for every standard task**, but did provide unique semantic/security value on the high-risk containment scenario;
+- deterministic credential/report/validation invariants are more reliable in code than as additional agent instructions.
 
-The remaining action is operational rather than development work: run the final clean exact-head CI after release-documentation changes, then merge/tag/publish only when explicitly authorized. Do not extend `dev.N` merely for cosmetic tuning.
+Representative live candidate validation:
 
-## 0.3.0 — controlled execution/runtime
+- plannerless Scenario02: Luna Worker A -> Terra reviewer, no Coordinator/Architect/B; 12 calls / 6.198468 credits / 30.858s versus 14 calls / 10.805286 credits / 52.179s with persistent planning;
+- Scenario08 high-risk: Terra Worker A <-> GPT-5.4 mini Worker B -> Terra reviewer; repository tests + containment oracle green;
+- plannerless Scenario04: no persistent planner; genuine BLOCKED -> on-demand Terra recovery coordinator -> authorized retry -> B convergence -> Terra review; deterministic recovery oracle green.
 
-Primary theme: Convergent owns a stable command-execution contract well enough to recover safely from command-level stalls.
+### 0.3 release gates
+
+Before release:
+
+- consolidated Linux and Windows tests/checks/package verification on exact candidate head;
+- README/CHANGELOG/ROADMAP/configuration descriptions aligned with the adaptive architecture;
+- one focused live architecture-high smoke on the consolidated product tree;
+- stacked implementation PRs/issues marked as superseded/completed by the consolidated candidate;
+- package version/lockfile changed to `0.3.0` only after an explicit release decision;
+- no tag, merge, Marketplace publication, or GitHub Release without explicit authorization.
+
+## 0.4.0 — controlled command execution/runtime
+
+Primary theme: Convergent owns a stable command-execution lifecycle well enough to recover safely from command-level stalls.
 
 Planned work:
 
-- stable Convergent-owned `run_command` tool contract;
-- command/process identity, stdout/stderr progress, final exit state/code, and bounded capture;
+- complete issue #5;
+- stable Convergent-owned `run_command` contract;
+- command/process identity;
+- streamed stdout/stderr progress and bounded capture;
+- exact final exit state/code;
 - PID/process-tree termination evidence, especially Windows descendants;
 - command-level timeout/cancellation;
-- native command confirmation and progress reporting;
-- safe coordinator recovery after stalled command/tool execution;
-- complete issue #5;
-- automatic steering where audit evidence supports it;
-- measured context/session rotation only if trajectory data justifies it;
-- reduce unnecessary LLM loops where the SDK/runtime provides a safe mechanism.
+- native command confirmation/progress reporting;
+- safe recovery after stalled command/tool execution;
+- evaluate Copilot SDK RPC shell primitives as backend pieces where they provide enough evidence;
+- use a Convergent-owned child-process backend where the SDK/runtime cannot prove the required lifecycle.
 
-Current Copilot SDK/CLI exposes experimental `session.rpc.shell.exec` and `session.rpc.shell.kill` primitives. They are useful candidate backend pieces but do not currently expose enough public streamed output/final exit/status/process-tree semantics to replace the full `run_command` contract. 0.3 should adapt them where they can prove the needed behavior and use a Convergent-owned process backend where they cannot.
+The current Copilot SDK/CLI shell primitives may be useful implementation details, but they do not by themselves define the public Convergent command contract.
 
-## 0.4.0 — headless / multi-frontend
+## 0.5.0 — headless / multi-frontend
 
-The 0.2 headless benchmark runner is deliberately a regression harness, not yet the remote product service.
+The current headless runner is deliberately a benchmark/regression harness, not yet the remote product service.
 
-Potential 0.4 scope:
+Potential scope:
 
 - persistent headless Convergent service;
 - repository/worktree lifecycle management;
