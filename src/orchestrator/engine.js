@@ -1,7 +1,7 @@
 'use strict';
 
 const { workspaceRevision, assertGitRepository } = require('./revision');
-const { normalizeTaskRoute, routePolicy, usesPeerConvergence } = require('./routing');
+const { normalizeTaskRoute, routePolicy, usesPeerConvergence, architectureSignificance } = require('./routing');
 const { UsageTracker } = require('./usage');
 const { SessionFactory } = require('../copilot/session-factory');
 const { OperatorCredentialGuard, reconcileCredentialIntegrityReport } = require('../copilot/operator-credential-guard');
@@ -19,6 +19,47 @@ const {
 
 const MUTATING_WORKER_TOOLS = new Set(['edit', 'apply_patch', 'create']);
 const MAX_INSPECTION_HINTS = 12;
+
+function preserveRequestArchitectureSignificance(plan, userRequest, routingMode = 'adaptive') {
+  const requestArchitecture = architectureSignificance({
+    route: 'standard',
+    risk: 'medium',
+    title: 'Original user request',
+    description: String(userRequest ?? ''),
+  });
+  if (requestArchitecture !== 'high') {
+    return { plan, requestArchitecture, changed: false, requiresCoordinatorCorrection: false };
+  }
+
+  const tasks = Array.isArray(plan?.tasks) ? plan.tasks : [];
+  const routings = tasks.map((task) => normalizeTaskRoute(task, routingMode));
+  if (routings.some((routing) => routing.route !== 'read_only' && routing.architecture === 'high')) {
+    return { plan, requestArchitecture, changed: false, requiresCoordinatorCorrection: false };
+  }
+
+  const modifyingIndexes = routings
+    .map((routing, index) => ({ routing, index }))
+    .filter(({ routing }) => routing.route !== 'read_only')
+    .map(({ index }) => index);
+  if (modifyingIndexes.length !== 1) {
+    return { plan, requestArchitecture, changed: false, requiresCoordinatorCorrection: true };
+  }
+
+  const index = modifyingIndexes[0];
+  const task = tasks[index];
+  const preservationReason = 'Convergent preserved architecture-high semantics from the original user request across coordinator planning.';
+  const nextTask = {
+    ...task,
+    architectureSignificance: 'high',
+    routingReason: [task?.routingReason, preservationReason].filter(Boolean).join('; '),
+  };
+  return {
+    plan: { ...plan, tasks: tasks.map((item, itemIndex) => (itemIndex === index ? nextTask : item)) },
+    requestArchitecture,
+    changed: true,
+    requiresCoordinatorCorrection: false,
+  };
+}
 
 function taskPrompt(task) {
   return [
@@ -357,7 +398,7 @@ class ConvergentEngine {
 
     const beforePlan = await this.revisionProvider(this.workspace);
     const planStartedAt = Date.now();
-    const plan = await requireReport(
+    let plan = await requireReport(
       coordinator.session,
       coordinator.sink,
       [
@@ -371,6 +412,40 @@ ${userRequest}`,
       'report_plan',
       this.agentTurnTimeoutMs,
     );
+
+    let architecturePreservation = preserveRequestArchitectureSignificance(plan, userRequest, this.routingMode);
+    if (architecturePreservation.changed) {
+      plan = architecturePreservation.plan;
+      this.ui?.log?.('Coordinator plan omitted architecture-high significance carried by the original cohesive request; Convergent preserved it deterministically on the single modifying task.');
+      this.ui?.audit?.({
+        type: 'architecture_significance_preserved',
+        source: 'original_request',
+        strategy: 'single_modifying_task_floor',
+      });
+    } else if (architecturePreservation.requiresCoordinatorCorrection) {
+      this.ui?.log?.('Original request has architecture-high semantics but the multi-task coordinator plan did not identify the relevant architecture-high task; requesting one bounded plan correction instead of guessing.');
+      plan = await requireReport(
+        coordinator.session,
+        coordinator.sink,
+        [
+          'Convergent deterministic preflight detected architecture-high semantics in the original user request, but your plan did not preserve architectureSignificance=high on any modifying task.',
+          'Re-submit the complete plan now with architectureSignificance="high" on the specific modifying task or tasks that own the architectural boundary. Do not mark unrelated tasks high merely to satisfy this check, and do not perform more repository exploration unless strictly necessary to identify that task.',
+        ].join('\n'),
+        'report_plan',
+        this.agentTurnTimeoutMs,
+      );
+      architecturePreservation = preserveRequestArchitectureSignificance(plan, userRequest, this.routingMode);
+      if (architecturePreservation.requiresCoordinatorCorrection) {
+        throw new Error('Coordinator plan lost architecture-high semantics from the original request after one bounded correction attempt.');
+      }
+      if (architecturePreservation.changed) plan = architecturePreservation.plan;
+      this.ui?.audit?.({
+        type: 'architecture_significance_preserved',
+        source: 'original_request',
+        strategy: architecturePreservation.changed ? 'single_modifying_task_floor_after_retry' : 'coordinator_plan_correction',
+      });
+    }
+
     const afterPlan = await this.revisionProvider(this.workspace);
     const planningUsage = await this.finishTurn(coordinator, planStartedAt);
     if (beforePlan !== afterPlan) throw new Error('Coordinator changed the workspace despite the read-only contract.');
@@ -712,6 +787,7 @@ module.exports = {
   mutatingToolDelta,
   reconcileWorkerReport,
   reconcileDeterministicIntegrity,
+  preserveRequestArchitectureSignificance,
   sendAndCaptureReport,
   MAX_INSPECTION_HINTS,
 };
