@@ -26,7 +26,7 @@ function isShellTool(input) {
 function isSensitiveCredentialName(name) {
   const normalized = String(name ?? '').trim().toUpperCase();
   if (!normalized) return false;
-  return /(?:^|_)(?:TOKEN|SECRET|PASSWORD|PASSCODE|CREDENTIALS?)(?:$|_)/.test(normalized)
+  return /(?:^|_)(?:TOKEN|SECRET|PASSWORD|PASSCODE|CREDENTIALS?|PAT)(?:$|_)/.test(normalized)
     || /(?:^|_)(?:API|PRIVATE|ACCESS|SECRET)_KEY(?:$|_)/.test(normalized);
 }
 
@@ -36,8 +36,11 @@ function assignedEnvironmentNames(input) {
   const names = new Set();
   const patterns = [
     /(?:^|[\s;&|])(?:export\s+|env\s+|set\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/g,
+    /\bset\s+"([A-Za-z_][A-Za-z0-9_]*)\s*=/gi,
+    /\bsetx\s+["']?([A-Za-z_][A-Za-z0-9_]*)["']?(?=\s|$)/gi,
+    /(?:^|[\s;&|])unset\s+([A-Za-z_][A-Za-z0-9_]*)\b/g,
     /\$env:([A-Za-z_][A-Za-z0-9_]*)\s*=/gi,
-    /\b(?:Set-Item|New-Item)\s+(?:-Path\s+)?Env:([A-Za-z_][A-Za-z0-9_]*)\b/gi,
+    /\b(?:Set-Item|New-Item|Set-Content|Remove-Item|Clear-Item)\s+(?:-Path\s+)?["']?Env:([A-Za-z_][A-Za-z0-9_]*)["']?(?=\s|;|$)/gi,
   ];
   for (const pattern of patterns) {
     for (const match of text.matchAll(pattern)) names.add(match[1].toUpperCase());
@@ -69,7 +72,7 @@ class OperatorCredentialGuard {
   hook(input, { agent = 'unknown' } = {}) {
     const blocked = assignedEnvironmentNames(input)
       .filter(isSensitiveCredentialName)
-      .filter((name) => !this.authorizedNames.has(name) && !environmentHasCredential(this.environment, name));
+      .filter((name) => !this.authorizedNames.has(name));
 
     if (!blocked.length) return { permissionDecision: 'allow' };
 
@@ -81,8 +84,8 @@ class OperatorCredentialGuard {
     return {
       permissionDecision: 'deny',
       permissionDecisionReason: [
-        `Convergent denied an attempt to synthesize operator-controlled credential variable(s): ${blocked.join(', ')}.`,
-        'Do not invent token/secret/password/credential values. Run validation with the inherited environment; if the required credential is missing, report BLOCKED with the exact prerequisite so recovery can obtain operator guidance.',
+        `Convergent denied an attempt to synthesize, overwrite, persist, clear, or remove operator-controlled credential variable(s): ${blocked.join(', ')}.`,
+        'Do not invent, replace, persist, or suppress token/secret/password/credential values. Use inherited credentials without mutating them; if a credential mutation is genuinely required, report BLOCKED so recovery can obtain explicit operator guidance.',
       ].join(' '),
     };
   }
@@ -110,7 +113,7 @@ function reconcileCredentialIntegrityReport(report, violations, role = 'agent') 
   )].sort();
   if (!names.length) return { report, correction: null };
 
-  const integrityCheck = `Convergent denied synthetic assignment to operator-controlled credential variable(s): ${names.join(', ')}.`;
+  const integrityCheck = `Convergent denied synthetic/overwrite/mutation of operator-controlled credential variable(s): ${names.join(', ')}.`;
   const checks = [...new Set([...(report.checks ?? []), integrityCheck])];
   if (report.verdict === 'blocked') {
     return {
@@ -127,12 +130,12 @@ function reconcileCredentialIntegrityReport(report, violations, role = 'agent') 
       findings: report.findings ?? [],
       checks,
       summary: [
-        `Required validation remains blocked because ${role} attempted to synthesize operator-controlled credential variable(s) ${names.join(', ')} and Convergent denied the assignment.`,
+        `Required validation remains blocked because ${role} attempted to synthesize or mutate operator-controlled credential variable(s) ${names.join(', ')} and Convergent denied the mutation.`,
         'Operator context is required before retrying validation with those credentials.',
         originalSummary ? `Original ${role} summary: ${originalSummary}` : '',
       ].filter(Boolean).join(' '),
     },
-    correction: `${role} verdict reconciled to BLOCKED after a denied synthetic credential assignment for ${names.join(', ')}.`,
+    correction: `${role} verdict reconciled to BLOCKED after a denied credential mutation for ${names.join(', ')}.`,
   };
 }
 

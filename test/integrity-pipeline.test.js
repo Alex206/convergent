@@ -18,7 +18,7 @@ test('credential-integrity BLOCKED is preserved through later deterministic reco
 
   assert.equal(result.report.verdict, 'blocked');
   assert.match(result.report.summary, /Operator context is required/);
-  assert.match(result.report.checks.join('\n'), /denied synthetic assignment/i);
+  assert.match(result.report.checks.join('\n'), /denied .*operator-controlled credential/i);
   assert.doesNotMatch(JSON.stringify(result.report), /made-up-secret/);
 });
 

@@ -14,6 +14,12 @@ function hasCompletionEvidence(report = {}) {
   return /\b(?:no unresolved issues?|no actionable issues?|no remaining issues?|implementation (?:is|remains) (?:complete|correct)|(?:current )?implementation satisfies (?:the |all )?(?:request|requirements?|acceptance criteria)|all (?:explicit )?requirements? (?:are|were) satisfied|fully implemented|ready for (?:review|final review))\b/i.test(summary);
 }
 
+function hasExplicitNoIssueEvidence(report = {}) {
+  const summary = compact(report.summary);
+  if (!summary) return false;
+  return /\b(?:no unresolved issues?|no actionable issues?|no remaining issues?|no blockers?|not blocked)\b/i.test(summary);
+}
+
 function hasSuccessfulCheck(report = {}) {
   return (report.checks ?? []).some((raw) => {
     const check = compact(raw);
@@ -34,7 +40,7 @@ function hasUnresolvedBlockerEvidence(report = {}) {
       .replace(/\bno blockers?\b/gi, '')
       .replace(/\bnot blocked\b/gi, '')
       .replace(/\bno errors?\b/gi, '');
-    return /\b(?:blocked|blocker|missing|unavailable|not configured|unset|cannot|unable|failed|failure|error|prerequisite)\b|\bcan['’]t\b|\bexit(?:ed| code)?\s+[1-9]\d*\b|\bnon[- ]zero\b/i.test(value);
+    return /\b(?:blocked|blocker|missing|unavailable|not available|not configured|unset|cannot|unable|failed|failure|error|prerequisite|offline|unreachable|not reachable|timeout|timed out|permission denied|access denied|connection (?:was )?refused|connection (?:was )?reset|skipped|not installed|not running)\b|\bcould\s+not\b|\bcouldn['’]t\b|\bcan['’]t\b|\bexit(?:ed| code)?\s+[1-9]\d*\b|\bnon[- ]zero\b/i.test(value);
   });
 }
 
@@ -42,6 +48,7 @@ function reconcileUnsupportedBlockedReport(report = {}, { changed = false, role 
   if (report.verdict !== 'blocked') return { report, correction: null };
   if ((report.findings ?? []).length > 0) return { report, correction: null };
   if (!hasCompletionEvidence(report)) return { report, correction: null };
+  if (!hasExplicitNoIssueEvidence(report)) return { report, correction: null };
   if (!hasSuccessfulCheck(report)) return { report, correction: null };
   if (hasUnresolvedBlockerEvidence(report)) return { report, correction: null };
 
@@ -53,7 +60,7 @@ function reconcileUnsupportedBlockedReport(report = {}, { changed = false, role 
       verdict,
       checks: [
         ...(report.checks ?? []),
-        'Convergent report-integrity check: unsupported BLOCKED verdict reconciled from the agent\'s own completion and successful-validation evidence.',
+        'Convergent report-integrity check: unsupported BLOCKED verdict reconciled from the agent\'s own explicit no-issue and successful-validation evidence.',
       ],
     },
     correction,
@@ -64,6 +71,7 @@ module.exports = {
   compact,
   reportTexts,
   hasCompletionEvidence,
+  hasExplicitNoIssueEvidence,
   hasSuccessfulCheck,
   hasUnresolvedBlockerEvidence,
   reconcileUnsupportedBlockedReport,

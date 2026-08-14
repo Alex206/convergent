@@ -59,6 +59,27 @@ test('multi-task plan without a preserved architecture owner requires coordinato
   assert.equal(result.requiresCoordinatorCorrection, true);
 });
 
+test('architecture-heavy read-only plan is not forced into a modifying task', () => {
+  const plan = {
+    summary: 'inspection only',
+    tasks: [task('inspect', {
+      title: 'Inspect ownership boundary',
+      description: 'Explain the current ownership and interface boundary.',
+      route: 'read_only',
+      risk: 'low',
+      result: 'The requested read-only explanation.',
+    })],
+  };
+  const result = preserveRequestArchitectureSignificance(
+    plan,
+    'Inspect and explain the ownership boundary between model state and reporting. Do not modify anything.',
+  );
+  assert.equal(result.requestArchitecture, 'high');
+  assert.equal(result.changed, false);
+  assert.equal(result.requiresCoordinatorCorrection, false);
+  assert.equal(result.plan, plan);
+});
+
 test('ordinary request does not acquire architecture significance', () => {
   const plan = { summary: 'one task', tasks: [task('one')] };
   const result = preserveRequestArchitectureSignificance(plan, 'Fix the retry counter behavior and add a regression test.');

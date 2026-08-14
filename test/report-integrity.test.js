@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   hasCompletionEvidence,
+  hasExplicitNoIssueEvidence,
   hasSuccessfulCheck,
   hasUnresolvedBlockerEvidence,
   reconcileUnsupportedBlockedReport,
@@ -19,9 +20,10 @@ function blocked(overrides = {}) {
   };
 }
 
-test('recognizes explicit completion and successful validation evidence', () => {
+test('recognizes explicit completion, no-issue, and successful validation evidence', () => {
   const report = blocked();
   assert.equal(hasCompletionEvidence(report), true);
+  assert.equal(hasExplicitNoIssueEvidence(report), true);
   assert.equal(hasSuccessfulCheck(report), true);
   assert.equal(hasUnresolvedBlockerEvidence(report), false);
 });
@@ -40,6 +42,16 @@ test('reconciles unsupported BLOCKED to CLEAN for a read-only reviewer', () => {
   assert.equal(result.report.verdict, 'clean');
 });
 
+test('completion alone is insufficient to override an explicit BLOCKED verdict', () => {
+  const report = blocked({
+    summary: 'Implementation is complete.',
+    checks: ['Focused tests passed'],
+  });
+  assert.equal(hasCompletionEvidence(report), true);
+  assert.equal(hasExplicitNoIssueEvidence(report), false);
+  assert.equal(reconcileUnsupportedBlockedReport(report, { changed: true }).report.verdict, 'blocked');
+});
+
 test('preserves genuine missing credential prerequisite BLOCKED', () => {
   const report = blocked({
     summary: 'Implementation is complete, but external validation is unavailable because TASKFLOW_RELEASE_TOKEN is not configured.',
@@ -48,6 +60,23 @@ test('preserves genuine missing credential prerequisite BLOCKED', () => {
   const result = reconcileUnsupportedBlockedReport(report, { changed: true });
   assert.equal(hasUnresolvedBlockerEvidence(report), true);
   assert.equal(result.report.verdict, 'blocked');
+});
+
+test('preserves environmental and execution blocker language even when local checks passed', () => {
+  for (const summary of [
+    'Implementation is complete, but the required integration service is offline.',
+    'Implementation is complete, but the integration check could not run.',
+    "Implementation is complete, but the integration check couldn't reach the service.",
+    'Implementation is complete, but the required check timed out.',
+    'Implementation is complete, but validation hit a permission denied error.',
+    'Implementation is complete, but the dependency endpoint is unreachable.',
+    'Implementation is complete, but the connection was refused by the required service.',
+    'Implementation is complete, but the integration check was skipped because Docker is not running.',
+  ]) {
+    const report = blocked({ summary, checks: ['Unit tests passed'] });
+    assert.equal(hasUnresolvedBlockerEvidence(report), true, summary);
+    assert.equal(reconcileUnsupportedBlockedReport(report, { changed: true }).report.verdict, 'blocked', summary);
+  }
 });
 
 test('preserves BLOCKED when validation failed, findings exist, or completion evidence is absent', () => {

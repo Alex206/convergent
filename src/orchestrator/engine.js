@@ -41,6 +41,9 @@ function preserveRequestArchitectureSignificance(plan, userRequest, routingMode 
     .map((routing, index) => ({ routing, index }))
     .filter(({ routing }) => routing.route !== 'read_only')
     .map(({ index }) => index);
+  if (modifyingIndexes.length === 0) {
+    return { plan, requestArchitecture, changed: false, requiresCoordinatorCorrection: false };
+  }
   if (modifyingIndexes.length !== 1) {
     return { plan, requestArchitecture, changed: false, requiresCoordinatorCorrection: true };
   }

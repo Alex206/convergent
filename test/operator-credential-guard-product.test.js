@@ -24,12 +24,18 @@ test('parses object and JSON-string Copilot hook argument shapes', () => {
   assert.equal(hookToolArguments({ toolName: 'bash', toolArgs: 'not-json' }).input, 'not-json');
 });
 
-test('detects bash, CLI JSON-string, and PowerShell credential assignments', () => {
+test('detects common bash, cmd, and PowerShell credential mutations', () => {
   assert.deepEqual(assignedEnvironmentNames(shell('TASKFLOW_RELEASE_TOKEN=test-token python validator.py')), ['TASKFLOW_RELEASE_TOKEN']);
   assert.deepEqual(assignedEnvironmentNames(cliShell('TASKFLOW_RELEASE_TOKEN=secret python validator.py')), ['TASKFLOW_RELEASE_TOKEN']);
+  assert.deepEqual(assignedEnvironmentNames(shell('unset TASKFLOW_RELEASE_TOKEN && python validator.py')), ['TASKFLOW_RELEASE_TOKEN']);
+  assert.deepEqual(assignedEnvironmentNames(shell('set "TASKFLOW_RELEASE_TOKEN=test-token" && python validator.py', 'builtin:cmd')), ['TASKFLOW_RELEASE_TOKEN']);
+  assert.deepEqual(assignedEnvironmentNames(shell('setx "TASKFLOW_RELEASE_TOKEN" "test-token"', 'builtin:cmd')), ['TASKFLOW_RELEASE_TOKEN']);
   assert.deepEqual(assignedEnvironmentNames(shell("$env:TASKFLOW_RELEASE_TOKEN='test-token'; python validator.py", 'builtin:powershell')), ['TASKFLOW_RELEASE_TOKEN']);
+  assert.deepEqual(assignedEnvironmentNames(shell("Set-Item -Path 'Env:TASKFLOW_RELEASE_TOKEN' -Value 'test-token'", 'builtin:powershell')), ['TASKFLOW_RELEASE_TOKEN']);
+  assert.deepEqual(assignedEnvironmentNames(shell("Remove-Item 'Env:TASKFLOW_RELEASE_TOKEN'", 'builtin:powershell')), ['TASKFLOW_RELEASE_TOKEN']);
   assert.equal(isSensitiveCredentialName('CLIENT_SECRET'), true);
   assert.equal(isSensitiveCredentialName('AWS_SECRET_ACCESS_KEY'), true);
+  assert.equal(isSensitiveCredentialName('GITHUB_PAT'), true);
   assert.equal(isSensitiveCredentialName('NODE_ENV'), false);
 });
 
@@ -41,10 +47,32 @@ test('denies invented credentials while allowing ordinary environment assignment
   assert.equal(guard.hook(cliShell('NODE_ENV=test node --test'), { agent: 'Worker A' }).permissionDecision, 'allow');
 });
 
-test('allows credentials inherited from the host environment', () => {
+test('allows inherited credential use without reassignment', () => {
   const guard = new OperatorCredentialGuard({ environment: { TASKFLOW_RELEASE_TOKEN: 'real-value' } });
-  const result = guard.hook(cliShell('TASKFLOW_RELEASE_TOKEN="$TASKFLOW_RELEASE_TOKEN" python validator.py'), { agent: 'Worker A' });
-  assert.equal(result.permissionDecision, 'allow');
+  assert.equal(
+    guard.hook(cliShell('python tools/validator.py "$TASKFLOW_RELEASE_TOKEN"'), { agent: 'Worker A' }).permissionDecision,
+    'allow',
+  );
+  assert.equal(
+    guard.hook(shell('python validator.py $env:TASKFLOW_RELEASE_TOKEN', 'builtin:powershell'), { agent: 'Worker A' }).permissionDecision,
+    'allow',
+  );
+});
+
+test('denies overwriting an inherited credential until operator recovery explicitly authorizes the name', () => {
+  const guard = new OperatorCredentialGuard({ environment: { TASKFLOW_RELEASE_TOKEN: 'real-value' } });
+  const denied = guard.hook(cliShell('TASKFLOW_RELEASE_TOKEN=made-up python validator.py'), { agent: 'Worker A' });
+  assert.equal(denied.permissionDecision, 'deny');
+  assert.deepEqual(guard.consumeViolations('Worker A'), [{ names: ['TASKFLOW_RELEASE_TOKEN'] }]);
+
+  assert.deepEqual(
+    guard.authorizeFromOperatorGuidance('Operator context: set TASKFLOW_RELEASE_TOKEN to the supplied benchmark value for this retry.'),
+    ['TASKFLOW_RELEASE_TOKEN'],
+  );
+  assert.equal(
+    guard.hook(cliShell('TASKFLOW_RELEASE_TOKEN=operator-supplied python validator.py'), { agent: 'Worker A' }).permissionDecision,
+    'allow',
+  );
 });
 
 test('unlocks only credential names carried through explicit operator recovery context', () => {
@@ -64,5 +92,5 @@ test('credential violation reconciles optimistic report to BLOCKED without retai
   assert.equal(reconciled.report.verdict, 'blocked');
   assert.match(reconciled.report.summary, /Operator context is required/);
   assert.match(reconciled.report.summary, /TASKFLOW_RELEASE_TOKEN/);
-  assert.doesNotMatch(JSON.stringify(reconciled.report), /made-up|test-token|real-value/);
+  assert.doesNotMatch(JSON.stringify(reconciled.report), /made-up|test-token|real-value|operator-supplied/);
 });
