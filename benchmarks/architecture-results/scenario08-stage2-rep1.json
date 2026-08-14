@@ -1,0 +1,148 @@
+{
+  "schemaVersion": 1,
+  "benchmark": "scenario08-artifact-path-containment",
+  "stage": 2,
+  "repetition": 1,
+  "targetRepository": "Alex206/convergent-test-repo",
+  "targetSha": "25de9ede2ea17e8e7e212ce057ff8e378fa81264",
+  "fixtureBranch": "benchmark/scenario08-path-containment",
+  "purpose": "High-risk filesystem containment boundary intended to test whether Worker B peer convergence adds semantic security value beyond economical implementation plus independent strong review.",
+  "sourceRuns": [
+    {
+      "workflowRunId": 31788087939,
+      "artifactId": 9214581640,
+      "artifactDigest": "sha256:408e99afea7f8635d2361609a9a954383789197a363767cafadbb2824ce8dff8",
+      "harnessSha": "a0bb1c455fdeba8641f348ea105b40500b0c8257",
+      "arms": ["economical-a1", "released-v02"]
+    },
+    {
+      "workflowRunId": 31790750312,
+      "artifactId": 9215376319,
+      "artifactDigest": "sha256:7d81600f4f7171a39df918940aed9217fdd792d10b7efbf027247cd10c1b71b7",
+      "harnessSha": "5177259bf84fa9e2e9833f772a239301881d1fb7",
+      "arms": ["peer-reviewer"]
+    }
+  ],
+  "externalOracle": {
+    "checks": [
+      "valid and normalized in-root paths resolve canonically",
+      "parent and sibling-prefix traversal are rejected",
+      "absolute paths are rejected even when inside root",
+      "resolved root itself is rejected; result must be a strict descendant",
+      "empty and non-string artifact paths preserve ValueError contract",
+      "symlinks may resolve inside root but cannot escape it"
+    ]
+  },
+  "runs": [
+    {
+      "arm": "economical-a1",
+      "architecture": "implementer-reviewer",
+      "workerA": "GPT-5.6 Luna",
+      "reviewer": "GPT-5.6 Terra",
+      "recoveryPolicy": "strong-coordinator",
+      "runStatus": "complete",
+      "oraclePass": true,
+      "oracleChecksPassed": 6,
+      "oracleChecksTotal": 6,
+      "unitTestsPassed": 21,
+      "calls": 11,
+      "turns": 2,
+      "aiCredits": 6.132819,
+      "inputTokens": 143682,
+      "elapsedMs": 36454,
+      "reviewCycles": 1,
+      "remediationCycles": 0,
+      "roleUsage": [
+        { "role": "Worker A", "model": "GPT-5.6 Luna", "calls": 6, "aiCredits": 0.754139, "inputTokens": 86674 },
+        { "role": "Strong reviewer", "model": "GPT-5.6 Terra", "calls": 5, "aiCredits": 5.37868, "inputTokens": 57008 }
+      ],
+      "trajectoryFinding": "Luna implemented canonical component-aware containment, absolute/root-self rejection and symlink protection; Terra reviewer returned CLEAN. This repetition passed the independent security oracle without peer convergence."
+    },
+    {
+      "arm": "peer-reviewer",
+      "architecture": "peer-competition-reviewer",
+      "workerA": "GPT-5.6 Luna",
+      "workerB": "GPT-5.4 mini",
+      "reviewer": "GPT-5.6 Terra",
+      "recoveryPolicy": "none",
+      "runStatus": "complete",
+      "oraclePass": true,
+      "oracleChecksPassed": 6,
+      "oracleChecksTotal": 6,
+      "unitTestsPassed": 21,
+      "calls": 18,
+      "turns": 4,
+      "aiCredits": 7.909784,
+      "inputTokens": 230022,
+      "elapsedMs": 66417,
+      "convergencePasses": 2,
+      "reviewCycles": 1,
+      "roleUsage": [
+        { "role": "Worker A", "model": "GPT-5.6 Luna", "calls": 8, "aiCredits": 0.912924, "inputTokens": 116846 },
+        { "role": "Worker B", "model": "GPT-5.4 mini", "calls": 6, "aiCredits": 2.19027, "inputTokens": 69472 },
+        { "role": "Strong reviewer", "model": "GPT-5.6 Terra", "calls": 4, "aiCredits": 4.80659, "inputTokens": 43704 }
+      ],
+      "trajectoryFinding": "Worker A's first implementation had a real strict-descendant defect: it assumed Path.relative_to(root).parts would be empty for the root itself, but an exact match is represented as '.'. Worker B independently identified and fixed that root-self escape before convergence; Worker A then accepted the correction and Terra review was CLEAN. The final implementation passed the six-check external security oracle.",
+      "uniquePeerValueObserved": true
+    },
+    {
+      "arm": "released-v02",
+      "architecture": "convergent-v02",
+      "runStatus": "complete",
+      "oraclePass": true,
+      "oracleChecksPassed": 6,
+      "oracleChecksTotal": 6,
+      "unitTestsPassed": 22,
+      "calls": 16,
+      "turns": 4,
+      "aiCredits": 16.38928,
+      "inputTokens": 182256,
+      "elapsedMs": 62128,
+      "roleUsage": [
+        { "role": "Coordinator", "model": "GPT-5.6 Terra", "calls": 3, "aiCredits": 4.44099, "inputTokens": 36032 },
+        { "role": "Worker A", "model": "GPT-5.6 Terra", "calls": 6, "aiCredits": 6.01065, "inputTokens": 64328 },
+        { "role": "Worker B", "model": "GPT-5.4 mini", "calls": 4, "aiCredits": 2.21343, "inputTokens": 51716 },
+        { "role": "Strong reviewer", "model": "GPT-5.6 Terra", "calls": 3, "aiCredits": 3.72421, "inputTokens": 30180 }
+      ]
+    }
+  ],
+  "comparison": {
+    "economicalRelativeToReleasedV02": {
+      "modelCallsReductionPercent": 31.25,
+      "aiCreditsReductionPercent": 62.5803,
+      "inputTokensReductionPercent": 21.1647,
+      "wallTimeReductionPercent": 41.3244,
+      "bothOraclePass": true
+    },
+    "peerRelativeToEconomical": {
+      "modelCallsIncreasePercent": 63.6364,
+      "aiCreditsIncreasePercent": 28.9747,
+      "inputTokensIncreasePercent": 60.091,
+      "wallTimeIncreasePercent": 82.194,
+      "bothOraclePass": true,
+      "uniquePeerDefectDetectionObserved": true
+    },
+    "peerRelativeToReleasedV02": {
+      "modelCallsReductionPercent": -12.5,
+      "aiCreditsReductionPercent": 51.7381,
+      "inputTokensReductionPercent": -26.2082,
+      "wallTimeReductionPercent": -6.9035,
+      "bothOraclePass": true
+    }
+  },
+  "diagnostics": [
+    {
+      "sourceWorkflowRunId": 31788087939,
+      "arm": "peer-reviewer-invalid-recovery-policy",
+      "countAsArchitectureFailure": false,
+      "classification": "harness-configuration-error",
+      "finding": "The first peer probe requested recovery=strong-coordinator, which peer experimental topologies intentionally do not implement. No peer result was produced; the corrected peer-only rerun used recovery=none."
+    }
+  ],
+  "interpretation": [
+    "Economical Luna implementer plus Terra reviewer remained substantially cheaper than released v0.2 and passed the full high-risk security oracle in its matched repetition.",
+    "Unlike the low/medium-risk scenarios, Scenario 08 produced direct evidence that Worker B can add unique semantic value: GPT-5.4 mini found and fixed a real root-self containment defect in Luna's first implementation before strong review.",
+    "Peer convergence is therefore not justified as the default cohesive-task path, but it now has positive evidence as a risk-triggered assurance mechanism for high-risk security/boundary work.",
+    "The efficient product hypothesis becomes route-dependent: Luna -> Terra review for ordinary modifying work; Luna <-> diversified peer -> Terra review for deterministic high-risk tasks; Terra recovery coordinator only after genuine BLOCKED evidence; planning coordinator only for ambiguity/decomposition rather than by default."
+  ]
+}
