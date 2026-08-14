@@ -1,14 +1,25 @@
 'use strict';
 
+function hookToolArguments(input) {
+  const raw = input?.toolArgs ?? input?.tool_input ?? input?.arguments ?? {};
+  if (raw && typeof raw === 'object') return raw;
+  if (typeof raw !== 'string') return {};
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') return parsed;
+  } catch {}
+  return { input: raw };
+}
+
 function shellText(input) {
-  const args = input?.toolArgs ?? {};
+  const args = hookToolArguments(input);
   return [args.command, args.fullCommandText, args.script, args.input, JSON.stringify(args)]
     .filter(Boolean)
     .join(' ');
 }
 
 function isShellTool(input) {
-  const name = String(input?.toolName ?? '').toLowerCase();
+  const name = String(input?.toolName ?? input?.tool_name ?? '').toLowerCase();
   return /(bash|shell|powershell|terminal|cmd)/.test(name);
 }
 
@@ -126,6 +137,7 @@ function reconcileCredentialIntegrityReport(report, violations, role = 'agent') 
 }
 
 module.exports = {
+  hookToolArguments,
   shellText,
   isSensitiveCredentialName,
   assignedEnvironmentNames,
