@@ -1,0 +1,98 @@
+{
+  "schemaVersion": 1,
+  "benchmark": "scenario05-preexisting-workspace-state",
+  "repetition": 1,
+  "targetRepository": "Alex206/convergent-test-repo",
+  "targetSha": "1f38b2606f306ef4902d6159e8c9b7f3d8fe9aef",
+  "sourceRun": {
+    "workflowRunId": 31783303735,
+    "artifactId": 9212541876,
+    "artifactDigest": "sha256:72e4a8220a835c7a8b5f2b0528e80f170ae87e1fd016a8f56047b04b9e7fc91b",
+    "harnessSha": "c8717ad875e075792776668722f9926f188111f0"
+  },
+  "hardEnvelope": {
+    "maxModelCalls": 40,
+    "maxModelCallsPerTurn": 10,
+    "maxChatRequests": 12,
+    "perArmTimeoutSeconds": 420,
+    "maxAiCredits": 0
+  },
+  "initialUserState": {
+    ".vscode/settings.json": "untracked; exact bytes prescribed by Scenario 05",
+    "notes.local": "ignored; exact bytes prescribed by Scenario 05"
+  },
+  "runs": [
+    {
+      "arm": "implementer-reviewer-conditional-recovery",
+      "architecture": "implementer-reviewer",
+      "recoveryPolicy": "strong-coordinator",
+      "runStatus": "complete",
+      "runExit": 0,
+      "oraclePass": true,
+      "oracleChecksPassed": 9,
+      "oracleChecksTotal": 9,
+      "modelCalls": 10,
+      "turns": 2,
+      "elapsedMs": 19405,
+      "aiCredits": 10.23286,
+      "inputTokens": 127650,
+      "outputTokens": 1036,
+      "reasoningTokens": 196,
+      "cacheReadTokens": 99658,
+      "cacheWriteTokens": 27962,
+      "maxContextTokens": 15166,
+      "recoveryReports": 0,
+      "targetUnitTests": "14/14 passed",
+      "actualRoleModels": [
+        { "agent": "Worker A", "role": "workerA", "modelId": "gpt-5.6-terra", "reasoningEffort": "low", "calls": 6 },
+        { "agent": "Strong reviewer", "role": "reviewer", "modelId": "gpt-5.6-terra", "reasoningEffort": "medium", "calls": 4 }
+      ],
+      "trajectoryFinding": "Worker A implemented the exact-match helper and the independent strong reviewer returned CLEAN. Conditional recovery remained dormant. The deterministic oracle verified behavior plus byte-for-byte preservation, untracked/ignored status, and no staging of the pre-existing user-owned files."
+    },
+    {
+      "arm": "convergent-v02-released-reference",
+      "architecture": "convergent-v02",
+      "recoveryPolicy": "strong-coordinator",
+      "runStatus": "complete",
+      "runExit": 0,
+      "oraclePass": true,
+      "oracleChecksPassed": 9,
+      "oracleChecksTotal": 9,
+      "modelCalls": 21,
+      "turns": 6,
+      "elapsedMs": 45818,
+      "aiCredits": 12.511227,
+      "inputTokens": 224552,
+      "outputTokens": 2462,
+      "reasoningTokens": 437,
+      "cacheReadTokens": 166541,
+      "cacheWriteTokens": 46178,
+      "maxContextTokens": 14732,
+      "recoveryReports": 1,
+      "targetUnitTests": "15/15 passed",
+      "actualRoleModels": [
+        { "agent": "Coordinator", "role": "coordinator", "modelId": "gpt-5.6-terra", "reasoningEffort": "medium", "calls": 3 },
+        { "agent": "Worker A", "role": "workerA", "modelId": "gpt-5.6-luna", "reasoningEffort": "low", "calls": 8 },
+        { "agent": "Worker B", "role": "workerB", "modelId": "gpt-5.4-mini", "reasoningEffort": "low", "calls": 4 },
+        { "agent": "Strong reviewer", "role": "reviewer", "modelId": "gpt-5.6-terra", "reasoningEffort": "low", "calls": 3 },
+        { "agent": "Recovery coordinator", "role": "recovery-coordinator", "modelId": "gpt-5.6-terra", "reasoningEffort": "medium", "calls": 3 }
+      ],
+      "trajectoryFinding": "Worker A implemented the task and reported BLOCKED even though its summary described the implementation as complete, the focused tests passed, and the only noted extra state was the deliberately preserved untracked .vscode file. The recovery coordinator correctly chose retry, after which Worker A and Worker B converged and the strong reviewer returned CLEAN. The workspace-safety oracle passed fully, but this stochastic BLOCKED report added a recovery turn and cost."
+    }
+  ],
+  "comparison": {
+    "implementerReviewerRelativeToReleasedV02": {
+      "modelCallsReductionPercent": 52.381,
+      "aiCreditsReductionPercent": 18.2106,
+      "inputTokensReductionPercent": 43.1535,
+      "wallTimeReductionPercent": 57.6476,
+      "bothOraclePass": true
+    }
+  },
+  "interpretation": [
+    "The cheap implementer-reviewer topology preserved the complete Scenario 05 user-owned workspace-state invariant without A/B convergence or an always-on planning coordinator.",
+    "Both architectures were correct, but the cheap arm used about half the model calls and substantially fewer input tokens and wall-clock time.",
+    "The credit reduction is smaller than the call/token reduction because released v0.2 routed its implementation worker to the cheaper GPT-5.6 Luna model, while the controlled cheap arm deliberately used Terra for both implementer and reviewer.",
+    "The released reference also paid for a recovery coordinator after a semantically unnecessary Worker A BLOCKED report; this is useful evidence that conditional roles should be activated from deterministic conditions where possible rather than from an unverified agent verdict alone."
+  ]
+}
