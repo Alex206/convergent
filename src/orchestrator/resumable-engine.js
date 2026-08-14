@@ -594,30 +594,10 @@ class ResumableConvergentEngine extends ConvergentEngine {
         currentTaskIndex: null,
         stage: 'planning',
       });
-      this.ui.phase(
-        resumeState ? 'Resuming planning' : 'Planning',
-        resumeState
-          ? 'The prior run stopped before a plan was accepted. The coordinator is re-running planning from the saved user request.'
-          : 'Coordinator is inspecting the repository, classifying risk, and choosing the proportionate workflow.',
-      );
-      coordinator = await factory.createCoordinator();
-      this.sessions.push(coordinator.session);
-      this.ui.agentConfiguration([
-        { role: 'Coordinator', model: coordinator.model.name ?? coordinator.model.id, effort: coordinator.reasoningEffort },
-      ]);
-
-      const beforePlan = await this.revisionProvider(this.workspace);
-      const planStartedAt = Date.now();
-      plan = await requireReport(
-        coordinator.session,
-        coordinator.sink,
-        `User request:\n\n${userRequest}\n\nInspect only what is needed, clarify material ambiguity, classify every task, and submit the smallest proportionate plan with report_plan. For read_only tasks, perform the inspection now and include the answer in task.result.`,
-        'report_plan',
-        this.agentTurnTimeoutMs,
-      );
-      const afterPlan = await this.revisionProvider(this.workspace);
-      planningUsage = await this.finishTurn(coordinator, planStartedAt);
-      if (beforePlan !== afterPlan) throw new Error('Coordinator changed the workspace despite the read-only contract.');
+      const prepared = await this.preparePlan(factory, userRequest, { resuming: Boolean(resumeState) });
+      plan = prepared.plan;
+      coordinator = prepared.coordinator;
+      planningUsage = prepared.planningUsage;
       this.stats = defaultStats(plan.tasks.length);
     }
 

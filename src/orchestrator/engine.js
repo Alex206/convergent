@@ -5,6 +5,7 @@ const { normalizeTaskRoute, routePolicy, usesPeerConvergence } = require('./rout
 const { UsageTracker } = require('./usage');
 const { SessionFactory } = require('../copilot/session-factory');
 const { OperatorCredentialGuard, reconcileCredentialIntegrityReport } = require('../copilot/operator-credential-guard');
+const { deterministicSingleTaskPlan } = require('./deterministic-planning');
 const { reconcileUnsupportedBlockedReport } = require('./report-integrity');
 const {
   reconcileExplicitValidationBlocker,
@@ -320,13 +321,34 @@ class ConvergentEngine {
     });
   }
 
-  async run(userRequest) {
-    await assertGitRepository(this.workspace);
-    this.checkCancelled();
+  async preparePlan(factory, userRequest, { resuming = false } = {}) {
+    const deterministic = deterministicSingleTaskPlan(userRequest, this.routingMode);
+    if (deterministic) {
+      this.ui.phase(
+        resuming ? 'Resuming task setup' : 'Task setup',
+        'Convergent formed one cohesive modifying task deterministically; no planning model call is required.',
+      );
+      this.ui?.log?.(`Persistent planning coordinator skipped: ${deterministic.reason}; route=${deterministic.routing.route}; risk=${deterministic.routing.risk}; architecture=${deterministic.routing.architecture}; peer=${deterministic.routing.peerConvergence}.`);
+      this.ui?.audit?.({
+        type: 'deterministic_plan_formed',
+        reason: deterministic.reason,
+        routing: deterministic.routing,
+        taskCount: 1,
+      });
+      return {
+        plan: deterministic.plan,
+        coordinator: null,
+        planningUsage: this.getUsageSummary(),
+        planningMode: 'deterministic',
+      };
+    }
 
-    const factory = this.sessionFactory();
-
-    this.ui.phase('Planning', 'Coordinator is inspecting the repository, classifying risk, and choosing the proportionate workflow.');
+    this.ui.phase(
+      resuming ? 'Resuming planning' : 'Planning',
+      resuming
+        ? 'The prior run stopped before a plan was accepted. The strong coordinator is re-running planning from the saved user request.'
+        : 'Strong coordinator is inspecting the repository, classifying/decomposing the request, and choosing the proportionate workflow.',
+    );
     const coordinator = await factory.createCoordinator();
     this.sessions.push(coordinator.session);
     this.ui.agentConfiguration([
@@ -339,7 +361,9 @@ class ConvergentEngine {
       coordinator.session,
       coordinator.sink,
       [
-        `User request:\n\n${userRequest}`,
+        `User request:
+
+${userRequest}`,
         '',
         'Inspect only what is needed, clarify material ambiguity, classify every task, and submit the smallest proportionate plan with report_plan. For read_only tasks, perform the inspection now and include the answer in task.result.',
         `For each modifying task, if planning already identified concrete relevant repository-relative files, paths, symbols, or tests, include up to ${MAX_INSPECTION_HINTS} concise inspectionHints. These are non-authoritative Worker A starting hints, not a transcript: do not copy tool output/context and do not perform extra inspection merely to populate them.`,
@@ -350,6 +374,16 @@ class ConvergentEngine {
     const afterPlan = await this.revisionProvider(this.workspace);
     const planningUsage = await this.finishTurn(coordinator, planStartedAt);
     if (beforePlan !== afterPlan) throw new Error('Coordinator changed the workspace despite the read-only contract.');
+    return { plan, coordinator, planningUsage, planningMode: 'coordinator' };
+  }
+
+  async run(userRequest) {
+    await assertGitRepository(this.workspace);
+    this.checkCancelled();
+
+    const factory = this.sessionFactory();
+    const prepared = await this.preparePlan(factory, userRequest);
+    const { plan, coordinator, planningUsage } = prepared;
 
     const routings = plan.tasks.map((task) => normalizeTaskRoute(task, this.routingMode));
     for (let index = 0; index < plan.tasks.length; index += 1) {
@@ -382,7 +416,7 @@ class ConvergentEngine {
       this.ui.taskCompleted(task, outcome.route);
     }
 
-    await this.usage.refresh(coordinator.usageName, coordinator.session);
+    if (coordinator) await this.usage.refresh(coordinator.usageName, coordinator.session);
     const finalUsage = this.getUsageSummary();
     this.ui.phase('Complete', `All ${plan.tasks.length} task(s) completed under their enforced workflow routes.`);
     this.ui.runSummary(finalUsage, this.stats);
