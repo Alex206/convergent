@@ -1,0 +1,93 @@
+{
+  "schemaVersion": 1,
+  "benchmark": "scenario03-dependency-ordering",
+  "variant": "economical-reviewed",
+  "targetRepository": "Alex206/convergent-test-repo",
+  "targetSha": "1f38b2606f306ef4902d6159e8c9b7f3d8fe9aef",
+  "sourceRun": {
+    "workflowRunId": 31785629625,
+    "artifactId": 9213421422,
+    "artifactDigest": "sha256:e57296133baf9d1aab0b5d109ad81a3c8890e50ca52ee67aedaf804f3736514a",
+    "harnessSha": "546c8e450baa6b7e02ffc1bb658f6b6ad61a3b71"
+  },
+  "architecture": {
+    "topology": "implementer-reviewer",
+    "workerA": "balanced-a -> GPT-5.6 Luna",
+    "reviewer": "strong -> GPT-5.6 Terra",
+    "risk": "medium",
+    "recoveryPolicy": "strong-coordinator, dormant in both repetitions",
+    "persistentCoordinator": false,
+    "workerB": false
+  },
+  "runs": [
+    {
+      "repetition": 1,
+      "status": "complete",
+      "oraclePass": true,
+      "oracle": "12/12",
+      "calls": 11,
+      "aiCredits": 5.426537,
+      "inputTokens": 138483,
+      "elapsedMs": 40989,
+      "turns": 2,
+      "reviewCycles": 1,
+      "recoveryReports": 0,
+      "finding": "Luna implemented the complete dependency model/parser/stable topological-order contract in one turn. Terra independently reviewed it and returned CLEAN; no remediation or recovery was required."
+    },
+    {
+      "repetition": 2,
+      "status": "complete",
+      "oraclePass": true,
+      "oracle": "12/12",
+      "calls": 11,
+      "aiCredits": 5.921183,
+      "inputTokens": 139525,
+      "elapsedMs": 42519,
+      "turns": 2,
+      "reviewCycles": 1,
+      "recoveryReports": 0,
+      "finding": "Second consecutive 12/12 pass. Luna again implemented the stable-order dependency behavior in one turn and Terra review was independently CLEAN."
+    }
+  ],
+  "aggregate": {
+    "passes": "2/2",
+    "averageCalls": 11,
+    "averageAiCredits": 5.67386,
+    "averageInputTokens": 139004,
+    "averageElapsedMs": 41754
+  },
+  "historicalMatchedReferences": {
+    "terraImplementerTerraReviewer": {
+      "passes": "2/2",
+      "averageCalls": 9,
+      "averageAiCredits": 14.291,
+      "averageInputTokens": 123709.5,
+      "averageElapsedMs": 45100
+    },
+    "releasedV02": {
+      "passes": "2/2",
+      "averageCalls": 20,
+      "averageAiCredits": 24.0705,
+      "averageInputTokens": 273723,
+      "averageElapsedMs": 123700
+    },
+    "economicalReviewedRelativeToReleasedV02": {
+      "callsReductionPercent": 45.0,
+      "aiCreditsReductionPercent": 76.4282,
+      "inputTokensReductionPercent": 49.2173,
+      "wallTimeReductionPercent": 66.2458
+    },
+    "economicalReviewedRelativeToTerraReviewed": {
+      "callsIncreasePercent": 22.2222,
+      "aiCreditsReductionPercent": 60.2977,
+      "inputTokensIncreasePercent": 12.3632,
+      "wallTimeReductionPercent": 7.4191
+    }
+  },
+  "interpretation": [
+    "The economical Luna implementer plus Terra reviewer passed the subtle stable-order Scenario 03 oracle in 2/2 fresh repetitions, matching the historical 2/2 correctness of Terra/Terra review and released v0.2.",
+    "Relative to the released reference's two Scenario 03 repetitions it used about 76% fewer AI credits, 45% fewer model calls, 49% fewer input tokens, and 66% less wall time on average.",
+    "Relative to Terra/Terra implementer-reviewer it spent two more model calls per run and about 12% more input tokens, but reduced AI credits by about 60% because implementation work moved to Luna while Terra remained the independent assurance gate.",
+    "Combined with Scenario 01 single-agent failures and Scenario 02 reviewer-discovered compatibility defects, this supports retaining independent strong review while aggressively reducing normal-path implementation and coordination cost."
+  ]
+}
