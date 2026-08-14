@@ -1,0 +1,187 @@
+{
+  "schemaVersion": 1,
+  "benchmark": "scenario02-medium-retry-backoff",
+  "targetRepository": "Alex206/convergent-test-repo",
+  "targetSha": "1f38b2606f306ef4902d6159e8c9b7f3d8fe9aef",
+  "externalOracle": [
+    "retry_backoff_seconds defaults to zero for direct and parsed tasks",
+    "parser accepts non-negative integers and rejects negative/bool/float/string/null values",
+    "Attempt.delay_before_seconds follows base * 2^(N-2), first attempt zero, capped at 300 seconds",
+    "zero backoff remains zero",
+    "reporting includes the configured backoff",
+    "full repository unittest suite passes"
+  ],
+  "repetitions": [
+    {
+      "repetition": 1,
+      "sourceRun": {
+        "workflowRunId": 31784821345,
+        "artifactId": 9213158692,
+        "artifactDigest": "sha256:143902f1ecd3318aae4866f16c3c9bd071e5bcafcc19ec3345b5018fcb13dfba",
+        "harnessSha": "03a2a7ccd86e5f77331baa7fff595b82ad88a3b7"
+      },
+      "protocolState": "before experimental structured-verdict casing normalization",
+      "runs": [
+        {
+          "arm": "economical-a1",
+          "models": "GPT-5.6 Luna implementer -> GPT-5.6 Terra reviewer",
+          "engineStatus": "failed",
+          "externalOraclePass": true,
+          "calls": 24,
+          "aiCredits": 10.24262,
+          "inputTokens": 393924,
+          "elapsedMs": 60127,
+          "classification": "protocol-normalization-failure-not-workspace-correctness-failure",
+          "finding": "Worker A's raw report_pass arguments repeatedly used uppercase CHANGED/CLEAN verdict values. The released core normalizer is case-sensitive and converted them to BLOCKED, causing two unnecessary strong-recovery turns and hitting the recovery-attempt cap before the reviewer could run. The externally inspected workspace nevertheless passed the complete Scenario 02 oracle."
+        },
+        {
+          "arm": "adaptive-a1",
+          "models": "GPT-5.6 Terra implementer -> GPT-5.6 Terra reviewer",
+          "engineStatus": "complete",
+          "externalOraclePass": true,
+          "calls": 17,
+          "aiCredits": 17.29825,
+          "inputTokens": 261900,
+          "elapsedMs": 44209,
+          "finding": "The strong reviewer found a real backwards-compatibility defect in direct Attempt construction and caused same-implementer remediation before accepting the task."
+        },
+        {
+          "arm": "released-v02",
+          "engineStatus": "complete",
+          "externalOraclePass": true,
+          "calls": 23,
+          "aiCredits": 22.93575,
+          "inputTokens": 320579,
+          "elapsedMs": 68707
+        }
+      ]
+    },
+    {
+      "repetition": 2,
+      "sourceRun": {
+        "workflowRunId": 31785237304,
+        "artifactId": 9213294133,
+        "artifactDigest": "sha256:00b68964065696a5f8133c30359538986aeba5bf32546b64d890f44c63259d05",
+        "harnessSha": "1aa136637ae7375a4414c2e293ba547e09bcab6c"
+      },
+      "protocolState": "experimental structured-verdict casing normalization enabled",
+      "runs": [
+        {
+          "arm": "economical-a1",
+          "models": "GPT-5.6 Luna implementer -> GPT-5.6 Terra reviewer",
+          "engineStatus": "complete",
+          "externalOraclePass": true,
+          "calls": 12,
+          "aiCredits": 7.217949,
+          "inputTokens": 180394,
+          "elapsedMs": 43441,
+          "recoveryReports": 0,
+          "reviewCycles": 1,
+          "finding": "Luna produced a correct backwards-compatible implementation in one pass; Terra reviewer independently inspected the multi-file contract and returned CLEAN. No coordinator, Worker B, remediation, or recovery was required."
+        },
+        {
+          "arm": "adaptive-a1",
+          "models": "GPT-5.6 Terra implementer -> GPT-5.6 Terra reviewer",
+          "engineStatus": "complete",
+          "externalOraclePass": true,
+          "calls": 10,
+          "aiCredits": 12.31049,
+          "inputTokens": 131234,
+          "elapsedMs": 34000,
+          "reviewCycles": 1
+        },
+        {
+          "arm": "released-v02",
+          "engineStatus": "complete",
+          "externalOraclePass": true,
+          "calls": 19,
+          "aiCredits": 21.72237,
+          "inputTokens": 241741,
+          "elapsedMs": 51172
+        }
+      ]
+    },
+    {
+      "repetition": 3,
+      "sourceRun": {
+        "workflowRunId": 31785262231,
+        "artifactId": 9213310454,
+        "artifactDigest": "sha256:470d22c9438ca0d2747f77243de17fd95e36fe8fe742b9f1a8335e45314c6ed6",
+        "harnessSha": "45d53575a236672734207f70c9d48c77c905720c"
+      },
+      "protocolState": "experimental structured-verdict casing normalization enabled plus regression tests",
+      "runs": [
+        {
+          "arm": "economical-a1",
+          "models": "GPT-5.6 Luna implementer -> GPT-5.6 Terra reviewer",
+          "engineStatus": "complete",
+          "externalOraclePass": true,
+          "calls": 12,
+          "aiCredits": 6.531804,
+          "inputTokens": 176168,
+          "elapsedMs": 26850,
+          "recoveryReports": 0,
+          "reviewCycles": 1,
+          "finding": "Second consecutive post-fix economical repetition: correct in one Luna implementation turn, clean Terra review, no recovery or remediation."
+        },
+        {
+          "arm": "adaptive-a1",
+          "models": "GPT-5.6 Terra implementer -> GPT-5.6 Terra reviewer",
+          "engineStatus": "complete",
+          "externalOraclePass": true,
+          "calls": 19,
+          "aiCredits": 20.0295,
+          "inputTokens": 312498,
+          "elapsedMs": 57935,
+          "reviewCycles": 2,
+          "finding": "Terra reviewer found two real positional-constructor compatibility defects; the same Terra implementer remediated both and the reviewer then returned CLEAN."
+        },
+        {
+          "arm": "released-v02",
+          "engineStatus": "complete",
+          "externalOraclePass": true,
+          "calls": 16,
+          "aiCredits": 18.344415,
+          "inputTokens": 204254,
+          "elapsedMs": 59412
+        }
+      ]
+    }
+  ],
+  "postFixTwoRepetitionAggregate": {
+    "economicalA1": {
+      "passes": "2/2",
+      "averageCalls": 12,
+      "averageAiCredits": 6.8748765,
+      "averageInputTokens": 178281,
+      "averageElapsedMs": 35145.5
+    },
+    "adaptiveA1": {
+      "passes": "2/2",
+      "averageCalls": 14.5,
+      "averageAiCredits": 16.169995,
+      "averageInputTokens": 221866,
+      "averageElapsedMs": 45967.5
+    },
+    "releasedV02": {
+      "passes": "2/2",
+      "averageCalls": 17.5,
+      "averageAiCredits": 20.0333925,
+      "averageInputTokens": 222997.5,
+      "averageElapsedMs": 55292
+    },
+    "economicalA1RelativeToReleasedV02": {
+      "callsReductionPercent": 31.4286,
+      "aiCreditsReductionPercent": 65.6829,
+      "inputTokensReductionPercent": 20.0525,
+      "wallTimeReductionPercent": 36.4366
+    }
+  },
+  "interpretation": [
+    "After correcting the experimental structured-verdict protocol boundary, economical Luna implementer plus Terra reviewer completed the realistic multi-file Scenario 02 correctly in 2/2 repetitions with no recovery or remediation.",
+    "Across those matched repetitions it averaged about 65.7% fewer AI credits than released v0.2 while both were 2/2 correct.",
+    "The stronger Terra implementer is not monotonically better or cheaper: in one repetition its reviewer found real compatibility defects and required remediation, while the Luna implementations happened to preserve compatibility correctly in both post-fix repetitions.",
+    "Independent strong review remains valuable: Scenario 02 produced concrete reviewer-discovered compatibility defects, while the extra always-on coordinator and Worker B were not required for the successful economical repetitions.",
+    "The pre-fix economical failure demonstrates why deterministic protocol normalization should replace agent-level recovery for malformed-but-obvious structured verdict casing."
+  ]
+}
