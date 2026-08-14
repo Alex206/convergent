@@ -1,0 +1,157 @@
+name: Temporary Scenario 03 Economical Reviewed Probe
+
+on:
+  pull_request:
+    types:
+      - synchronize
+
+jobs:
+  repeat:
+    if: github.event.pull_request.head.ref == 'agent/architecture-benchmark-matrix'
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    permissions:
+      contents: read
+    env:
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+      COPILOT_PLUGIN_DIR_ONLY: 'true'
+      BENCHMARK_REPO_TOKEN: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+      TARGET_SHA: 1f38b2606f306ef4902d6159e8c9b7f3d8fe9aef
+      OUTPUT_ROOT: /tmp/scenario03-economical
+      CONVERGENT_HEADLESS_ANSWERS_JSON: '[]'
+    steps:
+      - name: Require benchmark credentials
+        shell: bash
+        run: |
+          test -n "${COPILOT_GITHUB_TOKEN}" || exit 2
+          test -n "${BENCHMARK_REPO_TOKEN}" || exit 2
+      - name: Checkout Convergent
+        uses: actions/checkout@v6
+      - name: Checkout repetition 1 target
+        uses: actions/checkout@v6
+        with:
+          repository: Alex206/convergent-test-repo
+          ref: ${{ env.TARGET_SHA }}
+          path: target-rep1
+          token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+      - name: Checkout repetition 2 target
+        uses: actions/checkout@v6
+        with:
+          repository: Alex206/convergent-test-repo
+          ref: ${{ env.TARGET_SHA }}
+          path: target-rep2
+          token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - run: npm ci
+
+      - name: Run economical reviewed repetition 1
+        id: rep1
+        continue-on-error: true
+        timeout-minutes: 6
+        shell: bash
+        run: |
+          mkdir -p "${OUTPUT_ROOT}/rep1"
+          set +e
+          node src/headless/architecture-cli.js \
+            --workspace "${GITHUB_WORKSPACE}/target-rep1" \
+            --prompt-file "${GITHUB_WORKSPACE}/target-rep1/benchmarks/03-dependency-ordering.md" \
+            --output-dir "${OUTPUT_ROOT}/rep1" \
+            --architecture implementer-reviewer \
+            --recovery-policy strong-coordinator \
+            --flow fast \
+            --worker-a balanced-a \
+            --reviewer strong \
+            --experimental-risk medium \
+            --audit-level full \
+            --limit-policy pause \
+            --max-model-calls 36 \
+            --max-model-calls-per-turn 10 \
+            --max-chat-requests 12 \
+            --max-ai-credits 0 \
+            2>&1 | tee "${OUTPUT_ROOT}/rep1/runner.log"
+          code=${PIPESTATUS[0]}
+          printf '{"runExit":%s}\n' "${code}" > "${OUTPUT_ROOT}/rep1/arm-status.json"
+          exit "${code}"
+
+      - name: Run economical reviewed repetition 2
+        id: rep2
+        continue-on-error: true
+        timeout-minutes: 6
+        shell: bash
+        run: |
+          mkdir -p "${OUTPUT_ROOT}/rep2"
+          set +e
+          node src/headless/architecture-cli.js \
+            --workspace "${GITHUB_WORKSPACE}/target-rep2" \
+            --prompt-file "${GITHUB_WORKSPACE}/target-rep2/benchmarks/03-dependency-ordering.md" \
+            --output-dir "${OUTPUT_ROOT}/rep2" \
+            --architecture implementer-reviewer \
+            --recovery-policy strong-coordinator \
+            --flow fast \
+            --worker-a balanced-a \
+            --reviewer strong \
+            --experimental-risk medium \
+            --audit-level full \
+            --limit-policy pause \
+            --max-model-calls 36 \
+            --max-model-calls-per-turn 10 \
+            --max-chat-requests 12 \
+            --max-ai-credits 0 \
+            2>&1 | tee "${OUTPUT_ROOT}/rep2/runner.log"
+          code=${PIPESTATUS[0]}
+          printf '{"runExit":%s}\n' "${code}" > "${OUTPUT_ROOT}/rep2/arm-status.json"
+          exit "${code}"
+
+      - name: Run deterministic acceptance
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          for n in 1 2; do
+            out="${OUTPUT_ROOT}/rep${n}"
+            target="${GITHUB_WORKSPACE}/target-rep${n}"
+            node src/headless/scenario03-acceptance.js "${target}" "${out}/scenario03-acceptance.json" > "${out}/acceptance.log" 2>&1
+            (cd "${target}" && python3 -B -m unittest discover -s tests -v) > "${out}/target-validation.log" 2>&1
+            events="$(find "${out}/audit" -name events.jsonl -type f 2>/dev/null | head -n 1)"
+            if [[ -n "${events}" ]]; then node src/headless/efficiency-summary.js "${events}" "${out}/efficiency-summary.json" > "${out}/efficiency-summary.log" 2>&1 || true; fi
+          done
+          exit 0
+
+      - name: Build compact result
+        if: always()
+        shell: bash
+        run: |
+          OUTPUT_ROOT="${OUTPUT_ROOT}" node - <<'NODE' | tee "${OUTPUT_ROOT}/summary.log"
+          const fs = require('node:fs'); const path = require('node:path'); const root = process.env.OUTPUT_ROOT;
+          const runs = [1, 2].map((n) => {
+            const dir = path.join(root, `rep${n}`);
+            const result = JSON.parse(fs.readFileSync(path.join(dir, 'result.json'), 'utf8'));
+            const acceptance = JSON.parse(fs.readFileSync(path.join(dir, 'scenario03-acceptance.json'), 'utf8'));
+            const status = JSON.parse(fs.readFileSync(path.join(dir, 'arm-status.json'), 'utf8'));
+            return { repetition: n, runStatus: result.status, runExit: status.runExit, oraclePass: acceptance.ok === true, oracleChecksPassed: (acceptance.checks ?? []).filter((x) => x.ok).length, oracleChecksTotal: (acceptance.checks ?? []).length, usage: result.usage, actualRoleModels: result.actualRoleModels, stats: result.stats, error: result.error };
+          });
+          const summary = { targetSha: process.env.TARGET_SHA, architecture: 'implementer-reviewer', workerA: 'balanced-a', reviewer: 'strong', runs };
+          fs.writeFileSync(path.join(root, 'summary.json'), JSON.stringify(summary, null, 2) + '\n'); console.log(JSON.stringify(summary, null, 2));
+          NODE
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scenario03-economical-reviewed-${{ github.run_number }}
+          path: /tmp/scenario03-economical
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Require both repetitions
+        if: always()
+        shell: bash
+        run: |
+          SUMMARY="${OUTPUT_ROOT}/summary.json" node - <<'NODE'
+          const fs = require('node:fs'); const data = JSON.parse(fs.readFileSync(process.env.SUMMARY, 'utf8'));
+          for (const r of data.runs ?? []) console.log(`rep${r.repetition}: status=${r.runStatus} oracle=${r.oraclePass} calls=${r.usage?.calls} credits=${r.usage?.aiCredits} input=${r.usage?.inputTokens} elapsedMs=${r.usage?.elapsedMs}`);
+          if ((data.runs ?? []).length !== 2 || data.runs.some((r) => r.runStatus !== 'complete' || r.oraclePass !== true)) process.exit(1);
+          NODE
