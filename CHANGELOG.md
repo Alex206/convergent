@@ -2,7 +2,7 @@
 
 All notable Convergent changes are documented here. Released versions are dated; development candidates remain marked `Unreleased` until an explicit merge/tag/release decision is made.
 
-## [0.3.0] - Unreleased
+## [0.3.0] - 2026-08-15
 
 ### Adaptive orchestration
 
@@ -46,7 +46,7 @@ Representative live results:
 ### Packaging and validation
 
 - All clean product slices passed Linux and Windows tests/checks and platform-specific VSIX packaging before consolidation.
-- The consolidated 0.3 candidate remains deliberately unversioned at the package boundary: `package.json` stays at `0.2.0` until release is explicitly authorized.
+- Release metadata is versioned consistently at `0.3.0`; tagged GitHub releases package and attach verified Linux x64 and Windows x64 VSIXes from the exact `main` release commit.
 - Temporary benchmark/live-validation workflows are not part of the product candidate.
 
 ### Deferred
