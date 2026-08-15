@@ -1,9 +1,16 @@
 'use strict';
 
 const { workspaceRevision, assertGitRepository } = require('./revision');
-const { normalizeTaskRoute, routePolicy } = require('./routing');
+const { normalizeTaskRoute, routePolicy, usesPeerConvergence, architectureSignificance } = require('./routing');
 const { UsageTracker } = require('./usage');
 const { SessionFactory } = require('../copilot/session-factory');
+const { OperatorCredentialGuard, reconcileCredentialIntegrityReport } = require('../copilot/operator-credential-guard');
+const { deterministicSingleTaskPlan } = require('./deterministic-planning');
+const { reconcileUnsupportedBlockedReport } = require('./report-integrity');
+const {
+  reconcileExplicitValidationBlocker,
+  reconcileSupersededValidationBlocker,
+} = require('./report-blocker');
 const {
   captureWorkspaceChangeState,
   buildTaskChangeManifest,
@@ -12,6 +19,50 @@ const {
 
 const MUTATING_WORKER_TOOLS = new Set(['edit', 'apply_patch', 'create']);
 const MAX_INSPECTION_HINTS = 12;
+
+function preserveRequestArchitectureSignificance(plan, userRequest, routingMode = 'adaptive') {
+  const requestArchitecture = architectureSignificance({
+    route: 'standard',
+    risk: 'medium',
+    title: 'Original user request',
+    description: String(userRequest ?? ''),
+  });
+  if (requestArchitecture !== 'high') {
+    return { plan, requestArchitecture, changed: false, requiresCoordinatorCorrection: false };
+  }
+
+  const tasks = Array.isArray(plan?.tasks) ? plan.tasks : [];
+  const routings = tasks.map((task) => normalizeTaskRoute(task, routingMode));
+  if (routings.some((routing) => routing.route !== 'read_only' && routing.architecture === 'high')) {
+    return { plan, requestArchitecture, changed: false, requiresCoordinatorCorrection: false };
+  }
+
+  const modifyingIndexes = routings
+    .map((routing, index) => ({ routing, index }))
+    .filter(({ routing }) => routing.route !== 'read_only')
+    .map(({ index }) => index);
+  if (modifyingIndexes.length === 0) {
+    return { plan, requestArchitecture, changed: false, requiresCoordinatorCorrection: false };
+  }
+  if (modifyingIndexes.length !== 1) {
+    return { plan, requestArchitecture, changed: false, requiresCoordinatorCorrection: true };
+  }
+
+  const index = modifyingIndexes[0];
+  const task = tasks[index];
+  const preservationReason = 'Convergent preserved architecture-high semantics from the original user request across coordinator planning.';
+  const nextTask = {
+    ...task,
+    architectureSignificance: 'high',
+    routingReason: [task?.routingReason, preservationReason].filter(Boolean).join('; '),
+  };
+  return {
+    plan: { ...plan, tasks: tasks.map((item, itemIndex) => (itemIndex === index ? nextTask : item)) },
+    requestArchitecture,
+    changed: true,
+    requiresCoordinatorCorrection: false,
+  };
+}
 
 function taskPrompt(task) {
   return [
@@ -128,6 +179,37 @@ function mutatingToolDelta(beforeSnapshot, afterSnapshot) {
   return Math.max(0, successfulMutatingToolCalls(afterSnapshot) - successfulMutatingToolCalls(beforeSnapshot));
 }
 
+function reconcileDeterministicIntegrity(report, {
+  changed = false,
+  role = 'Agent',
+  credentialViolations = [],
+  validationEvidence = [],
+} = {}) {
+  let current = report;
+  const corrections = [];
+
+  let result = reconcileCredentialIntegrityReport(current, credentialViolations, role);
+  current = result.report;
+  if (result.correction) corrections.push(result.correction);
+
+  result = reconcileExplicitValidationBlocker(current);
+  current = result.report;
+  if (result.correction) corrections.push(result.correction);
+
+  result = reconcileSupersededValidationBlocker(current, validationEvidence, { changed, role });
+  current = result.report;
+  if (result.correction) corrections.push(result.correction);
+
+  const consistency = reconcileUnsupportedBlockedReport(current, { changed, role });
+  current = consistency.report;
+  if (consistency.correction) corrections.push(consistency.correction);
+  return {
+    report: current,
+    correction: corrections.length ? corrections.join(' ') : null,
+    corrections,
+  };
+}
+
 function reconcileWorkerReport(report, changed, workerName, beforeSnapshot, afterSnapshot) {
   if (report.verdict === 'clean' && report.findings?.length) {
     throw new Error(`Worker ${workerName} reported CLEAN with actionable findings.`);
@@ -199,6 +281,7 @@ class ConvergentEngine {
     agentTurnTimeoutMs = 180_000,
     routingMode = 'adaptive',
     reasoningMode = 'adaptive',
+    operatorCredentialGuard = null,
     signal,
     revisionProvider = workspaceRevision,
     changeStateProvider = captureWorkspaceChangeState,
@@ -215,6 +298,7 @@ class ConvergentEngine {
     this.agentTurnTimeoutMs = agentTurnTimeoutMs;
     this.routingMode = routingMode;
     this.reasoningMode = reasoningMode;
+    this.operatorCredentialGuard = operatorCredentialGuard ?? new OperatorCredentialGuard();
     this.signal = signal;
     this.revisionProvider = revisionProvider;
     this.changeStateProvider = changeStateProvider;
@@ -265,11 +349,8 @@ class ConvergentEngine {
     }
   }
 
-  async run(userRequest) {
-    await assertGitRepository(this.workspace);
-    this.checkCancelled();
-
-    const factory = new SessionFactory({
+  sessionFactory() {
+    return new SessionFactory({
       client: this.client,
       sdk: this.sdk,
       workspace: this.workspace,
@@ -280,9 +361,38 @@ class ConvergentEngine {
       usage: this.usage,
       runId: this.runId,
       reasoningMode: this.reasoningMode,
+      operatorCredentialGuard: this.operatorCredentialGuard,
     });
+  }
 
-    this.ui.phase('Planning', 'Coordinator is inspecting the repository, classifying risk, and choosing the proportionate workflow.');
+  async preparePlan(factory, userRequest, { resuming = false } = {}) {
+    const deterministic = deterministicSingleTaskPlan(userRequest, this.routingMode);
+    if (deterministic) {
+      this.ui.phase(
+        resuming ? 'Resuming task setup' : 'Task setup',
+        'Convergent formed one cohesive modifying task deterministically; no planning model call is required.',
+      );
+      this.ui?.log?.(`Persistent planning coordinator skipped: ${deterministic.reason}; route=${deterministic.routing.route}; risk=${deterministic.routing.risk}; architecture=${deterministic.routing.architecture}; peer=${deterministic.routing.peerConvergence}.`);
+      this.ui?.audit?.({
+        type: 'deterministic_plan_formed',
+        reason: deterministic.reason,
+        routing: deterministic.routing,
+        taskCount: 1,
+      });
+      return {
+        plan: deterministic.plan,
+        coordinator: null,
+        planningUsage: this.getUsageSummary(),
+        planningMode: 'deterministic',
+      };
+    }
+
+    this.ui.phase(
+      resuming ? 'Resuming planning' : 'Planning',
+      resuming
+        ? 'The prior run stopped before a plan was accepted. The strong coordinator is re-running planning from the saved user request.'
+        : 'Strong coordinator is inspecting the repository, classifying/decomposing the request, and choosing the proportionate workflow.',
+    );
     const coordinator = await factory.createCoordinator();
     this.sessions.push(coordinator.session);
     this.ui.agentConfiguration([
@@ -291,11 +401,13 @@ class ConvergentEngine {
 
     const beforePlan = await this.revisionProvider(this.workspace);
     const planStartedAt = Date.now();
-    const plan = await requireReport(
+    let plan = await requireReport(
       coordinator.session,
       coordinator.sink,
       [
-        `User request:\n\n${userRequest}`,
+        `User request:
+
+${userRequest}`,
         '',
         'Inspect only what is needed, clarify material ambiguity, classify every task, and submit the smallest proportionate plan with report_plan. For read_only tasks, perform the inspection now and include the answer in task.result.',
         `For each modifying task, if planning already identified concrete relevant repository-relative files, paths, symbols, or tests, include up to ${MAX_INSPECTION_HINTS} concise inspectionHints. These are non-authoritative Worker A starting hints, not a transcript: do not copy tool output/context and do not perform extra inspection merely to populate them.`,
@@ -303,9 +415,53 @@ class ConvergentEngine {
       'report_plan',
       this.agentTurnTimeoutMs,
     );
+
+    let architecturePreservation = preserveRequestArchitectureSignificance(plan, userRequest, this.routingMode);
+    if (architecturePreservation.changed) {
+      plan = architecturePreservation.plan;
+      this.ui?.log?.('Coordinator plan omitted architecture-high significance carried by the original cohesive request; Convergent preserved it deterministically on the single modifying task.');
+      this.ui?.audit?.({
+        type: 'architecture_significance_preserved',
+        source: 'original_request',
+        strategy: 'single_modifying_task_floor',
+      });
+    } else if (architecturePreservation.requiresCoordinatorCorrection) {
+      this.ui?.log?.('Original request has architecture-high semantics but the multi-task coordinator plan did not identify the relevant architecture-high task; requesting one bounded plan correction instead of guessing.');
+      plan = await requireReport(
+        coordinator.session,
+        coordinator.sink,
+        [
+          'Convergent deterministic preflight detected architecture-high semantics in the original user request, but your plan did not preserve architectureSignificance=high on any modifying task.',
+          'Re-submit the complete plan now with architectureSignificance="high" on the specific modifying task or tasks that own the architectural boundary. Do not mark unrelated tasks high merely to satisfy this check, and do not perform more repository exploration unless strictly necessary to identify that task.',
+        ].join('\n'),
+        'report_plan',
+        this.agentTurnTimeoutMs,
+      );
+      architecturePreservation = preserveRequestArchitectureSignificance(plan, userRequest, this.routingMode);
+      if (architecturePreservation.requiresCoordinatorCorrection) {
+        throw new Error('Coordinator plan lost architecture-high semantics from the original request after one bounded correction attempt.');
+      }
+      if (architecturePreservation.changed) plan = architecturePreservation.plan;
+      this.ui?.audit?.({
+        type: 'architecture_significance_preserved',
+        source: 'original_request',
+        strategy: architecturePreservation.changed ? 'single_modifying_task_floor_after_retry' : 'coordinator_plan_correction',
+      });
+    }
+
     const afterPlan = await this.revisionProvider(this.workspace);
     const planningUsage = await this.finishTurn(coordinator, planStartedAt);
     if (beforePlan !== afterPlan) throw new Error('Coordinator changed the workspace despite the read-only contract.');
+    return { plan, coordinator, planningUsage, planningMode: 'coordinator' };
+  }
+
+  async run(userRequest) {
+    await assertGitRepository(this.workspace);
+    this.checkCancelled();
+
+    const factory = this.sessionFactory();
+    const prepared = await this.preparePlan(factory, userRequest);
+    const { plan, coordinator, planningUsage } = prepared;
 
     const routings = plan.tasks.map((task) => normalizeTaskRoute(task, this.routingMode));
     for (let index = 0; index < plan.tasks.length; index += 1) {
@@ -321,7 +477,7 @@ class ConvergentEngine {
       this.checkCancelled();
       const task = plan.tasks[index];
       const routing = routings[index];
-      const policy = routePolicy(routing.route, routing.risk);
+      const policy = routePolicy(routing.route, routing.risk, routing.peerConvergence, routing.architecture);
       this.ui.taskStarted(task, index + 1, plan.tasks.length, routing, policy);
 
       if (routing.route === 'read_only') {
@@ -338,7 +494,7 @@ class ConvergentEngine {
       this.ui.taskCompleted(task, outcome.route);
     }
 
-    await this.usage.refresh(coordinator.usageName, coordinator.session);
+    if (coordinator) await this.usage.refresh(coordinator.usageName, coordinator.session);
     const finalUsage = this.getUsageSummary();
     this.ui.phase('Complete', `All ${plan.tasks.length} task(s) completed under their enforced workflow routes.`);
     this.ui.runSummary(finalUsage, this.stats);
@@ -399,15 +555,16 @@ class ConvergentEngine {
     let workerB;
     let reviewer;
     const route = routing.route;
+    const peerConvergence = usesPeerConvergence(routing);
     try {
       workerA = await factory.createWorker(taskSessionKey, 'A', route, routing.risk);
-      workerB = await factory.createWorker(taskSessionKey, 'B', route, routing.risk);
+      if (peerConvergence) workerB = await factory.createWorker(taskSessionKey, 'B', route, routing.risk);
       reviewer = await factory.createReviewer(taskSessionKey, route, routing.risk);
       const taskContext = await this.createTaskContext(factory);
-      this.sessions.push(workerA.session, workerB.session, reviewer.session);
+      this.sessions.push(...[workerA?.session, workerB?.session, reviewer?.session].filter(Boolean));
       this.ui.agentConfiguration([
         { role: 'A', model: workerA.model.name ?? workerA.model.id, effort: workerA.reasoningEffort },
-        { role: 'B', model: workerB.model.name ?? workerB.model.id, effort: workerB.reasoningEffort },
+        ...(workerB ? [{ role: 'B', model: workerB.model.name ?? workerB.model.id, effort: workerB.reasoningEffort }] : []),
         { role: 'Strong reviewer', model: reviewer.model.name ?? reviewer.model.id, effort: reviewer.reasoningEffort },
       ]);
 
@@ -415,8 +572,12 @@ class ConvergentEngine {
       this.ui.passResult('A', initial.report, initial.changed, initial.revision, initial);
       if (initial.report.verdict === 'blocked') throw new Error(`Worker A is blocked: ${initial.report.summary}`);
 
-      const convergence = await this.convergeWorkers(task, workerA, workerB, workerB, initial, taskContext);
-      await this.runStrongReview(task, workerA, workerB, reviewer, convergence.evidence, routing, taskContext);
+      let evidence = evidenceFromPass(initial);
+      if (peerConvergence) {
+        const convergence = await this.convergeWorkers(task, workerA, workerB, workerB, initial, taskContext);
+        evidence = convergence.evidence;
+      }
+      await this.runStrongReview(task, workerA, workerB, reviewer, evidence, routing, taskContext);
       return { route, escalated: false };
     } finally {
       await this.disposeTaskSessions([workerA?.session, workerB?.session, reviewer?.session]);
@@ -433,18 +594,21 @@ class ConvergentEngine {
     taskContext = null,
   ) {
     let evidence = [...initialEvidence];
+    const peerConvergence = usesPeerConvergence(routing);
     for (let reviewCycle = 1; reviewCycle <= this.maxReviewerCycles; reviewCycle += 1) {
       this.checkCancelled();
       const beforeReview = await this.revisionProvider(this.workspace);
       const changeManifest = await this.currentTaskChangeManifest(taskContext);
       const startedAt = Date.now();
-      const review = await requireReport(
+      let review = await requireReport(
         reviewer.session,
         reviewer.sink,
         [
           taskPrompt(task),
           '',
-          `Worker A and Worker B approved current revision ${beforeReview.slice(0, 12)}.`,
+          peerConvergence
+            ? `Worker A and Worker B approved current revision ${beforeReview.slice(0, 12)}.`
+            : `Worker A produced current revision ${beforeReview.slice(0, 12)}; you are the independent acceptance gate for this standard task.`,
           `Task workflow: ${routing.route}; task risk: ${routing.risk}.`,
           formatValidationEvidence(evidence),
           changeManifest ? `\n${formatTaskChangeManifest(changeManifest, 'Deterministic task change manifest for this review')}` : '',
@@ -457,6 +621,16 @@ class ConvergentEngine {
         'report_review',
         this.agentTurnTimeoutMs,
       );
+      const reviewIntegrity = reconcileDeterministicIntegrity(review, {
+        changed: false,
+        role: 'Strong reviewer',
+        credentialViolations: this.operatorCredentialGuard?.consumeViolations('Strong reviewer') ?? [],
+        validationEvidence: evidence,
+      });
+      review = reviewIntegrity.report;
+      if (reviewIntegrity.correction) {
+        this.ui?.log?.(`Strong reviewer verdict reconciled by Convergent: ${reviewIntegrity.correction}`);
+      }
       const afterReview = await this.revisionProvider(this.workspace);
       const usage = await this.finishTurn(reviewer, startedAt);
       const durationMs = Date.now() - startedAt;
@@ -470,14 +644,23 @@ class ConvergentEngine {
         throw new Error(`Strong review still has findings after ${this.maxReviewerCycles} remediation cycles.`);
       }
 
-      this.ui.phase('Remediation', `Strong reviewer returned ${review.findings.length} finding(s); Worker A remediates, then A/B convergence repeats.`);
+      this.ui.phase(
+        'Remediation',
+        peerConvergence
+          ? `Strong reviewer returned ${review.findings.length} finding(s); Worker A remediates, then A/B convergence repeats.`
+          : `Strong reviewer returned ${review.findings.length} finding(s); Worker A remediates, then the same strong reviewer performs a delta re-check.`,
+      );
       const remediation = await this.runWorkerPass(workerA, task, 'FIX_STRONG_REVIEW_FINDINGS', review.findings, null, taskContext);
       this.ui.passResult('A', remediation.report, remediation.changed, remediation.revision, remediation);
       if (remediation.report.verdict === 'blocked') {
         throw new Error(`Worker A is blocked during strong-review remediation: ${remediation.report.summary}`);
       }
-      const convergence = await this.convergeWorkers(task, workerA, workerB, workerB, remediation, taskContext);
-      evidence = convergence.evidence;
+      if (peerConvergence) {
+        const convergence = await this.convergeWorkers(task, workerA, workerB, workerB, remediation, taskContext);
+        evidence = convergence.evidence;
+      } else {
+        evidence = evidenceFromPass(remediation);
+      }
     }
   }
 
@@ -551,21 +734,29 @@ class ConvergentEngine {
     const usage = await this.finishTurn(worker, startedAt);
     const durationMs = Date.now() - startedAt;
     const changed = before !== after;
-    const reconciled = reconcileWorkerReport(submittedReport, changed, worker.name, beforeGuard, afterGuard);
+    const workspaceReconciled = reconcileWorkerReport(submittedReport, changed, worker.name, beforeGuard, afterGuard);
+    const integrityReconciled = reconcileDeterministicIntegrity(workspaceReconciled.report, {
+      changed,
+      role: `Worker ${worker.name}`,
+      credentialViolations: this.operatorCredentialGuard?.consumeViolations(`Worker ${worker.name}`) ?? [],
+      validationEvidence: peerPass?.revision === after ? evidenceFromPass(peerPass) : [],
+    });
+    const corrections = [workspaceReconciled.correction, integrityReconciled.correction].filter(Boolean);
+    const correction = corrections.length ? corrections.join(' ') : null;
     const changeManifest = await this.currentTaskChangeManifest(taskContext);
 
-    if (reconciled.correction) {
-      this.ui?.log?.(`Worker ${worker.name} verdict reconciled by Convergent: ${reconciled.correction}`);
+    if (correction) {
+      this.ui?.log?.(`Worker ${worker.name} verdict reconciled by Convergent: ${correction}`);
     }
 
     return {
       worker: worker.name,
-      report: reconciled.report,
+      report: integrityReconciled.report,
       changed,
       revision: after,
       durationMs,
       usage,
-      verdictCorrection: reconciled.correction,
+      verdictCorrection: correction,
       changeManifest,
     };
   }
@@ -598,6 +789,8 @@ module.exports = {
   successfulMutatingToolCalls,
   mutatingToolDelta,
   reconcileWorkerReport,
+  reconcileDeterministicIntegrity,
+  preserveRequestArchitectureSignificance,
   sendAndCaptureReport,
   MAX_INSPECTION_HINTS,
 };

@@ -1,0 +1,185 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - package.json
+      - package-lock.json
+      - CHANGELOG.md
+      - .github/workflows/release.yml
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
+      should_release: ${{ steps.release.outputs.should_release }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - id: release
+        name: Validate release metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          lock_version="$(node -p "require('./package-lock.json').version")"
+          tag="v${version}"
+
+          if [[ "${lock_version}" != "${version}" ]]; then
+            echo "package-lock.json version ${lock_version} does not match package.json ${version}." >&2
+            exit 1
+          fi
+          if grep -Fq "## [${version}] - Unreleased" CHANGELOG.md; then
+            echo "CHANGELOG.md still marks ${version} as Unreleased." >&2
+            exit 1
+          fi
+          if ! grep -Eq "^## \[${version//./\.}\] - [0-9]{4}-[0-9]{2}-[0-9]{2}$" CHANGELOG.md; then
+            echo "CHANGELOG.md does not contain a dated ${version} release heading." >&2
+            exit 1
+          fi
+
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+            echo "Tag ${tag} already exists; nothing to release."
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  package-linux-x64:
+    needs: prepare
+    if: needs.prepare.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - run: npm ci
+      - name: Package Linux x64
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: npm run package -- --out "$RUNNER_TEMP/convergent-${VERSION}-linux-x64.vsix"
+      - name: Verify Linux x64 package
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          vsix="$RUNNER_TEMP/convergent-${VERSION}-linux-x64.vsix"
+          unzip -p "$vsix" extension.vsixmanifest | grep -q 'TargetPlatform="linux-x64"'
+          unzip -p "$vsix" extension/package.json | grep -q '"version": "'"${VERSION}"'"'
+          unzip -l "$vsix" | grep -q 'extension/node_modules/@github/copilot-linux-x64/'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: convergent-${{ needs.prepare.outputs.version }}-linux-x64
+          path: ${{ runner.temp }}/convergent-${{ needs.prepare.outputs.version }}-linux-x64.vsix
+          if-no-files-found: error
+          retention-days: 14
+
+  package-windows-x64:
+    needs: prepare
+    if: needs.prepare.outputs.should_release == 'true'
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - run: npm ci
+      - name: Package Windows x64
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: npm run package -- --out "$env:RUNNER_TEMP/convergent-$env:VERSION-win32-x64.vsix"
+      - name: Verify Windows x64 package
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          $vsix = "$env:RUNNER_TEMP/convergent-$env:VERSION-win32-x64.vsix"
+          $zip = "$env:RUNNER_TEMP/convergent-$env:VERSION-win32-x64.zip"
+          $expanded = "$env:RUNNER_TEMP/convergent-$env:VERSION-win32-x64-expanded"
+          Copy-Item $vsix $zip
+          Expand-Archive -LiteralPath $zip -DestinationPath $expanded
+          $manifest = Get-Content -Raw (Join-Path $expanded 'extension.vsixmanifest')
+          if ($manifest -notmatch 'TargetPlatform="win32-x64"') {
+            throw 'VSIX manifest does not declare TargetPlatform="win32-x64".'
+          }
+          $package = Get-Content -Raw (Join-Path $expanded 'extension/package.json') | ConvertFrom-Json
+          if ($package.version -ne $env:VERSION) {
+            throw "VSIX package version $($package.version) does not match release version $env:VERSION."
+          }
+          if (-not (Test-Path (Join-Path $expanded 'extension/node_modules/@github/copilot-win32-x64'))) {
+            throw 'Windows Copilot runtime is missing from the Windows VSIX.'
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: convergent-${{ needs.prepare.outputs.version }}-win32-x64
+          path: ${{ runner.temp }}/convergent-${{ needs.prepare.outputs.version }}-win32-x64.vsix
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs:
+      - prepare
+      - package-linux-x64
+      - package-windows-x64
+    if: needs.prepare.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: convergent-${{ needs.prepare.outputs.version }}-*
+          path: release-assets
+          merge-multiple: true
+      - name: Build release notes from changelog
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          awk -v version="$VERSION" '
+            $0 ~ "^## \\[" version "\\]" { capture=1; next }
+            capture && /^## \[/ { exit }
+            capture { print }
+          ' CHANGELOG.md > release-notes.md
+          test -s release-notes.md
+      - name: Create tag and GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" release-assets/*.vsix \
+            --target "$GITHUB_SHA" \
+            --title "Convergent ${VERSION}" \
+            --notes-file release-notes.md

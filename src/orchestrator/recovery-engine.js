@@ -3,12 +3,10 @@
 const { ResumableConvergentEngine } = require('./resumable-engine');
 const { requireReport, taskPrompt, formatValidationEvidence } = require('./engine');
 const { formatTaskChangeManifest } = require('./task-change-manifest');
-const {
-  reconcileExplicitValidationBlocker,
-  operatorPrerequisiteEvidence,
-} = require('./report-blocker');
+const { operatorPrerequisiteEvidence } = require('./report-blocker');
+const { usesPeerConvergence } = require('./routing');
 const { pauseWorkflow } = require('./control');
-const { SessionFactory } = require('../copilot/session-factory');
+const { runArchitectureAssessment, formatArchitectureAssessment } = require('./architecture-advisor');
 
 function checkpointPass(pass) {
   if (!pass) return null;
@@ -51,6 +49,14 @@ function appendTaskChangeManifestPrompt(prompt, manifest) {
   ].join('\n');
 }
 
+function taskWithArchitectureAssessment(task, assessment) {
+  if (!assessment) return task;
+  return {
+    ...task,
+    description: [task.description, '', formatArchitectureAssessment(assessment)].filter(Boolean).join('\n'),
+  };
+}
+
 class RecoveryConvergentEngine extends ResumableConvergentEngine {
   constructor(options) {
     super(options);
@@ -58,33 +64,32 @@ class RecoveryConvergentEngine extends ResumableConvergentEngine {
   }
 
   recoveryFactory() {
-    return new SessionFactory({
-      client: this.client,
-      sdk: this.sdk,
-      workspace: this.workspace,
-      models: this.models,
-      permissionHandler: this.permissionHandler,
-      userInputHandler: this.userInputHandler,
-      ui: this.ui,
-      usage: this.usage,
-      runId: this.runId,
-      reasoningMode: this.reasoningMode,
-    });
+    return this.sessionFactory();
   }
 
   async runTask(factory, task, taskSessionKey, routing, taskResumeState = null) {
     const previousContext = this.activeTaskChangeContext;
+    const savedAssessment = taskResumeState?.routing?.architectureAssessment ?? null;
+    let effectiveRouting = savedAssessment ? { ...routing, architectureAssessment: savedAssessment } : { ...routing };
+
+    if (effectiveRouting.needsArchitect && !effectiveRouting.architectureAssessment) {
+      const assessment = await runArchitectureAssessment(this, factory, task, effectiveRouting);
+      effectiveRouting = { ...effectiveRouting, architectureAssessment: assessment };
+      await this.saveTaskCheckpoint({ stage: 'architecture_assessed', routing: effectiveRouting });
+    }
+
+    const effectiveTask = taskWithArchitectureAssessment(task, effectiveRouting.architectureAssessment);
     const taskContext = await this.createTaskContext(factory);
     this.activeTaskChangeContext = taskContext;
     try {
-      return await super.runTask(factory, task, taskSessionKey, routing, taskResumeState);
+      return await super.runTask(factory, effectiveTask, taskSessionKey, effectiveRouting, taskResumeState);
     } finally {
       this.activeTaskChangeContext = previousContext;
     }
   }
 
   async runWorkerPass(worker, task, mode, findings, peerPass = null, taskContext = null) {
-    const result = await super.runWorkerPass(
+    return super.runWorkerPass(
       worker,
       task,
       mode,
@@ -92,22 +97,13 @@ class RecoveryConvergentEngine extends ResumableConvergentEngine {
       peerPass,
       taskContext ?? this.activeTaskChangeContext,
     );
-    const reconciled = reconcileExplicitValidationBlocker(result.report);
-    if (reconciled.correction) {
-      this.ui?.log?.(`Worker ${worker.name} verdict reconciled by Convergent: ${reconciled.correction}`);
-    }
-    return {
-      ...result,
-      report: reconciled.report,
-      validationBlockerCorrection: reconciled.correction,
-    };
   }
 
   async consultRecoveryCoordinator(task, kind, detail, { allowPeer = false } = {}) {
     const factory = this.recoveryFactory();
     const coordinator = await factory.createRecoveryCoordinator(task.id, kind);
     this.sessions.push(coordinator.session);
-    const allowed = allowPeer ? 'peer, retry, ask_user, or pause' : 'retry, ask_user, or pause (peer is not available for this required reviewer gate)';
+    const allowed = allowPeer ? 'peer, retry, ask_user, or pause' : 'retry, ask_user, or pause (peer is not available for this recovery path)';
     let operatorAnswer = '';
 
     try {
@@ -193,8 +189,20 @@ class RecoveryConvergentEngine extends ResumableConvergentEngine {
       const guidance = [report.guidance, operatorAnswer ? `Operator context: ${operatorAnswer}` : '']
         .filter(Boolean)
         .join('\n');
+      const authorizedCredentialNames = this.operatorCredentialGuard?.authorizeFromOperatorGuidance(guidance) ?? [];
+      if (authorizedCredentialNames.length) {
+        this.ui?.log?.(`Operator recovery authorized credential variable name(s) for retry: ${authorizedCredentialNames.join(', ')}.`);
+      }
       this.ui?.log?.(`Recovery coordinator decision for ${kind} on ${task.id}: ${report.action}; ${report.rationale}`);
-      this.ui?.audit?.({ type: 'recovery_decision', taskId: task.id, kind, report, operatorAnswer });
+      this.ui?.audit?.({
+        type: 'recovery_decision',
+        taskId: task.id,
+        kind,
+        report,
+        operatorAnswer,
+        operatorContextProvided: Boolean(operatorAnswer),
+        authorizedCredentialNames,
+      });
       return { action: report.action, rationale: report.rationale, guidance };
     } finally {
       await coordinator.session.disconnect?.().catch(() => {});
@@ -216,14 +224,15 @@ class RecoveryConvergentEngine extends ResumableConvergentEngine {
       `Worker ${blockedWorker.name} could not fully complete or validate task ${task.id}. The current workspace fingerprint is preserved${result.changed ? ' and contains worker changes' : ''}; the strong coordinator will assess recovery before another expensive agent turn.`,
     );
 
+    const allowPeer = Boolean(peerWorker) && usesPeerConvergence(routing);
     const decision = await this.consultRecoveryCoordinator(task, `worker-${blockedWorker.name}`, {
       changed: result.changed,
       workspaceFingerprint: result.revision,
       summary: result.report?.summary,
       checks: result.report?.checks ?? [],
-    }, { allowPeer: true });
+    }, { allowPeer });
 
-    if (decision.action === 'peer') {
+    if (decision.action === 'peer' && allowPeer) {
       queueRecoveryInstruction(peerWorker.session, decision.guidance || decision.rationale);
       return { action: 'peer', guidance: decision.guidance };
     }
@@ -302,4 +311,5 @@ module.exports = {
   RecoveryConvergentEngine,
   queueRecoveryInstruction,
   appendTaskChangeManifestPrompt,
+  taskWithArchitectureAssessment,
 };

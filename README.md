@@ -1,44 +1,56 @@
 # Convergent
 
-Convergent is a VS Code extension that turns GitHub Copilot into an adaptive, deterministic multi-agent workflow. A persistent strong coordinator understands the request, clarifies material ambiguity, plans at acceptance boundaries, defines acceptance criteria, and classifies each task; application code decides what workflow is allowed to run.
+Convergent is a VS Code extension that turns GitHub Copilot into an adaptive, deterministic multi-agent coding workflow. Convergent decides which specialist roles are worth paying for, keeps correctness-critical invariants in application code, and escalates assurance when the task actually needs it.
 
 ```text
-User
-  ↓
-Strong coordinator (persistent for the whole request, read-only)
-  ↓ understand + clarify + classify + plan
-Task N
-  ├─ read_only → coordinator result only
-  ├─ trivial   → Worker A implements → Worker B reviews
-  │               B changes anything → escalate to standard
-  ├─ standard  → persistent A ↔ B until both approve the same workspace fingerprint
-  │               → persistent strong reviewer
-  └─ high_risk → same full workflow with higher supported reasoning effort
+User request
+   ↓
+Deterministic request/preflight boundary
+   ├─ one explicit cohesive modifying task → deterministic plan
+   └─ ambiguous / read-only / decomposable / architecture-high → strong planning coordinator
+                                                     ↓
+                                      optional software architect
+                                                     ↓
+Task
+   ├─ read_only → strong coordinator result
+   ├─ trivial   → Worker A → Worker B lightweight review; B changes → escalate
+   ├─ standard  → Worker A → strong reviewer
+   │               reviewer findings → same Worker A remediation → reviewer delta re-check
+   └─ high_risk → Worker A ↔ diversified Worker B exact-fingerprint convergence
+                   → strong reviewer
+
+Any real deterministic BLOCKED state
+   → fresh strong recovery coordinator on demand
+   → operator prerequisite / retry / peer / pause decision
 ```
 
-Every run has a plan, but planning is proportionate: a cohesive request can and usually should remain a single modifying task. Worker A, Worker B, and the strong reviewer keep independent persistent contexts for the lifetime of one implementation task. A and B receive each other's structured reports plus deterministic task-change hints so their technical positions can challenge each other without rediscovering the same repository state. Task-local contexts are discarded when the task completes.
+The central 0.3 design change is **adaptive specialist activation**. Strong planning, software-architecture review, Worker B peer convergence, and recovery are no longer permanent stages merely because they exist. Independent strong review remains the default gate for normal modifying work because the measured benchmark set repeatedly showed unique reviewer value.
 
 ## Current development capabilities
 
 - Native VS Code Copilot Chat entry point: `@convergent`
-- Persistent strong read-only coordinator for requirements, clarification, decomposition, acceptance criteria, route and risk classification
-- Per-task adaptive routes: `read_only`, `trivial`, `standard`, and `high_risk`, with deterministic minimum-route enforcement
+- Deterministic single-task formation for explicit cohesive modifying requests, avoiding an unnecessary planning model call
+- Strong read-only planning coordinator retained for ambiguity, decomposition, read-only investigation, architecture-high work, and cases outside the deterministic confidence boundary
+- Independent `architectureSignificance` classification and a conditional strong read-only software architect
+- Per-task `read_only`, `trivial`, `standard`, and `high_risk` routes with deterministic minimum assurance
+- Standard modifying path: Worker A → strong reviewer → bounded same-A remediation/re-review
+- High-risk or `routingMode=full` path: Worker A ↔ diversified Worker B exact-workspace convergence → strong reviewer
 - Selectable execution flows: `@convergent /fast`, `/auto`, and `/thorough`
-- Risk/flow-aware adaptive Worker A and diversified Worker B model selection; exact configured selectors remain hard overrides
-- Exact workspace-state convergence using an opaque fingerprint over Git HEAD plus staged, unstaged, and untracked content
-- Deterministic task-change manifests handed to peer workers and the strong reviewer
-- Structured coordinator, worker, reviewer, and recovery-coordinator reports owned by the Convergent application
-- A/B adversarial review/fix convergence followed by a required strong-review gate
-- Revision-scoped validation evidence so successful checks need not be rerun mechanically
-- `BLOCKED` recovery through a fresh strong read-only recovery coordinator
+- Runtime model discovery and risk/flow-aware adaptive model selection; exact configured selectors remain hard overrides
+- Exact workspace fingerprints over Git HEAD plus staged, unstaged, and untracked state
+- Deterministic task-change manifests and revision-scoped validation evidence
+- Product-boundary report integrity: case-insensitive verdict normalization, fail-closed unknown verdicts, contradictory-BLOCKED reconciliation, and required/external-validation reconciliation
+- Operator-controlled credential provenance guard at the Copilot pre-tool boundary
+- Shared credential authorization across normal and recovery sessions without persisting credential values
+- Exact-revision + validator-identity carry of successful required-validation evidence
+- `BLOCKED` recovery through a fresh strong read-only recovery coordinator created only when needed
 - Manual **Convergent: Steer Active Agent** support using Copilot immediate steering
 - Event-driven inactivity/tool-stall watchdogs rather than a total wall-clock turn timeout
 - Safe workflow checkpoints with `@convergent /resume`
-- Soft worker/reviewer/AI-credit decision limits
 - Optional `convergent.taskCommits=safe` task-boundary checkpoint commits
 - Rotating local trajectory audit with per-model-call token/cache/context/tool/review telemetry
 - Task-start Git-status baselines that protect dirty/staged/untracked user state
-- A headless benchmark harness with model-policy preflight, deterministic offline efficiency analysis, and hard quota/runaway-loop fuses
+- Headless benchmark harness with deterministic acceptance oracles, model-policy preflight, offline efficiency analysis, and hard runaway-loop fuses
 
 ## Requirements
 
@@ -62,7 +74,7 @@ npm run package
 
 `npm run package` is intentionally **host-targeted**. It detects the current OS/architecture and passes the matching VS Code target (`win32-x64`, `linux-x64`, `darwin-arm64`, and so on) to `vsce`. This matters because the Copilot SDK installs a platform-specific native/CLI runtime. Do not invoke raw `vsce package` or override `--target` on the wrapper: a VSIX must be built on the same platform/architecture whose native Copilot dependencies it contains.
 
-CI currently proves this end to end for Windows x64 and Linux x64, including the target declared in `extension.vsixmanifest` and the native Copilot runtime actually present inside the resulting VSIX.
+CI proves this end to end for Windows x64 and Linux x64, including the target declared in `extension.vsixmanifest` and the platform-specific Copilot runtime contained in the produced VSIX.
 
 Press `F5` in VS Code to launch an Extension Development Host, open a Git repository, then use:
 
@@ -82,44 +94,77 @@ The default `convergent.flow` is `auto`. A single run can override it in Chat:
 @convergent /thorough Implement <task>
 ```
 
-| Flow | Intent | Initial behavior |
+| Flow | Intent | Behavior |
 | --- | --- | --- |
-| `fast` | Reach an accepted reviewed result quickly | Bounded coordinator inspection; cohesive planning; focused workers/reviewer; max 3 A/B passes before asking; initial strong review plus one automatic remediation/delta re-review |
-| `auto` | Balanced default | Adaptive route/risk model selection and configured soft tranches |
-| `thorough` | Favor assurance over speed | Broader first review and at least the normal full convergence/review tranches |
+| `fast` | Reach an accepted reviewed result quickly | Focused inspection/review and shorter autonomous tranches; asks sooner before spending more iterations |
+| `auto` | Balanced default | Adaptive planning, routing, specialist activation, model selection, and configured soft tranches |
+| `thorough` | Favor assurance over speed | Broader first review and larger convergence/review tranches |
 
-Fast does **not** mean “always use the cheapest model” or “always use the strongest model.” Low-risk standard work stays on an economical capable tier; medium-risk Fast work may promote Worker A; high-risk work retains the stronger tier. Exact user-configured model ids/names/presets override adaptation.
+Fast does **not** mean “always use the cheapest model” or “always use the strongest model.” Route/risk still controls the minimum assurance path, and exact user-configured model ids/names/presets override adaptation.
 
-Fast planning also minimizes task count. Repository inspection performed while planning is coordinator work, not a separate plan task. A cohesive feature plus the tests required to accept it should normally remain one modifying task rather than being split by file or implementation phase.
+Planning is also adaptive. One explicit cohesive modifying request can become one deterministic task without a coordinator model call. Convergent falls back to strong planning when the request is read-only, ambiguous, presents unresolved choices/tradeoffs, is obviously decomposable into multiple independent tasks, has high architecture significance, crosses sensitive public/release boundaries that cannot be conservatively classified, or exceeds the bounded deterministic classifier.
 
-## Protecting pre-existing workspace state
+## Adaptive routing and specialist activation
 
-Convergent deliberately supports dirty worktrees, so a dirty/untracked path cannot be treated as task output merely because it appears in the final `git status`.
+The default `convergent.routingMode` is `adaptive`. Route/risk and architecture significance are separate dimensions: a small security-boundary fix can be high-risk without needing a software architect, while a broad structural refactor can require the architect even if its immediate failure impact is not security-critical.
 
-Before task work begins, Convergent captures a bounded Git-status baseline and task-start change state. Paths present at task start are protected from cleanup/reversion merely to make status clean. A task may still legitimately edit such a path when the task itself requires it; the baseline is provenance guidance, not blanket write protection.
+| Route | Intended use | Enforced workflow |
+| --- | --- | --- |
+| `read_only` | Inspection/explanation; no writes required | Strong planning/coordinator result only |
+| `trivial` | Clearly low-risk docs/comment/text/wording change | Worker A → Worker B lightweight review; any B change escalates |
+| `standard` | Normal source, scripts, tests, build/CI/config, feature or bug-fix work | Worker A → strong reviewer; same-A remediation and reviewer delta re-check when needed |
+| `high_risk` | Security/auth/credentials, concurrency, migrations, destructive/release-sensitive or similar high-impact boundaries | Worker A ↔ diversified Worker B exact-fingerprint convergence → strong reviewer |
 
-The deterministic task-change manifest compares task-start state with the current state. Unchanged pre-existing dirty/staged/untracked paths are excluded, while a pre-existing path changed during the task is explicitly marked. Those exact paths are supplied to Worker B and the strong reviewer to reduce path rediscovery.
+Set `convergent.routingMode` to `full` to force every modifying task through peer convergence plus strong review. Read-only work remains read-only.
+
+A high `architectureSignificance` assessment adds a **read-only software architect before implementation**. The architect is explicitly prompted to prefer the simplest architecture compatible with the existing repository and to avoid abstraction or patterns without concrete need.
+
+## Model selection and reasoning effort
+
+Convergent discovers models from `client.listModels()` at runtime. Worker models are selected after task classification so route, risk, and flow can influence capability.
+
+| Role | Default policy |
+| --- | --- |
+| Planning coordinator | Strong model, but only activated when planning is not safely deterministic |
+| Software architect | Strong read-only specialist, only for architecture-significant modifying work |
+| Worker A | Adaptive implementation model; measured standard path currently prefers GPT-5.6 Luna when available, while high-risk promotes capability |
+| Worker B | Adaptive-diverse peer used for high-risk/full assurance, preferring a capable model different from Worker A |
+| Strong reviewer | Strong independent reviewer; effort scales with task risk when supported |
+| Recovery coordinator | Fresh strong read-only coordinator created only after a real deterministic BLOCKED state |
+
+Exact model ids/names and explicit presets are overrides. `convergent.reasoningMode=adaptive` applies role/route-driven effort only when the selected model advertises support; `model-default` leaves reasoning effort untouched.
+
+The headless benchmark path is stricter than the interactive product path: it records the runtime model list before inference and refuses a deterministic benchmark when configured non-auto strong/adaptive roles would silently degrade to Copilot `auto`.
 
 ## Reviewer behavior
 
-The first strong-review cycle is a bounded finding-collection sweep. Finding one valid defect is not a reason to stop: the reviewer should finish the selected scope and report all independently discoverable actionable findings together.
+Independent strong review is retained for normal modifying work. Across the measured architecture scenarios it repeatedly found issues that an unreviewed implementer missed or strengthened acceptance coverage enough to justify its cost.
 
-Later review cycles first verify previous findings, then inspect the remediation delta and directly affected callers/tests/interfaces. They should not repeat the complete original review unless remediation materially expands scope or concrete evidence/risk warrants it.
+For a standard task, reviewer findings return to the **same Worker A** for bounded remediation. The reviewer then verifies previous findings and inspects the remediation delta and directly affected callers/tests/interfaces. Worker B is not introduced merely because remediation was needed.
 
-For Fast low-risk tasks, validation evidence already produced by A/B on the exact reviewed workspace fingerprint should normally be reused rather than mechanically repeating the same successful test command.
+For high-risk/full tasks, A/B peer convergence happens before strong review. If reviewer remediation changes the exact workspace revision, the high-risk path can re-establish peer convergence before the final reviewer gate.
 
-## Blocker recovery and steering
+Successful required-validation evidence may be reused only when Convergent can prove the same validator identity already succeeded on the **exact workspace revision** under review. A later credential-less rerun cannot invalidate that exact-revision evidence, but a different validator or changed revision requires fresh evidence.
 
-A worker or strong-reviewer `BLOCKED` verdict is not approval and does not automatically terminate the workflow. Convergent checkpoints the state and invokes a fresh strong read-only recovery coordinator.
+## Blocker recovery and credential provenance
 
-Its structured actions are:
+A worker or strong-reviewer `BLOCKED` verdict is not approval. Convergent first reconciles the structured report against deterministic evidence. A genuine blocker checkpoints state and invokes a fresh strong read-only recovery coordinator.
 
-- worker blocker: `peer`, `retry`, `ask_user`, or `pause`;
-- reviewer blocker: `retry`, `ask_user`, or `pause` because the required reviewer gate cannot be bypassed.
+Worker recovery actions are `peer`, `retry`, `ask_user`, or `pause`; reviewer recovery cannot bypass the required reviewer gate and therefore uses `retry`, `ask_user`, or `pause`. Peer fallback is offered only on routes that actually have a peer role.
 
-If `ask_user` is selected, Convergent opens a native free-text question. The answer returns to the same recovery coordinator, which chooses the final deterministic action. Recovery/operator guidance is injected once into the selected agent's next normal turn.
+Operator-controlled credentials are protected separately from model reasoning. If an agent tries to synthesize a named token/secret/password/credential rather than obtaining operator authorization, the pre-tool boundary denies the command. Recovery can authorize the **credential name** for the selected retry without storing the credential value in Convergent's provenance state.
+
+If `ask_user` is selected, Convergent opens a native free-text question. The answer returns to the recovery coordinator, which chooses the final deterministic action. Recovery/operator guidance is injected once into the selected agent's next normal turn.
 
 While an agent is working, **Convergent: Steer Active Agent** can inject an operator message into the active Copilot turn without restarting the task.
+
+## Protecting pre-existing workspace state
+
+Convergent deliberately supports dirty worktrees, so a dirty/untracked path cannot be treated as task output merely because it appears in final `git status`.
+
+Before task work begins, Convergent captures a bounded Git-status baseline and task-start change state. Paths present at task start are protected from cleanup/reversion merely to make status clean. A task may still legitimately edit such a path when the task requires it; the baseline is provenance guidance, not blanket write protection.
+
+The deterministic task-change manifest compares task-start state with current state. Unchanged pre-existing dirty/staged/untracked paths are excluded, while a pre-existing path changed during the task is explicitly marked. Those task-local paths are supplied to whichever peer/reviewer roles are active.
 
 ## Resume after interruption or pause
 
@@ -133,55 +178,31 @@ or **Convergent: Resume Last Workflow**.
 
 Resume is boundary-based rather than pretending to restore an opaque in-flight model/tool call:
 
-- interrupted during coordinator planning: keep the original request and re-run planning;
+- interrupted during strong planning: keep the original request and re-run planning;
+- deterministic plan already accepted: reuse it rather than adding a planner solely because the run resumed;
+- completed architecture assessment: reuse it when the saved task/revision boundary is still valid;
 - interrupted between tasks: continue with the next pending task and skip completed tasks;
 - generic interruption inside a task: restart only that task against the current workspace;
 - `worker_blocked`: re-enter blocker recovery when the saved workspace fingerprint still matches;
 - `strong_review_pending`: continue at the saved strong-review boundary;
-- `strong_review_findings`: continue from remediation of the saved findings;
-- `strong_review_blocked`: resume the same required review cycle/recovery boundary.
+- `strong_review_findings`: continue from remediation of saved findings;
+- `strong_review_blocked`: resume the same required review/recovery boundary.
 
 If a fine-grained checkpoint no longer matches the workspace, Convergent discards stale fine-grained state and falls back to restarting only that task.
 
-## Adaptive routing
+## Headless benchmarks and measured architecture evidence
 
-The strong coordinator classifies every task, but the JavaScript engine validates the result. The default `convergent.routingMode` is `adaptive`.
+See [`HEADLESS_BENCHMARKS.md`](HEADLESS_BENCHMARKS.md) and [`ARCHITECTURE_BENCHMARKS.md`](ARCHITECTURE_BENCHMARKS.md) for the harness and architecture-study contracts.
 
-| Route | Intended use | Enforced workflow |
-| --- | --- | --- |
-| `read_only` | Inspection/explanation; no writes required | Strong coordinator only |
-| `trivial` | Clearly low-risk docs/comment/text/wording change | A implement → B review; B changes → escalate |
-| `standard` | Executable source, scripts, tests, build/CI/configuration, normal feature/bugfix/code change | A/B same-fingerprint convergence → strong review |
-| `high_risk` | Security/auth, concurrency, migrations, destructive/production-release/architectural changes | Full workflow with higher supported reasoning effort |
+The 0.3 architecture was selected from scenarios that separated topology from model policy and used deterministic external acceptance oracles. The main measured conclusions are:
 
-Set `convergent.routingMode` to `full` to force every modifying task through at least the standard full-review workflow.
+- unreviewed single-agent modifying work is not a safe general default;
+- independent strong review has repeated unique value;
+- Worker B adds cost on ordinary work but produced unique semantic/security value on a path-containment boundary, supporting high-risk-only peer activation;
+- always-on strong planning was expensive on cohesive tasks without showing corresponding unique value;
+- deterministic invariants such as credential provenance and report/validation integrity belong in code, not in additional permanent agents.
 
-## Model selection and reasoning effort
-
-Convergent discovers models from `client.listModels()` at runtime. Worker models are selected only after the coordinator classifies the task so route/risk/flow can influence capability.
-
-| Role | Selector | Default behavior |
-| --- | --- | --- |
-| Coordinator | `strong` | Strong model; medium reasoning when supported; persistent for the complete request |
-| Worker A | `adaptive` | Low-risk standard → economical capable tier; medium-risk Fast may promote; high-risk → stronger implementation tier |
-| Worker B | `adaptive-diverse` | Scale with route/risk while preferring a different capable model from Worker A |
-| Strong reviewer | `strong` | Strong model; effort scales with task risk when supported |
-
-Exact model ids/names and explicit presets are overrides. `convergent.reasoningMode=adaptive` applies role/route-driven effort only when the selected model advertises support. Set it to `model-default` to leave reasoning effort untouched.
-
-The headless benchmark path is stricter than the interactive product path: it records the runtime model list before inference and refuses a deterministic benchmark when configured non-auto roles or adaptive worker tiers would silently degrade to Copilot `auto`.
-
-## Headless benchmarks
-
-See [`HEADLESS_BENCHMARKS.md`](HEADLESS_BENCHMARKS.md) for the full harness contract.
-
-Important properties include:
-
-- audit/output lives outside the target repository so benchmark artifacts cannot change workspace fingerprints;
-- models-only preflight uses `listModels()` without creating an agent session or sending a prompt;
-- Fast headless execution stops over-decomposed plans before Worker A begins;
-- hard fuses bound total underlying model calls, per-Convergent-prompt model calls, and observed Copilot chat-request quota growth;
-- an offline deterministic efficiency summary derives prompt/model-call amplification and other warnings directly from `events.jsonl` without another LLM call.
+A representative plannerless Scenario02 run completed as Luna Worker A → Terra reviewer in **12 model calls, 6.198468 AI credits, and 30.858s**, versus **14 calls, 10.805286 credits, and 52.179s** for the prior equivalent persistent-planner path. The final plannerless Scenario04 recovery run still activated the strong recovery coordinator on demand and completed the high-risk assurance path successfully.
 
 ## Trajectory audit
 
@@ -205,7 +226,9 @@ Retention is controlled by `convergent.audit.maxRuns`, `convergent.audit.maxSize
 
 ## Soft limits and task checkpoint commits
 
-`convergent.maxWorkerPasses` and `convergent.maxReviewerCycles` are soft iteration tranches. Fast caps the first A/B tranche at 3 and allows the initial strong review plus one automatic remediation/delta re-review before asking whether to spend more. Auto/Thorough use their profile/configured tranches.
+`convergent.maxWorkerPasses` bounds peer-convergence tranches when a peer is active (high-risk/full and trivial escalation behavior). Normal standard work does not activate Worker B merely to consume this tranche.
+
+`convergent.maxReviewerCycles` bounds strong-review/remediation cycles. Fast asks sooner before spending additional cycles; Auto/Thorough use their configured/profile tranches.
 
 `convergent.maxAiCredits` is an optional soft run budget; `0` disables it. Durable Copilot usage checkpoints can lag live token growth, so this is a safe-boundary control rather than a precise real-time hard cap.
 
@@ -218,50 +241,3 @@ Optional task checkpoint commits can be enabled with:
 ```
 
 Safe mode creates a checkpoint commit after an accepted modifying task only when that task began with a clean worktree. The default is `off`.
-
-## Tool policy
-
-Convergent deliberately limits role tool surfaces to reduce authority and tool-definition context:
-
-- Coordinator: read/search, diagnostic shell, `ask_user`, `report_plan`.
-- Recovery coordinator: read/search, diagnostic shell, `report_recovery`.
-- Worker A/B: read/search, validation shell, `apply_patch`, `edit`, `create`, `report_pass`.
-- Strong reviewer: read/search, diagnostic shell, `report_review`; no edits and no direct `ask_user`.
-
-Workers are prevented from using shell redirection/`Set-Content`/`sed -i`/similar commands for file-content edits; purpose-built file tools are required. Shell cleanup remains available for generated artifacts, with prompt/baseline rules protecting pre-existing workspace state.
-
-## Stall detection and controlled command execution
-
-Convergent bypasses the Copilot SDK `sendAndWait()` total wall-clock timeout as its liveness mechanism. A healthy agentic turn may run for many minutes while producing tool/message/usage events.
-
-Instead it uses:
-
-- `convergent.toolStallTimeoutSeconds`: no-progress time while a tool is active;
-- `convergent.agentInactivityTimeoutSeconds`: no observed agent/tool/usage activity when no tool is active.
-
-Routine heartbeat diagnostics remain in the **Convergent** Output channel. When a threshold is reached, the UI can wait or abort the current agent turn according to the frontend policy.
-
-Full deterministic command/process control remains a 0.3 milestone. The current SDK exposes experimental `session.rpc.shell.exec` / `shell.kill` primitives, but they do not by themselves provide the public streamed output, final exit/status, and process-tree guarantees required by Convergent's planned stable `run_command` contract. See issue #5 and `ROADMAP.md`.
-
-## Usage and AI credits
-
-Convergent records per-session model calls, input/output/reasoning/cache tokens, turn count, active duration, context usage, and durable Copilot nano-AIU checkpoints. Chat shows compact running usage and a per-agent table at completion; the trajectory audit provides per-model-call detail for optimization.
-
-Displayed AI credits are derived as `totalNanoAiu / 1e9`; durable checkpoints can lag live usage and GitHub billing remains authoritative.
-
-## Convergence invariant
-
-For `standard` and `high_risk`, convergence means A and B explicitly approve the exact same workspace fingerprint.
-
-```text
-CLEAN   → worker made no repository change and approves current fingerprint
-CHANGED → worker made a substantive change, left no unresolved finding,
-          and approves the resulting fingerprint
-BLOCKED → no approval
-```
-
-A valid `CHANGED` pass approves its resulting fingerprint immediately. If a peer changes the workspace, approvals/evidence for the previous fingerprint are invalidated. A `BLOCKED` pass never counts as approval even if it changed the workspace; after recovery the normal A/B invariant still applies.
-
-## Current dev.14 validation
-
-The current development branch uses a committed npm lock and clean `npm ci` installs. The full unit suite, `npm run check`, and real platform-targeted VSIX packaging pass in CI. Windows x64 and Linux x64 jobs independently verify that the installed and packaged Copilot runtimes match the VSIX target. PR #4 remains draft and unmerged while live benchmark validation is blocked on a benchmark identity that exposes the configured explicit model tiers rather than only Copilot `auto`.

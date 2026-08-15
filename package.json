@@ -2,7 +2,7 @@
   "name": "convergent",
   "displayName": "Convergent",
   "description": "Adaptive multi-agent implementation and adversarial review workflows powered by GitHub Copilot.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "alex206",
   "license": "MIT",
   "engines": {
@@ -45,7 +45,7 @@
         "commands": [
           {
             "name": "implement",
-            "description": "Classify, plan, and execute a task using the default Convergent flow"
+            "description": "Prepare and execute a task using the default adaptive Convergent flow"
           },
           {
             "name": "fast",
@@ -133,22 +133,22 @@
         "convergent.models.coordinator": {
           "type": "string",
           "default": "strong",
-          "description": "Persistent coordinator model selector. Defaults to strong because this role owns requirements understanding, clarification, task decomposition, acceptance criteria, and workflow classification. Use an exact Copilot model id/name, or one of: strong, planner, cheap-a, cheap-b, auto."
+          "description": "Strong planning/recovery coordinator model selector. Planning is activated only when deterministic single-task formation is not safe; recovery uses a fresh strong coordinator only after a real BLOCKED state. Use an exact Copilot model id/name, or one of: strong, planner, cheap-a, cheap-b, auto."
         },
         "convergent.models.workerA": {
           "type": "string",
           "default": "adaptive",
-          "description": "Worker A model selector. adaptive resolves after each task is classified: trivial/low uses the cheap tier, normal low-risk standard work uses an economical capable tier, medium/high-risk Fast work may promote capability, and high-risk work uses the stronger implementation tier. An exact model id/name or explicit preset overrides adaptation."
+          "description": "Worker A model selector. adaptive resolves after task classification: trivial/low uses the cheap tier, normal standard work uses an economical capable tier, and high-risk work promotes capability. An exact model id/name or explicit preset overrides adaptation."
         },
         "convergent.models.workerB": {
           "type": "string",
           "default": "adaptive-diverse",
-          "description": "Worker B model selector. adaptive-diverse scales capability with task route/risk and avoids Worker A's selected model when a suitable alternative exists. An exact model id/name or explicit preset overrides adaptation; cheap-b keeps its existing low-cost diversified behavior."
+          "description": "Worker B model selector. Worker B is activated for high-risk/full peer convergence (and existing trivial escalation behavior), not every standard task. adaptive-diverse scales capability with task risk and prefers a suitable model different from Worker A. An exact model id/name or explicit preset overrides adaptation."
         },
         "convergent.models.reviewer": {
           "type": "string",
           "default": "strong",
-          "description": "Strong reviewer model selector. The reviewer context is retained for the lifetime of one implementation task."
+          "description": "Strong independent reviewer model selector. The reviewer is the required acceptance gate for normal modifying tasks and retains context for the lifetime of one implementation task."
         },
         "convergent.routingMode": {
           "type": "string",
@@ -158,10 +158,10 @@
           ],
           "default": "adaptive",
           "enumDescriptions": [
-            "Let the strong coordinator classify read-only, trivial, standard, and high-risk tasks; the engine enforces minimum review levels and escalation.",
-            "Force every modifying task through at least the full A/B convergence + strong-review workflow. Read-only tasks remain coordinator-only."
+            "Use deterministic/strong classification to select read-only, trivial, standard, or high-risk execution. Standard work uses Worker A plus strong review; high-risk work adds diversified Worker B peer convergence.",
+            "Force every modifying task through Worker A/Worker B exact-fingerprint convergence plus strong review. Read-only tasks remain read-only."
           ],
-          "description": "How Convergent chooses the workflow depth for each task."
+          "description": "How Convergent chooses workflow depth for each task. Architecture significance is classified separately and may activate the read-only software architect."
         },
         "convergent.reasoningMode": {
           "type": "string",
@@ -171,7 +171,7 @@
           ],
           "default": "adaptive",
           "enumDescriptions": [
-            "Use low/medium/high reasoning effort according to role and route when the selected model advertises support. The coordinator uses medium effort by default.",
+            "Use low/medium/high reasoning effort according to active role and route when the selected model advertises support. Strong planning/recovery uses medium effort by default.",
             "Do not override model reasoning effort."
           ],
           "description": "Whether Convergent adapts supported models' reasoning effort to task risk/workflow depth."
@@ -181,14 +181,14 @@
           "default": 8,
           "minimum": 2,
           "maximum": 30,
-          "description": "Soft A/B convergence limit per review/fix tranche. In fast flow the first tranche is capped at 3; when reached, Convergent asks whether to continue or pause."
+          "description": "Soft peer-convergence pass limit per tranche when Worker B is active (high-risk/full and trivial escalation behavior). In fast flow the first peer tranche is capped at 3; normal standard work does not activate Worker B merely to consume this limit."
         },
         "convergent.maxReviewerCycles": {
           "type": "number",
           "default": 3,
           "minimum": 1,
           "maximum": 20,
-          "description": "Soft strong-review cycle limit per tranche. Fast flow allows the initial review plus one automatic remediation/delta re-review before asking whether to spend more; auto/thorough use their configured/profile tranche."
+          "description": "Soft strong-review/remediation cycle limit per tranche. Fast allows the initial review plus one automatic remediation/delta re-review before asking whether to spend more; auto/thorough use their configured/profile tranche."
         },
         "convergent.maxAiCredits": {
           "type": "number",
@@ -320,7 +320,7 @@
     "test": "node --test",
     "benchmark": "node src/headless/cli.js",
     "benchmark:models": "node src/headless/model-preflight.js",
-    "check": "node --check src/extension.js && node --check src/orchestrator/engine.js && node --check src/orchestrator/model-resolver.js && node --check src/orchestrator/resumable-engine.js && node --check src/orchestrator/resume.js && node --check src/orchestrator/control.js && node --check src/orchestrator/task-commit.js && node --check src/orchestrator/request-preflight.js && node --check src/orchestrator/routing.js && node --check src/orchestrator/flow.js && node --check src/orchestrator/audit.js && node --check src/orchestrator/workspace-baseline.js && node --check src/orchestrator/task-change-manifest.js && node --check src/orchestrator/usage.js && node --check src/ui/vscode-ui.js && node --check src/copilot/tools.js && node --check src/copilot/batch-search-tool.js && node --check src/copilot/batch-view-tool.js && node --check src/copilot/session-factory.js && node --check src/copilot/session-guard.js && node --check src/copilot/runtime.js && node --check src/headless/ui.js && node --check src/headless/model-policy.js && node --check src/headless/model-preflight.js && node --check src/headless/runner.js && node --check src/headless/cli.js && node --check src/headless/efficiency-summary.js && node --check src/headless/scenario03-acceptance.js && node --check scripts/package-vsix.js && node --check src/orchestrator/report-blocker.js && node --check src/headless/scenario04-acceptance.js && node --check src/headless/scenario05-acceptance.js",
+    "check": "node --check src/extension.js && node --check src/orchestrator/engine.js && node --check src/orchestrator/model-resolver.js && node --check src/orchestrator/resumable-engine.js && node --check src/orchestrator/resume.js && node --check src/orchestrator/control.js && node --check src/orchestrator/task-commit.js && node --check src/orchestrator/request-preflight.js && node --check src/orchestrator/routing.js && node --check src/orchestrator/flow.js && node --check src/orchestrator/audit.js && node --check src/orchestrator/workspace-baseline.js && node --check src/orchestrator/task-change-manifest.js && node --check src/orchestrator/usage.js && node --check src/orchestrator/architecture-advisor.js && node --check src/orchestrator/deterministic-planning.js && node --check src/orchestrator/report-blocker.js && node --check src/orchestrator/report-integrity.js && node --check src/ui/vscode-ui.js && node --check src/copilot/tools.js && node --check src/copilot/operator-credential-guard.js && node --check src/copilot/batch-search-tool.js && node --check src/copilot/batch-view-tool.js && node --check src/copilot/session-factory.js && node --check src/copilot/session-guard.js && node --check src/copilot/runtime.js && node --check src/headless/ui.js && node --check src/headless/model-policy.js && node --check src/headless/model-preflight.js && node --check src/headless/runner.js && node --check src/headless/cli.js && node --check src/headless/efficiency-summary.js && node --check src/headless/scenario03-acceptance.js && node --check scripts/package-vsix.js && node --check src/headless/scenario04-acceptance.js && node --check src/headless/scenario05-acceptance.js",
     "package": "node scripts/package-vsix.js",
     "package:list": "vsce ls --tree"
   },

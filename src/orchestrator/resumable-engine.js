@@ -8,10 +8,10 @@ const {
   passApprovesRevision,
   evidenceFromPass,
   mergeEvidence,
+  reconcileDeterministicIntegrity,
 } = require('./engine');
 const { assertGitRepository } = require('./revision');
-const { normalizeTaskRoute, routePolicy } = require('./routing');
-const { SessionFactory } = require('../copilot/session-factory');
+const { normalizeTaskRoute, routePolicy, usesPeerConvergence } = require('./routing');
 const { RESUME_STATE_VERSION, defaultStats } = require('./resume');
 const { pauseWorkflow } = require('./control');
 const { isWorkingTreeClean, createTaskCommit } = require('./task-commit');
@@ -144,7 +144,7 @@ class ResumableConvergentEngine extends ConvergentEngine {
       `Worker ${blockedWorker.name} could not fully complete or validate task ${task.id}. The current workspace revision is preserved${result.changed ? ' and contains worker changes' : ''}; choose how to continue instead of failing the workflow.`,
     );
 
-    const peerChoice = `Let Worker ${peerWorker.name} inspect current revision`;
+    const peerChoice = peerWorker ? `Let Worker ${peerWorker.name} inspect current revision` : null;
     const retryChoice = `Retry Worker ${blockedWorker.name} now`;
     const pauseChoice = 'Pause & resume later';
     const response = await this.userInputHandler?.({
@@ -154,14 +154,16 @@ class ResumableConvergentEngine extends ConvergentEngine {
         result.changed
           ? 'The worker changed the workspace before reporting the blocker. Those changes are preserved, but BLOCKED does not approve the revision.'
           : 'The worker did not change the workspace in this pass.',
-        `Choose whether ${peerWorker.name} should independently inspect/try to resolve the current revision, whether ${blockedWorker.name} should retry now, or pause so the environment can be fixed before /resume.`,
+        peerWorker
+          ? `Choose whether ${peerWorker.name} should independently inspect/try to resolve the current revision, whether ${blockedWorker.name} should retry now, or pause so the environment can be fixed before /resume.`
+          : `This standard route has no peer worker. Retry ${blockedWorker.name} after addressing the blocker, or pause so the environment can be fixed before /resume.`,
       ].join('\n\n'),
-      choices: [peerChoice, retryChoice, pauseChoice],
+      choices: [peerChoice, retryChoice, pauseChoice].filter(Boolean),
     });
 
     const answer = response?.answer;
     this.ui?.log?.(`Worker blocker decision for ${blockedWorker.name}: ${answer ?? 'dismissed'}; task=${task.id}; revision=${result.revision}`);
-    if (answer === peerChoice) return { action: 'peer' };
+    if (peerChoice && answer === peerChoice) return { action: 'peer' };
     if (answer === retryChoice) return { action: 'retry' };
 
     pauseWorkflow(
@@ -229,6 +231,37 @@ class ResumableConvergentEngine extends ConvergentEngine {
       current,
       { nextReviewCycle, routing },
     );
+  }
+
+  async resolveSingleWorkerPass(task, worker, pass, routing, { nextReviewCycle = 1 } = {}) {
+    let current = pass;
+    while (current.report?.verdict === 'blocked') {
+      const decision = await this.requestWorkerBlockedDecision(
+        task,
+        worker,
+        null,
+        current,
+        routing,
+        { nextReviewCycle },
+      );
+      if (decision.action !== 'retry') {
+        throw new Error(`Standard-route recovery returned unsupported action ${decision.action}.`);
+      }
+      this.ui?.phase?.(
+        'Retrying blocked worker',
+        `Worker ${worker.name} will re-check the current workspace and blocker without adding a peer worker to this standard route.`,
+      );
+      current = await this.runWorkerPass(worker, task, 'RETRY_AFTER_BLOCK', null, null);
+      this.ui.passResult(worker.name, current.report, current.changed, current.revision, current);
+    }
+    return { revision: current.revision, evidence: evidenceFromPass(current), pass: current };
+  }
+
+  async resolvePassForReview(task, workerA, workerB, pass, routing, options = {}) {
+    if (usesPeerConvergence(routing)) {
+      return this.convergeFromPass(task, workerA, workerB, pass, routing, options);
+    }
+    return this.resolveSingleWorkerPass(task, workerA, pass, routing, options);
   }
 
   async convergeWorkers(task, workerA, workerB, nextWorker, previousPass, { nextReviewCycle = 1, routing = { route: 'standard', risk: 'medium' } } = {}) {
@@ -301,14 +334,15 @@ class ResumableConvergentEngine extends ConvergentEngine {
     let workerB;
     let reviewer;
     const route = routing.route;
+    const peerConvergence = usesPeerConvergence(routing);
     try {
       workerA = await factory.createWorker(taskSessionKey, 'A', route, routing.risk);
-      workerB = await factory.createWorker(taskSessionKey, 'B', route, routing.risk);
+      if (peerConvergence) workerB = await factory.createWorker(taskSessionKey, 'B', route, routing.risk);
       reviewer = await factory.createReviewer(taskSessionKey, route, routing.risk);
-      this.sessions.push(workerA.session, workerB.session, reviewer.session);
+      this.sessions.push(...[workerA?.session, workerB?.session, reviewer?.session].filter(Boolean));
       this.ui.agentConfiguration([
         { role: 'A', model: workerA.model.name ?? workerA.model.id, effort: workerA.reasoningEffort },
-        { role: 'B', model: workerB.model.name ?? workerB.model.id, effort: workerB.reasoningEffort },
+        ...(workerB ? [{ role: 'B', model: workerB.model.name ?? workerB.model.id, effort: workerB.reasoningEffort }] : []),
         { role: 'Strong reviewer', model: reviewer.model.name ?? reviewer.model.id, effort: reviewer.reasoningEffort },
       ]);
 
@@ -318,7 +352,7 @@ class ResumableConvergentEngine extends ConvergentEngine {
           'Resuming blocked worker',
           `Continuing task ${task.id} from a saved Worker ${taskResumeState.worker ?? taskResumeState.blockedPass.worker} blocker on the preserved workspace revision.`,
         );
-        const convergence = await this.convergeFromPass(
+        const resolved = await this.resolvePassForReview(
           task,
           workerA,
           workerB,
@@ -329,11 +363,11 @@ class ResumableConvergentEngine extends ConvergentEngine {
         await this.saveTaskCheckpoint({
           stage: 'strong_review_pending',
           nextReviewCycle,
-          evidence: convergence.evidence,
+          evidence: resolved.evidence,
           routing,
         });
         await this.checkAiCreditBudget(`before strong-review cycle ${nextReviewCycle} for ${task.id}`);
-        await this.runStrongReview(task, workerA, workerB, reviewer, convergence.evidence, routing, { startReviewCycle: nextReviewCycle });
+        await this.runStrongReview(task, workerA, workerB, reviewer, resolved.evidence, routing, { startReviewCycle: nextReviewCycle });
         return { route, escalated: false };
       }
 
@@ -345,7 +379,7 @@ class ResumableConvergentEngine extends ConvergentEngine {
         const remediation = await this.runWorkerPass(workerA, task, 'FIX_STRONG_REVIEW_FINDINGS', taskResumeState.findings, null);
         this.ui.passResult('A', remediation.report, remediation.changed, remediation.revision, remediation);
         const nextReviewCycle = Math.max(1, Number(taskResumeState.reviewCycle) + 1 || 1);
-        const convergence = await this.convergeFromPass(
+        const resolved = await this.resolvePassForReview(
           task,
           workerA,
           workerB,
@@ -356,11 +390,11 @@ class ResumableConvergentEngine extends ConvergentEngine {
         await this.saveTaskCheckpoint({
           stage: 'strong_review_pending',
           nextReviewCycle,
-          evidence: convergence.evidence,
+          evidence: resolved.evidence,
           routing,
         });
         await this.checkAiCreditBudget(`before strong-review cycle ${nextReviewCycle} for ${task.id}`);
-        await this.runStrongReview(task, workerA, workerB, reviewer, convergence.evidence, routing, { startReviewCycle: nextReviewCycle });
+        await this.runStrongReview(task, workerA, workerB, reviewer, resolved.evidence, routing, { startReviewCycle: nextReviewCycle });
         return { route, escalated: false };
       }
 
@@ -368,7 +402,7 @@ class ResumableConvergentEngine extends ConvergentEngine {
         const nextReviewCycle = Math.max(1, Number(taskResumeState.nextReviewCycle) || 1);
         this.ui.phase(
           'Resuming strong review',
-          `Continuing task ${task.id} at strong-review cycle ${nextReviewCycle} on the saved converged workspace revision. Fresh task-local sessions will inspect the current revision rather than rerunning implementation.`,
+          `Continuing task ${task.id} at strong-review cycle ${nextReviewCycle} on the saved accepted workspace revision. Fresh task-local sessions will inspect the current revision rather than rerunning implementation.`,
         );
         await this.checkAiCreditBudget(`before resumed strong-review cycle ${nextReviewCycle} for ${task.id}`);
         await this.runStrongReview(
@@ -387,7 +421,7 @@ class ResumableConvergentEngine extends ConvergentEngine {
         const reviewCycle = Math.max(1, Number(taskResumeState.reviewCycle) || 1);
         this.ui.phase(
           'Resuming blocked strong review',
-          `Continuing task ${task.id} at the saved blocked strong-review cycle ${reviewCycle}. The converged workspace revision is unchanged.`,
+          `Continuing task ${task.id} at the saved blocked strong-review cycle ${reviewCycle}. The accepted workspace revision is unchanged.`,
         );
         await this.runStrongReview(
           task,
@@ -404,15 +438,15 @@ class ResumableConvergentEngine extends ConvergentEngine {
       const initial = await this.runWorkerPass(workerA, task, 'IMPLEMENT', null, null);
       this.ui.passResult('A', initial.report, initial.changed, initial.revision, initial);
 
-      const convergence = await this.convergeFromPass(task, workerA, workerB, initial, routing, { nextReviewCycle: 1 });
+      const resolved = await this.resolvePassForReview(task, workerA, workerB, initial, routing, { nextReviewCycle: 1 });
       await this.saveTaskCheckpoint({
         stage: 'strong_review_pending',
         nextReviewCycle: 1,
-        evidence: convergence.evidence,
+        evidence: resolved.evidence,
         routing,
       });
       await this.checkAiCreditBudget(`before strong review for ${task.id}`);
-      await this.runStrongReview(task, workerA, workerB, reviewer, convergence.evidence, routing, { startReviewCycle: 1 });
+      await this.runStrongReview(task, workerA, workerB, reviewer, resolved.evidence, routing, { startReviewCycle: 1 });
       return { route, escalated: false };
     } finally {
       await this.disposeTaskSessions([workerA?.session, workerB?.session, reviewer?.session]);
@@ -431,18 +465,21 @@ class ResumableConvergentEngine extends ConvergentEngine {
     let evidence = [...initialEvidence];
     let reviewCycle = Math.max(1, Number(startReviewCycle) || 1);
     let reviewCeiling = reviewCycle + Math.max(1, Number(this.maxReviewerCycles) || 3) - 1;
+    const peerConvergence = usesPeerConvergence(routing);
 
     while (true) {
       this.checkCancelled();
       const beforeReview = await this.revisionProvider(this.workspace);
       const startedAt = Date.now();
-      const review = await requireReport(
+      let review = await requireReport(
         reviewer.session,
         reviewer.sink,
         [
           taskPrompt(task),
           '',
-          `Worker A and Worker B approved current revision ${beforeReview.slice(0, 12)}.`,
+          peerConvergence
+            ? `Worker A and Worker B approved current revision ${beforeReview.slice(0, 12)}.`
+            : `Worker A produced current revision ${beforeReview.slice(0, 12)}; you are the independent acceptance gate for this standard task.`,
           `Task workflow: ${routing.route}; task risk: ${routing.risk}.`,
           formatValidationEvidence(evidence),
           '',
@@ -454,6 +491,16 @@ class ResumableConvergentEngine extends ConvergentEngine {
         'report_review',
         this.agentTurnTimeoutMs,
       );
+      const reviewIntegrity = reconcileDeterministicIntegrity(review, {
+        changed: false,
+        role: 'Strong reviewer',
+        credentialViolations: this.operatorCredentialGuard?.consumeViolations('Strong reviewer') ?? [],
+        validationEvidence: evidence,
+      });
+      review = reviewIntegrity.report;
+      if (reviewIntegrity.correction) {
+        this.ui?.log?.(`Strong reviewer verdict reconciled by Convergent: ${reviewIntegrity.correction}`);
+      }
       const afterReview = await this.revisionProvider(this.workspace);
       const usage = await this.finishTurn(reviewer, startedAt);
       const durationMs = Date.now() - startedAt;
@@ -464,7 +511,7 @@ class ResumableConvergentEngine extends ConvergentEngine {
       if (review.verdict === 'blocked') {
         const decision = await this.requestReviewerBlockedDecision(task, review, reviewCycle, evidence, routing);
         if (decision.action === 'retry') {
-          this.ui.phase('Retrying strong reviewer', `Strong-review cycle ${reviewCycle} will be retried on the same converged workspace revision.`);
+          this.ui.phase('Retrying strong reviewer', `Strong-review cycle ${reviewCycle} will be retried on the same accepted workspace revision.`);
           continue;
         }
       }
@@ -487,11 +534,13 @@ class ResumableConvergentEngine extends ConvergentEngine {
 
       this.ui.phase(
         'Remediation',
-        `Strong reviewer returned ${review.findings.length} finding(s) in cycle ${reviewCycle}; Worker A remediates, then A/B convergence repeats.`,
+        peerConvergence
+          ? `Strong reviewer returned ${review.findings.length} finding(s) in cycle ${reviewCycle}; Worker A remediates, then A/B convergence repeats.`
+          : `Strong reviewer returned ${review.findings.length} finding(s) in cycle ${reviewCycle}; Worker A remediates, then the same strong reviewer performs a delta re-check.`,
       );
       const remediation = await this.runWorkerPass(workerA, task, 'FIX_STRONG_REVIEW_FINDINGS', review.findings, null);
       this.ui.passResult('A', remediation.report, remediation.changed, remediation.revision, remediation);
-      const convergence = await this.convergeFromPass(
+      const resolved = await this.resolvePassForReview(
         task,
         workerA,
         workerB,
@@ -499,7 +548,7 @@ class ResumableConvergentEngine extends ConvergentEngine {
         routing,
         { nextReviewCycle: reviewCycle + 1 },
       );
-      evidence = convergence.evidence;
+      evidence = resolved.evidence;
       await this.saveTaskCheckpoint({
         stage: 'strong_review_pending',
         nextReviewCycle: reviewCycle + 1,
@@ -515,18 +564,7 @@ class ResumableConvergentEngine extends ConvergentEngine {
     await assertGitRepository(this.workspace);
     this.checkCancelled();
 
-    const factory = new SessionFactory({
-      client: this.client,
-      sdk: this.sdk,
-      workspace: this.workspace,
-      models: this.models,
-      permissionHandler: this.permissionHandler,
-      userInputHandler: this.userInputHandler,
-      ui: this.ui,
-      usage: this.usage,
-      runId: this.runId,
-      reasoningMode: this.reasoningMode,
-    });
+    const factory = this.sessionFactory();
 
     let coordinator = null;
     let plan;
@@ -556,30 +594,10 @@ class ResumableConvergentEngine extends ConvergentEngine {
         currentTaskIndex: null,
         stage: 'planning',
       });
-      this.ui.phase(
-        resumeState ? 'Resuming planning' : 'Planning',
-        resumeState
-          ? 'The prior run stopped before a plan was accepted. The coordinator is re-running planning from the saved user request.'
-          : 'Coordinator is inspecting the repository, classifying risk, and choosing the proportionate workflow.',
-      );
-      coordinator = await factory.createCoordinator();
-      this.sessions.push(coordinator.session);
-      this.ui.agentConfiguration([
-        { role: 'Coordinator', model: coordinator.model.name ?? coordinator.model.id, effort: coordinator.reasoningEffort },
-      ]);
-
-      const beforePlan = await this.revisionProvider(this.workspace);
-      const planStartedAt = Date.now();
-      plan = await requireReport(
-        coordinator.session,
-        coordinator.sink,
-        `User request:\n\n${userRequest}\n\nInspect only what is needed, clarify material ambiguity, classify every task, and submit the smallest proportionate plan with report_plan. For read_only tasks, perform the inspection now and include the answer in task.result.`,
-        'report_plan',
-        this.agentTurnTimeoutMs,
-      );
-      const afterPlan = await this.revisionProvider(this.workspace);
-      planningUsage = await this.finishTurn(coordinator, planStartedAt);
-      if (beforePlan !== afterPlan) throw new Error('Coordinator changed the workspace despite the read-only contract.');
+      const prepared = await this.preparePlan(factory, userRequest, { resuming: Boolean(resumeState) });
+      plan = prepared.plan;
+      coordinator = prepared.coordinator;
+      planningUsage = prepared.planningUsage;
       this.stats = defaultStats(plan.tasks.length);
     }
 
@@ -607,7 +625,7 @@ class ResumableConvergentEngine extends ConvergentEngine {
       this.checkCancelled();
       const task = plan.tasks[index];
       const routing = routings[index];
-      const policy = routePolicy(routing.route, routing.risk);
+      const policy = routePolicy(routing.route, routing.risk, routing.peerConvergence, routing.architecture);
 
       let taskResumeState = null;
       if (resumeState?.currentTaskIndex === index && resumeState.taskState) {
