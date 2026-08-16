@@ -7,6 +7,7 @@ const { operatorPrerequisiteEvidence } = require('./report-blocker');
 const { usesPeerConvergence } = require('./routing');
 const { pauseWorkflow } = require('./control');
 const { runArchitectureAssessment, formatArchitectureAssessment } = require('./architecture-advisor');
+const { runtimeStallIncident, runtimeStallRecoveryDetail } = require('./runtime-stall');
 
 function checkpointPass(pass) {
   if (!pass) return null;
@@ -61,6 +62,8 @@ class RecoveryConvergentEngine extends ResumableConvergentEngine {
   constructor(options) {
     super(options);
     this.activeTaskChangeContext = null;
+    this.activeRuntimeRecoveryContext = null;
+    this.maxRuntimeRecoveryAttempts = Math.max(1, Number(options.maxRuntimeRecoveryAttempts) || 2);
   }
 
   recoveryFactory() {
@@ -69,6 +72,7 @@ class RecoveryConvergentEngine extends ResumableConvergentEngine {
 
   async runTask(factory, task, taskSessionKey, routing, taskResumeState = null) {
     const previousContext = this.activeTaskChangeContext;
+    const previousRuntimeRecoveryContext = this.activeRuntimeRecoveryContext;
     const savedAssessment = taskResumeState?.routing?.architectureAssessment ?? null;
     let effectiveRouting = savedAssessment ? { ...routing, architectureAssessment: savedAssessment } : { ...routing };
 
@@ -81,22 +85,124 @@ class RecoveryConvergentEngine extends ResumableConvergentEngine {
     const effectiveTask = taskWithArchitectureAssessment(task, effectiveRouting.architectureAssessment);
     const taskContext = await this.createTaskContext(factory);
     this.activeTaskChangeContext = taskContext;
+    this.activeRuntimeRecoveryContext = {
+      factory,
+      taskSessionKey,
+      routing: effectiveRouting,
+      attempts: new Map(),
+    };
     try {
       return await super.runTask(factory, effectiveTask, taskSessionKey, effectiveRouting, taskResumeState);
     } finally {
       this.activeTaskChangeContext = previousContext;
+      this.activeRuntimeRecoveryContext = previousRuntimeRecoveryContext;
     }
   }
 
   async runWorkerPass(worker, task, mode, findings, peerPass = null, taskContext = null) {
-    return super.runWorkerPass(
-      worker,
-      task,
-      mode,
-      findings,
-      peerPass,
-      taskContext ?? this.activeTaskChangeContext,
-    );
+    while (true) {
+      try {
+        return await super.runWorkerPass(
+          worker,
+          task,
+          mode,
+          findings,
+          peerPass,
+          taskContext ?? this.activeTaskChangeContext,
+        );
+      } catch (error) {
+        const outcome = await this.recoverRuntimeStallAgent(error, worker, task, 'worker');
+        if (!outcome?.retry) throw error;
+      }
+    }
+  }
+
+  runtimeRecoveryAttempt(agentKey) {
+    const context = this.activeRuntimeRecoveryContext;
+    if (!context) return 0;
+    const next = (context.attempts.get(agentKey) ?? 0) + 1;
+    context.attempts.set(agentKey, next);
+    return next;
+  }
+
+  async disposeRuntimeStalledAgent(agent) {
+    const session = agent?.session;
+    if (!session) return;
+    try { await session.disconnect?.(); } catch {}
+    this.sessions = this.sessions.filter((item) => item !== session);
+  }
+
+  async recoverRuntimeStallAgent(error, agent, task, role = 'worker') {
+    const incident = runtimeStallIncident(error);
+    if (!incident) return null;
+    if (!incident.termination?.active) return null;
+
+    let workspaceFingerprint;
+    try { workspaceFingerprint = await this.revisionProvider(this.workspace); } catch {}
+    const routing = this.activeRuntimeRecoveryContext?.routing ?? { route: 'standard', risk: 'medium' };
+    const stage = role === 'reviewer' ? 'reviewer_runtime_stall' : 'worker_runtime_stall';
+    await this.saveTaskCheckpoint({
+      stage,
+      agent: role === 'reviewer' ? 'Strong reviewer' : `Worker ${agent?.name ?? '?'}`,
+      runtimeIncident: incident,
+      workspaceFingerprint,
+      routing,
+    });
+
+    if (!incident.recoverable) {
+      pauseWorkflow(
+        `Paused because ${role === 'reviewer' ? 'the strong reviewer' : `Worker ${agent?.name ?? '?'}`} stalled while a managed command was active and Convergent could not prove process-tree termination. Automatic retry is unsafe.`,
+        { kind: 'runtime_stall_unproven', task: task.id, role, runtimeIncident: incident, workspaceFingerprint },
+      );
+    }
+
+    const agentKey = role === 'reviewer' ? 'reviewer' : `worker-${agent?.name ?? '?'}`;
+    const attempt = this.runtimeRecoveryAttempt(agentKey);
+    if (attempt > this.maxRuntimeRecoveryAttempts) {
+      pauseWorkflow(
+        `Paused after ${this.maxRuntimeRecoveryAttempts} proven runtime-stall recovery attempt(s) for ${agentKey} on task ${task.id}.`,
+        { kind: 'runtime_stall_retry_limit', task: task.id, role, attempt, runtimeIncident: incident, workspaceFingerprint },
+      );
+    }
+
+    const kind = role === 'reviewer' ? 'strong-reviewer-runtime-stall' : `worker-${agent?.name ?? '?'}-runtime-stall`;
+    const detail = runtimeStallRecoveryDetail(incident, workspaceFingerprint);
+    const decision = await this.consultRecoveryCoordinator(task, kind, detail, { allowPeer: false });
+    if (decision.action !== 'retry') {
+      pauseWorkflow(
+        `Paused after a proven ${kind} because the recovery coordinator did not choose a safe retry.`,
+        { kind: 'runtime_stall_recovery_pause', task: task.id, role, recovery: decision, runtimeIncident: incident, workspaceFingerprint },
+      );
+    }
+
+    const context = this.activeRuntimeRecoveryContext;
+    if (!context?.factory || !context.taskSessionKey) {
+      pauseWorkflow(
+        `Paused because Convergent lacks the task session context required to create a fresh ${role} after a runtime stall.`,
+        { kind: 'runtime_stall_missing_context', task: task.id, role, runtimeIncident: incident },
+      );
+    }
+
+    await this.disposeRuntimeStalledAgent(agent);
+    const sessionAttempt = `runtime-retry-${attempt}`;
+    const replacement = role === 'reviewer'
+      ? await context.factory.createReviewer(context.taskSessionKey, routing.route, routing.risk, sessionAttempt)
+      : await context.factory.createWorker(context.taskSessionKey, agent.name, routing.route, routing.risk, sessionAttempt);
+    this.sessions.push(replacement.session);
+    queueRecoveryInstruction(replacement.session, decision.guidance || decision.rationale || 'Re-inspect the preserved workspace after the proven runtime stall before continuing.');
+    Object.assign(agent, replacement);
+    this.ui?.audit?.({
+      type: 'runtime_stall_recovery',
+      taskId: task.id,
+      role,
+      agent: role === 'reviewer' ? 'Strong reviewer' : `Worker ${agent.name}`,
+      attempt,
+      workspaceFingerprint,
+      runtimeIncident: incident,
+      recovery: { action: decision.action, rationale: decision.rationale },
+      replacementSessionId: replacement.session?.sessionId,
+    });
+    return { retry: true, incident, attempt, replacement };
   }
 
   async consultRecoveryCoordinator(task, kind, detail, { allowPeer = false } = {}) {
@@ -122,6 +228,7 @@ class RecoveryConvergentEngine extends ResumableConvergentEngine {
           detail.summary ? `Blocked-agent summary:\n${detail.summary}` : '',
           detail.checks?.length ? `Checks/evidence already reported:\n${detail.checks.map((item) => `- ${item}`).join('\n')}` : '',
           detail.evidence?.length ? formatValidationEvidence(detail.evidence) : '',
+          detail.runtimeIncident ? 'Runtime incident note: Convergent has already aborted the stalled Copilot turn. Retry is safe only because the managed command/process tree was proven terminated; any retry must use a fresh agent session and re-inspect the preserved workspace.' : '',
           '',
           'Decide the least wasteful safe recovery action. Inspect only a small amount of read-only repository/environment context if it resolves the blocker. A required validation that is blocked by a missing operator-controlled token, credential, secret, or environment prerequisite must not be reclassified as acceptable or retried unchanged: ask_user for the missing prerequisite or guidance. Use ask_user only for a genuinely missing operator fact or decision.',
         ].filter(Boolean).join('\n'),
@@ -282,27 +389,32 @@ class RecoveryConvergentEngine extends ResumableConvergentEngine {
   }
 
   async runStrongReview(task, workerA, workerB, reviewer, ...rest) {
-    this.activeReviewerForRecovery = reviewer;
-    const session = reviewer?.session;
-    const previousSendAndWait = typeof session?.sendAndWait === 'function'
-      ? session.sendAndWait.bind(session)
-      : null;
+    while (true) {
+      this.activeReviewerForRecovery = reviewer;
+      const session = reviewer?.session;
+      const previousSendAndWait = typeof session?.sendAndWait === 'function'
+        ? session.sendAndWait.bind(session)
+        : null;
 
-    if (previousSendAndWait && this.activeTaskChangeContext) {
-      session.sendAndWait = async (options, timeoutMs) => {
-        const manifest = await this.currentTaskChangeManifest(this.activeTaskChangeContext);
-        return previousSendAndWait({
-          ...options,
-          prompt: appendTaskChangeManifestPrompt(options?.prompt, manifest),
-        }, timeoutMs);
-      };
-    }
+      if (previousSendAndWait && this.activeTaskChangeContext) {
+        session.sendAndWait = async (options, timeoutMs) => {
+          const manifest = await this.currentTaskChangeManifest(this.activeTaskChangeContext);
+          return previousSendAndWait({
+            ...options,
+            prompt: appendTaskChangeManifestPrompt(options?.prompt, manifest),
+          }, timeoutMs);
+        };
+      }
 
-    try {
-      return await super.runStrongReview(task, workerA, workerB, reviewer, ...rest);
-    } finally {
-      if (previousSendAndWait) session.sendAndWait = previousSendAndWait;
-      if (this.activeReviewerForRecovery === reviewer) this.activeReviewerForRecovery = null;
+      try {
+        return await super.runStrongReview(task, workerA, workerB, reviewer, ...rest);
+      } catch (error) {
+        const outcome = await this.recoverRuntimeStallAgent(error, reviewer, task, 'reviewer');
+        if (!outcome?.retry) throw error;
+      } finally {
+        if (previousSendAndWait) session.sendAndWait = previousSendAndWait;
+        if (this.activeReviewerForRecovery === reviewer) this.activeReviewerForRecovery = null;
+      }
     }
   }
 }

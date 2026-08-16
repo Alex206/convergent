@@ -15,6 +15,7 @@ const { normalizeTaskRoute, routePolicy, usesPeerConvergence } = require('./rout
 const { RESUME_STATE_VERSION, defaultStats } = require('./resume');
 const { pauseWorkflow } = require('./control');
 const { isWorkingTreeClean, createTaskCommit } = require('./task-commit');
+const { runtimeStallResumeDisposition } = require('./runtime-stall');
 
 function checkpointPass(pass) {
   if (!pass) return null;
@@ -330,6 +331,21 @@ class ResumableConvergentEngine extends ConvergentEngine {
   }
 
   async runFullTask(factory, task, taskSessionKey, routing, taskResumeState = null) {
+    const runtimeResume = runtimeStallResumeDisposition(taskResumeState);
+    if (runtimeResume && !runtimeResume.safe) {
+      pauseWorkflow(
+        `Cannot safely /resume task ${task.id}: the saved runtime-stall checkpoint does not prove that the managed command/process tree terminated. No new agent or command was started. Manually verify/terminate the old process outside Convergent, then start a new workflow rather than resuming this checkpoint.`,
+        { kind: 'runtime_stall_resume_unproven', task: task.id, stage: runtimeResume.stage, termination: runtimeResume.termination },
+      );
+    }
+    if (runtimeResume?.safe) {
+      this.ui.phase(
+        'Resuming after managed-command stall',
+        `The saved checkpoint proves the managed command/process tree terminated. Restarting only task ${task.id} from the preserved workspace with fresh agent sessions.`,
+      );
+      taskResumeState = null;
+    }
+
     let workerA;
     let workerB;
     let reviewer;

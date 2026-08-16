@@ -68,6 +68,7 @@ class SessionGuard {
     this.stallGraceMs = Math.max(1_000, Number(options.stallGraceMs) || DEFAULT_STALL_GRACE_MS);
     this.heartbeatMs = Math.max(1_000, Number(options.heartbeatMs) || DEFAULT_HEARTBEAT_MS);
     this.controlTimeoutMs = Math.max(250, Number(options.controlTimeoutMs) || DEFAULT_CONTROL_TIMEOUT_MS);
+    this.beforeAbort = typeof options.beforeAbort === 'function' ? options.beforeAbort : null;
 
     this.currentTool = null;
     this.toolStats = new Map();
@@ -179,6 +180,7 @@ class SessionGuard {
     if (this.rawAbort) {
       this.session.abort = async () => {
         this.cancelActive('Session abort requested by Convergent.');
+        await this.beforeSessionAbort('session-abort');
         const result = await settleWithin(Promise.resolve().then(() => this.rawAbort()), this.controlTimeoutMs);
         if (!result.settled) this.ui?.agentControlTimeout?.(this.agentName, 'abort', this.controlTimeoutMs);
         return result.result;
@@ -188,6 +190,7 @@ class SessionGuard {
     if (this.rawDisconnect) {
       this.session.disconnect = async () => {
         this.cancelActive('Session disconnect requested by Convergent.');
+        await this.beforeSessionAbort('session-disconnect');
         const result = await settleWithin(Promise.resolve().then(() => this.rawDisconnect()), this.controlTimeoutMs);
         if (!result.settled) this.ui?.agentControlTimeout?.(this.agentName, 'disconnect', this.controlTimeoutMs);
         this.dispose();
@@ -288,10 +291,44 @@ class SessionGuard {
     if (!result.settled) this.ui?.agentControlTimeout?.(this.agentName, 'inactivity steering', Math.min(this.controlTimeoutMs, 2_000));
   }
 
-  async forceAbortAfterStall() {
-    if (!this.rawAbort) return;
+  managedCommandProgress(detail = {}) {
+    const now = Date.now();
+    if (this.currentTool) {
+      this.currentTool.lastProgressAt = now;
+      this.currentTool.steeringSentAt = 0;
+      this.currentTool.ignoreUntil = 0;
+      this.currentTool.decisionPending = false;
+    }
+    this.lastActivityAt = now;
+    this.inactivitySteeringSentAt = 0;
+    this.inactivityIgnoreUntil = 0;
+    this.inactivityDecisionPending = false;
+    this.ui?.agentManagedCommandProgress?.(this.agentName, detail);
+  }
+
+  async beforeSessionAbort(reason) {
+    if (!this.beforeAbort) return null;
+    const timeoutMs = Math.max(this.controlTimeoutMs, 10_000);
+    const result = await settleWithin(
+      Promise.resolve().then(() => this.beforeAbort({ reason, agent: this.agentName, diagnostic: this.snapshot() })),
+      timeoutMs,
+    );
+    if (!result.settled) {
+      this.ui?.agentControlTimeout?.(this.agentName, 'managed command termination', timeoutMs);
+      return { proven: false, reason: 'managed-command-termination-timeout' };
+    }
+    if (result.error) {
+      return { proven: false, reason: 'managed-command-termination-error', error: result.error.message ?? String(result.error) };
+    }
+    return result.result ?? null;
+  }
+
+  async forceAbortAfterStall(reason = 'stall') {
+    const termination = await this.beforeSessionAbort(reason);
+    if (!this.rawAbort) return termination;
     const result = await settleWithin(Promise.resolve().then(() => this.rawAbort()), this.controlTimeoutMs);
     if (!result.settled) this.ui?.agentControlTimeout?.(this.agentName, 'abort after stall', this.controlTimeoutMs);
+    return termination;
   }
 
   guardedSendAndWait(options) {
@@ -302,7 +339,7 @@ class SessionGuard {
     let active = true;
 
     const control = new Promise((_, reject) => {
-      const abortTool = (tool, now) => {
+      const abortTool = async (tool, now) => {
         if (!active || !this.currentTool || this.currentTool.id !== tool.id) return;
         const quietMs = now - tool.lastProgressAt;
         const diagnostic = this.snapshot();
@@ -314,17 +351,18 @@ class SessionGuard {
           quietMs,
           elapsedMs: now - tool.startedAt,
         });
-        this.ui?.agentToolStalled?.(this.agentName, tool.name, now - tool.startedAt, diagnostic);
         active = false;
+        const termination = await this.forceAbortAfterStall('tool-stall');
+        const finalDiagnostic = { ...diagnostic, managedCommandTermination: termination };
+        this.ui?.agentToolStalled?.(this.agentName, tool.name, now - tool.startedAt, finalDiagnostic);
         reject(makeControlError(
           `${this.agentName} tool ${tool.name} was aborted after ${Math.round(quietMs / 1000)}s without progress.`,
           'CONVERGENT_TOOL_STALL',
-          diagnostic,
+          finalDiagnostic,
         ));
-        void this.forceAbortAfterStall();
       };
 
-      const abortInactive = (now) => {
+      const abortInactive = async (now) => {
         if (!active) return;
         const inactiveMs = now - this.lastActivityAt;
         const diagnostic = this.snapshot();
@@ -336,14 +374,15 @@ class SessionGuard {
           quietMs: inactiveMs,
           elapsedMs: inactiveMs,
         });
-        this.ui?.agentInactivityStalled?.(this.agentName, inactiveMs, diagnostic);
         active = false;
+        const termination = await this.forceAbortAfterStall('agent-inactivity');
+        const finalDiagnostic = { ...diagnostic, managedCommandTermination: termination };
+        this.ui?.agentInactivityStalled?.(this.agentName, inactiveMs, finalDiagnostic);
         reject(makeControlError(
           `${this.agentName} produced no agent/tool activity for ${Math.round(inactiveMs / 1000)}s.`,
           'CONVERGENT_AGENT_INACTIVITY',
-          diagnostic,
+          finalDiagnostic,
         ));
-        void this.forceAbortAfterStall();
       };
 
       this.activeRejectors.add(reject);
@@ -371,7 +410,7 @@ class SessionGuard {
                 if (!active || !this.currentTool || this.currentTool.id !== tool.id) return;
                 tool.decisionPending = false;
                 if (decision?.action === 'abort') {
-                  abortTool(tool, Date.now());
+                  void abortTool(tool, Date.now());
                   return;
                 }
                 if (decision?.action === 'continue') {
@@ -402,7 +441,7 @@ class SessionGuard {
           }
 
           if (now - tool.steeringSentAt < this.stallGraceMs) return;
-          abortTool(tool, now);
+          void abortTool(tool, now);
           return;
         }
 
@@ -419,7 +458,7 @@ class SessionGuard {
               if (!active) return;
               this.inactivityDecisionPending = false;
               if (decision?.action === 'abort') {
-                abortInactive(Date.now());
+                void abortInactive(Date.now());
                 return;
               }
               if (decision?.action === 'continue') {
@@ -448,7 +487,7 @@ class SessionGuard {
         }
 
         if (now - this.inactivitySteeringSentAt < this.stallGraceMs) return;
-        abortInactive(now);
+        void abortInactive(now);
       }, 1_000);
       timer.unref?.();
     });

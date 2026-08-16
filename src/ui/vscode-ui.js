@@ -122,6 +122,8 @@ class VscodeWorkflowUi {
     this.lastUsageLogAt = 0;
     this.lastUsageChatAt = 0;
     this.lastLongToolChatStatusAt = new Map();
+    this.managedCommandProgressAt = new Map();
+    this.managedCommandBytes = new Map();
     this.agentInactivityTimeoutMs = undefined;
     this.toolStallTimeoutMs = undefined;
     this.stallGraceMs = undefined;
@@ -325,6 +327,48 @@ class VscodeWorkflowUi {
     this.log(text);
   }
 
+  agentManagedCommandProgress(agent, detail = {}) {
+    const id = String(detail.commandId ?? 'managed-command');
+    if (detail.phase === 'started') {
+      this.managedCommandBytes.set(id, 0);
+      this.managedCommandProgressAt.set(id, Date.now());
+      const pid = Number.isInteger(detail.pid) ? ` · PID ${detail.pid}` : '';
+      this.stream.progress(`${agent}: managed command started${pid}`);
+      this.log(`${agent} managed command ${id} started${pid}.`);
+      return;
+    }
+    if (detail.phase !== 'output') return;
+    const bytes = (this.managedCommandBytes.get(id) ?? 0) + Math.max(0, Number(detail.bytes) || 0);
+    this.managedCommandBytes.set(id, bytes);
+    const now = Date.now();
+    const last = this.managedCommandProgressAt.get(id) ?? 0;
+    if (now - last < 5_000) return;
+    this.managedCommandProgressAt.set(id, now);
+    this.stream.progress(`${agent}: managed command still running · ${formatTokenCount(bytes)}B output observed`);
+    this.log(`${agent} managed command ${id}: ${bytes} output byte(s) observed; latest stream=${detail.stream ?? 'unknown'}.`);
+  }
+
+  agentManagedCommandComplete(agent, detail = {}) {
+    const id = String(detail.commandId ?? 'managed-command');
+    this.managedCommandProgressAt.delete(id);
+    this.managedCommandBytes.delete(id);
+    const elapsed = formatDuration(detail.elapsedMs ?? 0);
+    let outcome;
+    if (detail.state === 'completed') {
+      outcome = Number.isInteger(detail.exitCode) ? `exit ${detail.exitCode}` : 'completed';
+    } else if (detail.state === 'timed_out') {
+      outcome = detail.terminationProven === false ? 'timed out · termination unproven' : 'timed out';
+    } else if (detail.state === 'cancelled') {
+      outcome = detail.terminationProven === false ? 'cancelled · termination unproven' : 'cancelled';
+    } else {
+      outcome = String(detail.state ?? 'finished').replace(/_/g, ' ');
+    }
+    const pid = Number.isInteger(detail.pid) ? ` · PID ${detail.pid}` : '';
+    const text = `${agent}: managed command ${outcome} · ${elapsed}${pid}`;
+    this.stream.progress(text);
+    this.log(`${text}; id=${id}`);
+  }
+
   agentHeartbeat(agent, snapshot) {
     const tool = snapshot?.currentTool;
     const detail = tool
@@ -353,14 +397,19 @@ class VscodeWorkflowUi {
     const tool = snapshot?.currentTool;
     if (!tool) return { action: 'continue', waitMs: 5 * 60_000 };
     const command = tool.detail ? `\n\n${tool.detail}` : '';
+    const managed = tool.name === 'run_command';
+    const abortChoice = managed ? 'Terminate command & recover' : 'Abort agent turn';
+    const consequence = managed
+      ? 'Convergent owns this managed process. Choosing termination kills the managed process tree first; automatic recovery is allowed only if termination is proven.'
+      : 'This built-in Copilot tool cannot currently be killed independently; aborting stops this agent turn.';
     const choice = await this.vscode.window.showWarningMessage(
-      `${agent}: ${tool.name} has produced no progress for ${formatDuration(tool.quietMs)} after ${formatDuration(tool.elapsedMs)} total.${command}\n\nThe built-in Copilot tool cannot currently be killed independently; aborting stops this agent turn.`,
+      `${agent}: ${tool.name} has produced no progress for ${formatDuration(tool.quietMs)} after ${formatDuration(tool.elapsedMs)} total.${command}\n\n${consequence}`,
       { modal: true },
       'Continue 5 min',
       'Continue 15 min',
-      'Abort agent turn',
+      abortChoice,
     );
-    if (choice === 'Abort agent turn') return { action: 'abort' };
+    if (choice === abortChoice) return { action: 'abort' };
     if (choice === 'Continue 15 min') return { action: 'continue', waitMs: 15 * 60_000 };
     return { action: 'continue', waitMs: 5 * 60_000 };
   }
@@ -372,7 +421,11 @@ class VscodeWorkflowUi {
   }
 
   agentToolStalled(agent, tool, elapsedMs, diagnostic) {
-    const detail = `${tool} was aborted by user/watchdog decision after ${formatDuration(elapsedMs)} total; cancelling this agent turn.`;
+    const termination = diagnostic?.managedCommandTermination;
+    const managed = tool === 'run_command' && termination?.active;
+    const detail = managed
+      ? `${tool} was stopped after ${formatDuration(elapsedMs)}; process-tree termination ${termination.proven ? 'was proven, so Convergent may recover with a fresh agent session' : 'could not be proven, so Convergent will not auto-retry'}.`
+      : `${tool} was aborted by user/watchdog decision after ${formatDuration(elapsedMs)} total; cancelling this agent turn.`;
     this.stream.markdown(`\n⚠ **${agent} stalled:** ${detail}\n`);
     this.log(`${agent} STALLED: ${detail}`);
     this.log(`${agent} stall diagnostic: ${JSON.stringify(diagnostic)}`);

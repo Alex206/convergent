@@ -14,6 +14,8 @@ const { createPlanTool, createPassTool, createReviewTool, createRecoveryTool, re
 const { createBatchViewTool } = require('./batch-view-tool');
 const { guardSession, describeToolCall } = require('./session-guard');
 const { hookToolArguments, OperatorCredentialGuard } = require('./operator-credential-guard');
+const { createRunCommandTool } = require('./run-command-tool');
+const { ManagedCommandRuntime } = require('../runtime/local-command-backend');
 
 const SHELL_BUILTINS = process.platform === 'win32'
   ? ['builtin:powershell']
@@ -26,6 +28,7 @@ const READ_BUILTINS = [
   ...SHELL_BUILTINS,
 ];
 const BATCH_VIEW_TOOL = 'custom:batch_view';
+const RUN_COMMAND_TOOL = 'custom:run_command';
 const COORDINATOR_TOOLS = [
   ...READ_BUILTINS,
   BATCH_VIEW_TOOL,
@@ -40,11 +43,13 @@ const RECOVERY_COORDINATOR_TOOLS = [
 const REVIEWER_TOOLS = [
   ...READ_BUILTINS,
   BATCH_VIEW_TOOL,
+  RUN_COMMAND_TOOL,
   'custom:report_review',
 ];
 const WORKER_TOOLS = [
   ...READ_BUILTINS,
   BATCH_VIEW_TOOL,
+  RUN_COMMAND_TOOL,
   'builtin:apply_patch',
   'builtin:edit',
   'builtin:create',
@@ -72,14 +77,14 @@ function shellText(input) {
 
 function readonlyShellMutation(input) {
   const name = String(input?.toolName ?? '').toLowerCase();
-  if (!/(bash|shell|powershell|terminal|cmd)/.test(name)) return false;
+  if (!/(bash|shell|powershell|terminal|cmd|run[_-]?command)/.test(name)) return false;
   const text = shellText(input);
   return /\bgit\s+(?:add|commit|push|pull|checkout|switch|reset|clean|restore|merge|rebase|cherry-pick|apply|am|rm|mv|stash)\b|\b(?:Set-Content|Add-Content|Out-File|Remove-Item|Move-Item|Copy-Item|New-Item|Rename-Item)\b|(?:^|[;&|]\s*)\b(?:rm|mv|cp|mkdir|touch|truncate)\b|\bsed\s+-i\b|\bperl\s+-pi\b|\btee\b|(^|[^>])>\s*[^>&]|\bnpm\s+(?:install|update|uninstall)\b|\b(?:pip|uv\s+pip)\s+install\b/i.test(text);
 }
 
 function shellFileContentMutation(input) {
   const name = String(input?.toolName ?? '').toLowerCase();
-  if (!/(bash|shell|powershell|terminal|cmd)/.test(name)) return false;
+  if (!/(bash|shell|powershell|terminal|cmd|run[_-]?command)/.test(name)) return false;
   const text = shellText(input);
   return /\b(?:Set-Content|Add-Content|Out-File)\b|\bsed\s+-i\b|\bperl\s+-pi\b|\btee\b|(^|[^>])>\s*[^>&]|\bapply_patch\b/i.test(text);
 }
@@ -148,6 +153,7 @@ class SessionFactory {
   constructor({ client, sdk, workspace, models, permissionHandler, userInputHandler, ui, usage, runId, reasoningMode = 'adaptive', operatorCredentialGuard = null }) {
     this.client = client; this.sdk = sdk; this.workspace = workspace; this.models = models; this.permissionHandler = permissionHandler; this.userInputHandler = userInputHandler; this.ui = ui; this.usage = usage; this.runId = runId; this.reasoningMode = reasoningMode;
     this.operatorCredentialGuard = operatorCredentialGuard ?? new OperatorCredentialGuard();
+    this.commandRuntime = new ManagedCommandRuntime({ workspace });
     this.flowMode = normalizeFlowMode(models?.flowMode);
     this.taskWorkerModels = new Map();
     this.taskBaselines = models?.taskBaselines instanceof Map ? models.taskBaselines : new Map();
@@ -155,7 +161,7 @@ class SessionFactory {
   }
 
   guard(session, agentName) {
-    const guard = guardSession(session, agentName, this.ui, { toolStallTimeoutMs: this.ui?.toolStallTimeoutMs, agentInactivityTimeoutMs: this.ui?.agentInactivityTimeoutMs, stallGraceMs: this.ui?.stallGraceMs, heartbeatMs: this.ui?.heartbeatMs });
+    const guard = guardSession(session, agentName, this.ui, { toolStallTimeoutMs: this.ui?.toolStallTimeoutMs, agentInactivityTimeoutMs: this.ui?.agentInactivityTimeoutMs, stallGraceMs: this.ui?.stallGraceMs, heartbeatMs: this.ui?.heartbeatMs, beforeAbort: ({ reason }) => this.commandRuntime.cancelOwner(agentName, reason) });
     const guardedSendAndWait = session.sendAndWait.bind(session);
     session.sendAndWait = (options, timeoutMs) => {
       audit(this.ui, { type: 'prompt_send', agent: agentName, sessionId: session.sessionId, prompt: options?.prompt, mode: options?.mode ?? 'normal' });
@@ -226,6 +232,17 @@ class SessionFactory {
     return createBatchViewTool(this.sdk.defineTool, this.workspace);
   }
 
+  runCommandTool(agentName, getGuard) {
+    return createRunCommandTool(this.sdk.defineTool, {
+      runtime: this.commandRuntime,
+      workspace: this.workspace,
+      owner: agentName,
+      ui: this.ui,
+      permissionHandler: this.permissionHandler,
+      getGuard,
+    });
+  }
+
   async createCoordinator() {
     const sink = { value: null }; const tool = createPlanTool(this.sdk.defineTool, sink); const batchView = this.batchViewTool(); const model = this.models.coordinator; const effort = chooseReasoningEffort(model, 'medium', this.reasoningMode); const systemPrompt = [COORDINATOR_PROMPT, coordinatorFlowInstructions(this.flowMode)].filter(Boolean).join('\n\n');
     const session = await this.client.createSession(withReasoning({ sessionId: `${this.runId}-coordinator`, clientName: 'convergent-vscode', model: model.id, workingDirectory: this.workspace, streaming: true, tools: [batchView, tool], availableTools: COORDINATOR_TOOLS, systemMessage: { mode: 'append', content: systemPrompt }, hooks: { onPreToolUse: (input) => this.preToolUse(readonlyHook, 'Coordinator', input) }, onPermissionRequest: this.permissionHandler, onUserInputRequest: this.userInputHandler }, effort));
@@ -241,19 +258,19 @@ class SessionFactory {
     return { session, guard, sink, name, usageName: usageKey, model, reasoningEffort: effort };
   }
 
-  async createWorker(taskId, worker, route = 'standard', risk = 'medium') {
-    const safeTaskId = safeSessionPart(taskId); const sink = { value: null }; const tool = createPassTool(this.sdk.defineTool, sink); const batchView = this.batchViewTool(); const isA = worker === 'A'; const role = isA ? 'workerA' : 'workerB'; const model = this.workerModel(taskId, worker, route, risk); const desiredEffort = routePolicy(route, risk).efforts[role]; const effort = chooseReasoningEffort(model, desiredEffort, this.reasoningMode); const baselinePrompt = await this.taskBaselinePrompt(taskId); const systemPrompt = [isA ? WORKER_A_PROMPT : WORKER_B_PROMPT, workerFlowInstructions(this.flowMode), baselinePrompt].filter(Boolean).join('\n\n');
-    const session = await this.client.createSession(withReasoning({ sessionId: `${this.runId}-${safeTaskId}-worker-${worker.toLowerCase()}`, clientName: 'convergent-vscode', model: model.id, workingDirectory: this.workspace, streaming: true, tools: [batchView, tool], availableTools: WORKER_TOOLS, systemMessage: { mode: 'append', content: systemPrompt }, hooks: { onPreToolUse: (input) => this.preToolUse(workerHook, `Worker ${worker}`, input) }, onPermissionRequest: this.permissionHandler, onUserInputRequest: this.userInputHandler }, effort));
-    const name = `Worker ${worker}`; const guard = this.guard(session, name); const usageKey = `${safeTaskId}:worker-${worker.toLowerCase()}`; attachEventLogging(session, name, this.ui, this.usage, model, usageKey, { sink, toolName: 'report_pass' }); this.ui.agentTools?.(name, WORKER_TOOLS); this.sessionCreated(name, session, model, effort, systemPrompt, WORKER_TOOLS, { role, taskId: safeTaskId, route, risk });
+  async createWorker(taskId, worker, route = 'standard', risk = 'medium', sessionAttempt = '') {
+    const safeTaskId = safeSessionPart(taskId); const attemptSuffix = sessionAttempt ? `-${safeSessionPart(sessionAttempt)}` : ''; const sink = { value: null }; const tool = createPassTool(this.sdk.defineTool, sink); const batchView = this.batchViewTool(); const isA = worker === 'A'; const role = isA ? 'workerA' : 'workerB'; const name = `Worker ${worker}`; let guard = null; const runCommand = this.runCommandTool(name, () => guard); const model = this.workerModel(taskId, worker, route, risk); const desiredEffort = routePolicy(route, risk).efforts[role]; const effort = chooseReasoningEffort(model, desiredEffort, this.reasoningMode); const baselinePrompt = await this.taskBaselinePrompt(taskId); const systemPrompt = [isA ? WORKER_A_PROMPT : WORKER_B_PROMPT, workerFlowInstructions(this.flowMode), baselinePrompt].filter(Boolean).join('\n\n');
+    const session = await this.client.createSession(withReasoning({ sessionId: `${this.runId}-${safeTaskId}-worker-${worker.toLowerCase()}${attemptSuffix}`, clientName: 'convergent-vscode', model: model.id, workingDirectory: this.workspace, streaming: true, tools: [batchView, runCommand, tool], availableTools: WORKER_TOOLS, systemMessage: { mode: 'append', content: systemPrompt }, hooks: { onPreToolUse: (input) => this.preToolUse(workerHook, name, input) }, onPermissionRequest: this.permissionHandler, onUserInputRequest: this.userInputHandler }, effort));
+    guard = this.guard(session, name); const usageKey = `${safeTaskId}:worker-${worker.toLowerCase()}${attemptSuffix}`; attachEventLogging(session, name, this.ui, this.usage, model, usageKey, { sink, toolName: 'report_pass' }); this.ui.agentTools?.(name, WORKER_TOOLS); this.sessionCreated(name, session, model, effort, systemPrompt, WORKER_TOOLS, { role, taskId: safeTaskId, route, risk, sessionAttempt: sessionAttempt || null });
     return { session, guard, sink, name: worker, usageName: usageKey, model, reasoningEffort: effort };
   }
 
-  async createReviewer(taskId, route = 'standard', risk = 'medium') {
-    const safeTaskId = safeSessionPart(taskId); const sink = { value: null }; const tool = createReviewTool(this.sdk.defineTool, sink); const batchView = this.batchViewTool(); const model = this.models.reviewer; const desiredEffort = routePolicy(route, risk).efforts.reviewer; const effort = chooseReasoningEffort(model, desiredEffort, this.reasoningMode); const baselinePrompt = await this.taskBaselinePrompt(taskId); const systemPrompt = [REVIEWER_PROMPT, reviewerFlowInstructions(this.flowMode), baselinePrompt].filter(Boolean).join('\n\n');
-    const session = await this.client.createSession(withReasoning({ sessionId: `${this.runId}-${safeTaskId}-reviewer`, clientName: 'convergent-vscode', model: model.id, workingDirectory: this.workspace, streaming: true, tools: [batchView, tool], availableTools: REVIEWER_TOOLS, systemMessage: { mode: 'append', content: systemPrompt }, hooks: { onPreToolUse: (input) => this.preToolUse(readonlyHook, 'Strong reviewer', input) }, onPermissionRequest: this.permissionHandler, onUserInputRequest: this.userInputHandler }, effort));
-    const guard = this.guard(session, 'Strong reviewer'); const usageKey = `${safeTaskId}:reviewer`; attachEventLogging(session, 'Strong reviewer', this.ui, this.usage, model, usageKey, { sink, toolName: 'report_review' }); this.ui.agentTools?.('Strong reviewer', REVIEWER_TOOLS); this.sessionCreated('Strong reviewer', session, model, effort, systemPrompt, REVIEWER_TOOLS, { role: 'reviewer', taskId: safeTaskId, route, risk });
-    return { session, guard, sink, name: 'Strong reviewer', usageName: usageKey, model, reasoningEffort: effort };
+  async createReviewer(taskId, route = 'standard', risk = 'medium', sessionAttempt = '') {
+    const safeTaskId = safeSessionPart(taskId); const attemptSuffix = sessionAttempt ? `-${safeSessionPart(sessionAttempt)}` : ''; const sink = { value: null }; const tool = createReviewTool(this.sdk.defineTool, sink); const batchView = this.batchViewTool(); const name = 'Strong reviewer'; let guard = null; const runCommand = this.runCommandTool(name, () => guard); const model = this.models.reviewer; const desiredEffort = routePolicy(route, risk).efforts.reviewer; const effort = chooseReasoningEffort(model, desiredEffort, this.reasoningMode); const baselinePrompt = await this.taskBaselinePrompt(taskId); const systemPrompt = [REVIEWER_PROMPT, reviewerFlowInstructions(this.flowMode), baselinePrompt].filter(Boolean).join('\n\n');
+    const session = await this.client.createSession(withReasoning({ sessionId: `${this.runId}-${safeTaskId}-reviewer${attemptSuffix}`, clientName: 'convergent-vscode', model: model.id, workingDirectory: this.workspace, streaming: true, tools: [batchView, runCommand, tool], availableTools: REVIEWER_TOOLS, systemMessage: { mode: 'append', content: systemPrompt }, hooks: { onPreToolUse: (input) => this.preToolUse(readonlyHook, name, input) }, onPermissionRequest: this.permissionHandler, onUserInputRequest: this.userInputHandler }, effort));
+    guard = this.guard(session, name); const usageKey = `${safeTaskId}:reviewer${attemptSuffix}`; attachEventLogging(session, name, this.ui, this.usage, model, usageKey, { sink, toolName: 'report_review' }); this.ui.agentTools?.(name, REVIEWER_TOOLS); this.sessionCreated(name, session, model, effort, systemPrompt, REVIEWER_TOOLS, { role: 'reviewer', taskId: safeTaskId, route, risk, sessionAttempt: sessionAttempt || null });
+    return { session, guard, sink, name, usageName: usageKey, model, reasoningEffort: effort };
   }
 }
 
-module.exports = { SessionFactory, attachEventLogging, readonlyHook, workerHook, readonlyShellMutation, shellFileContentMutation, safeSessionPart, withReasoning, SHELL_BUILTINS, BATCH_VIEW_TOOL, COORDINATOR_TOOLS, RECOVERY_COORDINATOR_TOOLS, REVIEWER_TOOLS, WORKER_TOOLS, RECOVERY_COORDINATOR_PROMPT };
+module.exports = { SessionFactory, attachEventLogging, readonlyHook, workerHook, readonlyShellMutation, shellFileContentMutation, safeSessionPart, withReasoning, SHELL_BUILTINS, BATCH_VIEW_TOOL, RUN_COMMAND_TOOL, COORDINATOR_TOOLS, RECOVERY_COORDINATOR_TOOLS, REVIEWER_TOOLS, WORKER_TOOLS, RECOVERY_COORDINATOR_PROMPT };

@@ -26,6 +26,8 @@ Any real deterministic BLOCKED state
 
 The central 0.3 design change is **adaptive specialist activation**. Strong planning, software-architecture review, Worker B peer convergence, and recovery are no longer permanent stages merely because they exist. Independent strong review remains the default gate for normal modifying work because the measured benchmark set repeatedly showed unique reviewer value.
 
+The current 0.4 development line adds **Convergent-owned managed command execution**. Tests, builds, long-running commands, and subprocess-producing validation can run through `run_command`, which gives Convergent stable command/PID identity, bounded stdout/stderr capture, timeout/cancel state, and process-tree termination evidence. A stalled managed command may recover through a fresh agent session only after termination is proven; unproven termination fails closed.
+
 ## Current development capabilities
 
 - Native VS Code Copilot Chat entry point: `@convergent`
@@ -46,6 +48,8 @@ The central 0.3 design change is **adaptive specialist activation**. Strong plan
 - `BLOCKED` recovery through a fresh strong read-only recovery coordinator created only when needed
 - Manual **Convergent: Steer Active Agent** support using Copilot immediate steering
 - Event-driven inactivity/tool-stall watchdogs rather than a total wall-clock turn timeout
+- Convergent-owned `run_command` for managed tests/builds/long-running commands with PID identity, bounded stdout/stderr, timeout/cancel state, and process-tree termination evidence
+- Proven managed-command stalls recover through an on-demand strong coordinator plus a fresh Worker/Reviewer session; unproven termination never auto-retries
 - Safe workflow checkpoints with `@convergent /resume`
 - Optional `convergent.taskCommits=safe` task-boundary checkpoint commits
 - Rotating local trajectory audit with per-model-call token/cache/context/tool/review telemetry
@@ -158,6 +162,16 @@ If `ask_user` is selected, Convergent opens a native free-text question. The ans
 
 While an agent is working, **Convergent: Steer Active Agent** can inject an operator message into the active Copilot turn without restarting the task.
 
+## Managed command execution and stalled-turn recovery
+
+Worker A/B and the strong reviewer can use `run_command` for commands whose lifecycle matters. Built-in Copilot shell remains available for short bounded inspection; agents are instructed not to background a managed command.
+
+`run_command` uses the existing Convergent shell permission policy before any process starts. In `workspace` mode normal workspace-contained commands are approved according to the same rules as built-in shell, while risky commands still require/receive the configured permission decision. The custom tool therefore does not bypass permission mode merely because it is implemented by Convergent.
+
+The managed runtime records a stable command id plus root PID/process identity, streams output progress to the watchdog, keeps bounded stdout/stderr tails, and returns exact final state/exit code. Timeout, explicit session stop/disconnect, or watchdog abort first tries to terminate the managed process tree. POSIX uses a dedicated process group with TERM→KILL confirmation; Windows uses `taskkill /T /F` and verifies the managed root is gone. Commands must remain attached to the managed process tree; deliberately daemonizing/backgrounding away from it is outside the contract and is explicitly discouraged.
+
+A runtime stall is automatically recoverable only when Convergent has both an active managed-command identity and **proven termination evidence**. The stalled SDK session is discarded, a fresh strong recovery coordinator decides whether retry is safe, and any retry creates a fresh Worker/Reviewer session against the preserved workspace. Recovery attempts are bounded per role. Ordinary inactivity without an active managed command, or any unproven termination, remains fail-closed.
+
 ## Protecting pre-existing workspace state
 
 Convergent deliberately supports dirty worktrees, so a dirty/untracked path cannot be treated as task output merely because it appears in final `git status`.
@@ -187,8 +201,10 @@ Resume is boundary-based rather than pretending to restore an opaque in-flight m
 - `strong_review_pending`: continue at the saved strong-review boundary;
 - `strong_review_findings`: continue from remediation of saved findings;
 - `strong_review_blocked`: resume the same required review/recovery boundary.
+- proven `worker_runtime_stall` / `reviewer_runtime_stall`: restart only that task from the preserved workspace with fresh sessions; the old managed process tree was already proven terminated.
+- unproven runtime-stall checkpoint: `/resume` refuses to start any new agent or command; manually clean up the external process state and start a new workflow instead.
 
-If a fine-grained checkpoint no longer matches the workspace, Convergent discards stale fine-grained state and falls back to restarting only that task.
+If a fine-grained checkpoint no longer matches the workspace, Convergent discards stale fine-grained state and falls back to restarting only that task, except that an unproven runtime-stall checkpoint never takes that fallback because doing so would violate the termination-proof boundary.
 
 ## Headless benchmarks and measured architecture evidence
 
@@ -218,7 +234,7 @@ audit/<run>/
 └── analysis.md
 ```
 
-The audit records session role/model/reasoning configuration, prompts according to audit level, assistant/tool events, input/output/reasoning/cache usage, context/compaction data, pass/review boundaries, blocker recovery, steering, and repeated tool signatures.
+The audit records session role/model/reasoning configuration, prompts according to audit level, assistant/tool events, managed-command lifecycle metadata, input/output/reasoning/cache usage, context/compaction data, pass/review boundaries, blocker/runtime recovery, steering, and repeated tool signatures. Managed-command progress audit records metadata/byte counts rather than duplicating raw streamed output chunks.
 
 `convergent.audit.level=metadata` keeps event structure and hashes source-bearing payloads. `full` retains bounded local prompt/message/tool content and may contain repository source or command output.
 
