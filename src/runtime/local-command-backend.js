@@ -44,19 +44,37 @@ function resolveWorkingDirectory(workspace, requested) {
   return candidate;
 }
 
-function shellInvocation(command) {
-  if (process.platform === 'win32') {
-    // cmd /s strips the first and last quote around its command string. Add
-    // that framing explicitly so quotes belonging to the executable/arguments
-    // remain intact (notably paths such as "C:\\Program Files\\...").
+function shellInvocation(command, platform = process.platform) {
+  if (platform === 'win32') {
+    // Convergent's VS Code/Windows users naturally author PowerShell commands.
+    // Use Windows PowerShell explicitly so pipelines, ';', variables, and
+    // quoting have the same semantics as the built-in PowerShell tool.
+    // PowerShell treats a leading quoted executable path as a string unless
+    // the call operator is present, so normalize only that cmd-compatible edge.
+    const powershellCommand = /^"[^"]+"\s/.test(command) ? `& ${command}` : command;
+    // powershell.exe itself does not automatically propagate a native child's
+    // exit code. Capture the final operation immediately after the user's
+    // command so run_command retains the exact lifecycle status expected from
+    // a shell command. Pure PowerShell success/failure remains 0/1.
+    const wrappedCommand = [
+      '$global:LASTEXITCODE = $null',
+      powershellCommand,
+      '$__convergent_ok = $?',
+      '$__convergent_last_exit = $LASTEXITCODE',
+      'if ($__convergent_ok) { exit 0 }',
+      'if ($null -ne $__convergent_last_exit -and $__convergent_last_exit -ne 0) { exit $__convergent_last_exit }',
+      'exit 1',
+    ].join('\n');
     return {
-      file: process.env.ComSpec || 'cmd.exe',
-      args: ['/d', '/s', '/c', `"${command}"`],
+      file: process.env.CONVERGENT_POWERSHELL || 'powershell.exe',
+      args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', wrappedCommand],
+      windowsVerbatimArguments: false,
     };
   }
   return {
     file: process.env.SHELL || '/bin/sh',
     args: ['-lc', command],
+    windowsVerbatimArguments: false,
   };
 }
 
@@ -178,7 +196,7 @@ class LocalCommandBackend {
           cwd,
           env: process.env,
           windowsHide: true,
-          windowsVerbatimArguments: process.platform === 'win32',
+          windowsVerbatimArguments: invocation.windowsVerbatimArguments ?? false,
           detached: process.platform !== 'win32',
           stdio: ['ignore', 'pipe', 'pipe'],
         });

@@ -346,6 +346,14 @@ class ResumableConvergentEngine extends ConvergentEngine {
       taskResumeState = null;
     }
 
+    if (['worker_blocked', 'strong_review_blocked'].includes(taskResumeState?.stage) && taskResumeState?.recoveryDecision?.action === 'pause') {
+      const rationale = taskResumeState.recoveryDecision.rationale || 'The saved blocker still requires an external change before work can continue.';
+      pauseWorkflow(
+        `Task ${task.id} remains paused on the unchanged saved blocker. ${rationale} No new agent or recovery-model call was started. Change the workspace/environment prerequisite, then start/resume from a changed state.`,
+        { kind: 'unchanged_saved_blocker', task: task.id, stage: taskResumeState.stage, recovery: taskResumeState.recoveryDecision },
+      );
+    }
+
     let workerA;
     let workerB;
     let reviewer;

@@ -122,3 +122,18 @@ test('runtime cancellation terminates an active owner command before returning p
   assert.equal(result.termination?.proven, true);
   assert.equal(processExists(info.pid), false);
 });
+
+test('Windows managed shell is PowerShell-native and preserves final command status', () => {
+  const { shellInvocation } = require('../src/runtime/local-command-backend');
+  const invocation = shellInvocation("Write-Output $env:TEMP; Write-Output done", 'win32');
+  assert.match(invocation.file, /powershell(?:\.exe)?$/i);
+  assert.deepEqual(invocation.args.slice(0, 3), ['-NoLogo', '-NoProfile', '-NonInteractive']);
+  const script = invocation.args.at(-1);
+  assert.match(script, /Write-Output \$env:TEMP; Write-Output done/);
+  assert.match(script, /\$__convergent_ok = \$\?/);
+  assert.match(script, /exit \$__convergent_last_exit/);
+  assert.equal(invocation.windowsVerbatimArguments, false);
+
+  const native = shellInvocation('"C:\\Program Files\\node.exe" "script.js"', 'win32');
+  assert.match(native.args.at(-1), /& "C:\\Program Files\\node\.exe" "script\.js"/);
+});

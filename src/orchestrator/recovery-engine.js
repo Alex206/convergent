@@ -9,6 +9,10 @@ const { pauseWorkflow } = require('./control');
 const { runArchitectureAssessment, formatArchitectureAssessment } = require('./architecture-advisor');
 const { runtimeStallIncident, runtimeStallRecoveryDetail } = require('./runtime-stall');
 
+function recoveryCacheKey(task, kind, detail = {}) {
+  return [task?.id ?? '', kind ?? '', detail.workspaceFingerprint ?? '', String(detail.summary ?? '').trim()].join('\0');
+}
+
 function checkpointPass(pass) {
   if (!pass) return null;
   return {
@@ -64,6 +68,7 @@ class RecoveryConvergentEngine extends ResumableConvergentEngine {
     this.activeTaskChangeContext = null;
     this.activeRuntimeRecoveryContext = null;
     this.maxRuntimeRecoveryAttempts = Math.max(1, Number(options.maxRuntimeRecoveryAttempts) || 2);
+    this.blockerRecoveryHistory = new Map();
   }
 
   recoveryFactory() {
@@ -206,6 +211,24 @@ class RecoveryConvergentEngine extends ResumableConvergentEngine {
   }
 
   async consultRecoveryCoordinator(task, kind, detail, { allowPeer = false } = {}) {
+    const cacheKey = recoveryCacheKey(task, kind, detail);
+    const prior = this.blockerRecoveryHistory.get(cacheKey);
+    if (prior?.action === 'pause') {
+      this.ui?.log?.(`Reusing paused recovery decision for unchanged ${kind} blocker on ${task.id}; no recovery-model call.`);
+      return { ...prior, cached: true };
+    }
+    if (prior?.action === 'retry') {
+      const repeated = {
+        action: 'pause',
+        rationale: `The same ${kind} blocker recurred on the same workspace fingerprint after a recovery retry; another strong recovery turn would repeat work.`,
+        guidance: prior.guidance ?? '',
+        cached: true,
+      };
+      this.blockerRecoveryHistory.set(cacheKey, repeated);
+      this.ui?.log?.(`Same ${kind} blocker recurred unchanged on ${task.id}; pausing deterministically without another recovery-model call.`);
+      return repeated;
+    }
+
     const factory = this.recoveryFactory();
     const coordinator = await factory.createRecoveryCoordinator(task.id, kind);
     this.sessions.push(coordinator.session);
@@ -230,7 +253,8 @@ class RecoveryConvergentEngine extends ResumableConvergentEngine {
           detail.evidence?.length ? formatValidationEvidence(detail.evidence) : '',
           detail.runtimeIncident ? 'Runtime incident note: Convergent has already aborted the stalled Copilot turn. Retry is safe only because the managed command/process tree was proven terminated; any retry must use a fresh agent session and re-inspect the preserved workspace.' : '',
           '',
-          'Decide the least wasteful safe recovery action. Inspect only a small amount of read-only repository/environment context if it resolves the blocker. A required validation that is blocked by a missing operator-controlled token, credential, secret, or environment prerequisite must not be reclassified as acceptable or retried unchanged: ask_user for the missing prerequisite or guidance. Use ask_user only for a genuinely missing operator fact or decision.',
+          'Treat the supplied task, working ref, blocker summary, workspace fingerprint, checks, and validation evidence as authoritative known context. Do NOT reread AGENTS.md, .aew manifests/guides/roles/skills, Git history, or broad repository state merely to reconstruct facts already supplied. Inspect at most one narrowly targeted unresolved fact when it is necessary to choose recovery.',
+          'Decide the least wasteful safe recovery action. A required validation that is blocked by a missing operator-controlled token, credential, secret, or environment prerequisite must not be reclassified as acceptable or retried unchanged: ask_user for the missing prerequisite or guidance. Use ask_user only for a genuinely missing operator fact or decision.',
         ].filter(Boolean).join('\n'),
         'report_recovery',
         this.agentTurnTimeoutMs,
@@ -310,7 +334,9 @@ class RecoveryConvergentEngine extends ResumableConvergentEngine {
         operatorContextProvided: Boolean(operatorAnswer),
         authorizedCredentialNames,
       });
-      return { action: report.action, rationale: report.rationale, guidance };
+      const finalDecision = { action: report.action, rationale: report.rationale, guidance };
+      this.blockerRecoveryHistory.set(cacheKey, finalDecision);
+      return finalDecision;
     } finally {
       await coordinator.session.disconnect?.().catch(() => {});
       this.sessions = this.sessions.filter((session) => session !== coordinator.session);
@@ -348,6 +374,14 @@ class RecoveryConvergentEngine extends ResumableConvergentEngine {
       return { action: 'retry', guidance: decision.guidance };
     }
 
+    await this.saveTaskCheckpoint({
+      stage: 'worker_blocked',
+      worker: blockedWorker.name,
+      blockedPass: checkpointPass(result),
+      nextReviewCycle,
+      routing,
+      recoveryDecision: decision,
+    });
     pauseWorkflow(
       `Paused because Worker ${blockedWorker.name} is blocked on task ${task.id}. The blocker, current workspace fingerprint, and recovery assessment were preserved.`,
       { kind: 'worker_blocked', task: task.id, worker: blockedWorker.name, summary: result.report?.summary, recovery: decision },
@@ -382,6 +416,14 @@ class RecoveryConvergentEngine extends ResumableConvergentEngine {
       return { action: 'retry', guidance: decision.guidance };
     }
 
+    await this.saveTaskCheckpoint({
+      stage: 'strong_review_blocked',
+      reviewCycle,
+      summary: review.summary,
+      evidence,
+      routing,
+      recoveryDecision: decision,
+    });
     pauseWorkflow(
       `Paused because the strong reviewer is blocked on task ${task.id} at cycle ${reviewCycle}. The review boundary and recovery assessment were checkpointed.`,
       { kind: 'strong_review_blocked', task: task.id, reviewCycle, summary: review.summary, recovery: decision },
@@ -424,4 +466,5 @@ module.exports = {
   queueRecoveryInstruction,
   appendTaskChangeManifestPrompt,
   taskWithArchitectureAssessment,
+  recoveryCacheKey,
 };

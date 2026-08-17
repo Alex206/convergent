@@ -122,6 +122,8 @@ class VscodeWorkflowUi {
     this.lastUsageLogAt = 0;
     this.lastUsageChatAt = 0;
     this.lastLongToolChatStatusAt = new Map();
+    this.agentActivity = new Map();
+    this.agentActivityChatAt = new Map();
     this.managedCommandProgressAt = new Map();
     this.managedCommandBytes = new Map();
     this.pendingChatDecisions = new Map();
@@ -287,7 +289,9 @@ _Enter the answer in the input box; VS Code's stable Chat API does not currently
       ? 'completed by coordinator inspection'
       : route === 'trivial'
         ? 'passed lightweight implementer + peer review'
-        : 'passed A/B convergence and strong review';
+        : route === 'high_risk'
+          ? 'passed A/B convergence and strong review'
+          : 'passed implementer + strong review';
     this.stream.markdown(`✓ **${task.title}** ${detail}.\n`);
     this.log(`Task ${task.id} completed via ${route}.`);
     this.audit({ type: 'task_complete', taskId: task.id, title: task.title, route });
@@ -348,8 +352,12 @@ _Enter the answer in the input box; VS Code's stable Chat API does not currently
   }
 
   usageProgress(summary) {
-    this.stream.progress(`Usage: ${compactUsage(summary)}`);
-    this.log(`Usage: ${compactUsage(summary)}`);
+    const text = `Usage: ${compactUsage(summary)}`;
+    this.log(text);
+    const now = Date.now();
+    if (now - this.lastUsageChatAt < 30_000) return;
+    this.lastUsageChatAt = now;
+    this.stream.progress(text);
   }
 
   runSummary(summary, stats = {}) {
@@ -376,8 +384,19 @@ _Enter the answer in the input box; VS Code's stable Chat API does not currently
 
   agentTool(agent, tool, detail = '') {
     const text = `${agent} tool: ${tool}${detail ? ` — ${compactActivity(detail, 300)}` : ''}`;
-    this.stream.progress(text);
     this.log(text);
+    this.audit({ type: 'agent_tool', agent, tool, detail: compactActivity(detail, 600) });
+
+    const state = this.agentActivity.get(agent) ?? { calls: 0, latest: '' };
+    state.calls += 1;
+    state.latest = tool;
+    this.agentActivity.set(agent, state);
+    const now = Date.now();
+    const last = this.agentActivityChatAt.get(agent) ?? 0;
+    if (state.calls === 1 || now - last >= 15_000) {
+      this.agentActivityChatAt.set(agent, now);
+      this.stream.progress(`${agent}: ${state.calls} tool ${state.calls === 1 ? 'activity' : 'activities'} · latest ${tool}`);
+    }
   }
 
   agentToolComplete(agent, tool, durationMs, success) {

@@ -130,3 +130,32 @@ test('reviewer retry receives coordinator recovery guidance on its next review t
   await reviewer.session.sendAndWait({ prompt: 'review again' });
   assert.match(reviewer.session.calls[0].prompt, /not a Git commit id/i);
 });
+
+test('unchanged repeated blocker pauses deterministically after one retry decision', async () => {
+  let coordinatorCreations = 0;
+  const recoverySession = fakeSession();
+  const engine = new RecoveryConvergentEngine({
+    client: {}, sdk: {}, workspace: '/repo', models: {}, ui: fakeUi(), revisionProvider: async () => 'R1',
+  });
+  engine.recoveryFactory = () => ({
+    async createRecoveryCoordinator() {
+      coordinatorCreations += 1;
+      return {
+        session: recoverySession,
+        sink: { value: { action: 'retry', rationale: 'retry once', question: '', guidance: 'retry focused step' } },
+      };
+    },
+  });
+  // Bypass the SDK report exchange while still exercising the cache boundary.
+  engine.consultRecoveryCoordinator = RecoveryConvergentEngine.prototype.consultRecoveryCoordinator.bind(engine);
+  recoverySession.sendAndWait = async () => {};
+  recoverySession.disconnect = async () => {};
+  const detail = { workspaceFingerprint: 'R1', summary: 'same blocker', checks: [] };
+  // Seed the exact result that a first recovery retry would have recorded.
+  const { recoveryCacheKey } = require('../src/orchestrator/recovery-engine');
+  engine.blockerRecoveryHistory.set(recoveryCacheKey(task, 'worker-A', detail), { action: 'retry', rationale: 'retry once', guidance: 'focused' });
+  const decision = await engine.consultRecoveryCoordinator(task, 'worker-A', detail, { allowPeer: true });
+  assert.equal(decision.action, 'pause');
+  assert.equal(decision.cached, true);
+  assert.equal(coordinatorCreations, 0);
+});

@@ -89,3 +89,33 @@ test('managed tool stall offers recovery as a chat decision', async () => {
   assert.equal(ui.resolveChatDecision(...recovery.arguments), true);
   assert.deepEqual(await pending, { action: 'abort' });
 });
+
+test('raw tool commands stay in Output while chat receives aggregated activity', () => {
+  const { ui, progress, logs } = fixture();
+  ui.agentTool('Coordinator', 'powershell', 'git show secret-long-command --patch');
+  assert.ok(logs.some((line) => line.includes('git show secret-long-command')));
+  assert.equal(progress.some((line) => line.includes('secret-long-command')), false);
+  assert.ok(progress.some((line) => /Coordinator: 1 tool activity/.test(line)));
+});
+
+test('usage progress is throttled in chat but always retained in Output', () => {
+  const { ui, progress, logs } = fixture();
+  const summary = { hasCreditData: true, aiCredits: 1, inputTokens: 1000, outputTokens: 100, turns: 1, elapsedMs: 1000 };
+  ui.usageProgress(summary);
+  ui.usageProgress({ ...summary, aiCredits: 2 });
+  assert.equal(logs.filter((line) => line.includes('Usage:')).length, 2);
+  assert.equal(progress.filter((line) => line.startsWith('Usage:')).length, 1);
+});
+
+
+test('task completion labels reflect the actual standard and high-risk topologies', () => {
+  const standard = fixture();
+  standard.ui.taskCompleted({ id: 'T1', title: 'Standard task' }, 'standard');
+  assert.match(standard.markdown.join(''), /passed implementer \+ strong review/);
+  assert.doesNotMatch(standard.markdown.join(''), /A\/B convergence/);
+
+  const highRisk = fixture();
+  highRisk.ui.taskCompleted({ id: 'T2', title: 'High-risk task' }, 'high_risk');
+  assert.match(highRisk.markdown.join(''), /passed A\/B convergence and strong review/);
+});
+

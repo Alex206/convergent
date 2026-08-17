@@ -32,6 +32,25 @@ function preserveRequestArchitectureSignificance(plan, userRequest, routingMode 
   }
 
   const tasks = Array.isArray(plan?.tasks) ? plan.tasks : [];
+  const requestArchitectureEvidence = String(userRequest ?? '').slice(0, 2000);
+  const explicitArchitectureHigh = tasks
+    .map((task, index) => ({ task, index }))
+    .filter(({ task }) => String(task?.architectureSignificance ?? '').toLowerCase() === 'high' && task?.route !== 'read_only');
+  if (explicitArchitectureHigh.length) {
+    const indexes = new Set(explicitArchitectureHigh.map(({ index }) => index));
+    return {
+      plan: {
+        ...plan,
+        tasks: tasks.map((task, index) => indexes.has(index)
+          ? { ...task, requestArchitectureEvidence }
+          : task),
+      },
+      requestArchitecture,
+      changed: true,
+      requiresCoordinatorCorrection: false,
+    };
+  }
+
   const routings = tasks.map((task) => normalizeTaskRoute(task, routingMode));
   if (routings.some((routing) => routing.route !== 'read_only' && routing.architecture === 'high')) {
     return { plan, requestArchitecture, changed: false, requiresCoordinatorCorrection: false };
@@ -54,6 +73,7 @@ function preserveRequestArchitectureSignificance(plan, userRequest, routingMode 
   const nextTask = {
     ...task,
     architectureSignificance: 'high',
+    requestArchitectureEvidence,
     routingReason: [task?.routingReason, preservationReason].filter(Boolean).join('; '),
   };
   return {
@@ -65,14 +85,18 @@ function preserveRequestArchitectureSignificance(plan, userRequest, routingMode 
 }
 
 function taskPrompt(task) {
+  const workingRef = String(task?.workingRef ?? '').trim();
   return [
     `Task ${task.id}: ${task.title}`,
     '',
     task.description,
+    workingRef ? '' : null,
+    workingRef ? `Authoritative working ref discovered during planning: ${workingRef}` : null,
+    workingRef ? 'Before declaring task files absent, verify this ref. If the current checkout differs, move to/use this ref only when it can be done without discarding protected user workspace state; otherwise report the concrete workspace conflict.' : null,
     '',
     'Acceptance criteria:',
     ...task.acceptanceCriteria.map((criterion) => `- ${criterion}`),
-  ].join('\n');
+  ].filter((line) => line !== null).join('\n');
 }
 
 function formatInspectionHints(task) {

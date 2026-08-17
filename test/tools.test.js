@@ -124,3 +124,20 @@ test('serialized clean report_review assistant text is recovered', () => {
   assert.deepEqual(report.findings, []);
   assert.deepEqual(report.checks, ['inspected diff']);
 });
+
+test('plan task schema carries an optional coordinator-proven workingRef', async () => {
+  const sink = { value: null };
+  const tool = createPlanTool(captureDefinition, sink);
+  assert.equal(tool.parameters.properties.tasks.items.properties.workingRef.type, 'string');
+  const result = await tool.handler({
+    summary: 'Use the existing PR head.',
+    tasks: [{
+      id: 'T1', title: 'Harden backend', description: 'Harden existing code',
+      acceptanceCriteria: ['Tests pass'], route: 'standard', risk: 'medium',
+      architectureSignificance: 'low', routingReason: 'Local implementation change',
+      inspectionHints: [], workingRef: 'origin/agent/target-memory-control',
+    }],
+  });
+  assert.equal(result.accepted, true);
+  assert.equal(sink.value.tasks[0].workingRef, 'origin/agent/target-memory-control');
+});
