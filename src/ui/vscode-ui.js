@@ -124,6 +124,8 @@ class VscodeWorkflowUi {
     this.lastLongToolChatStatusAt = new Map();
     this.managedCommandProgressAt = new Map();
     this.managedCommandBytes = new Map();
+    this.pendingChatDecisions = new Map();
+    this.chatDecisionSequence = 0;
     this.agentInactivityTimeoutMs = undefined;
     this.toolStallTimeoutMs = undefined;
     this.stallGraceMs = undefined;
@@ -141,6 +143,63 @@ class VscodeWorkflowUi {
 
   audit(event) {
     this.emit(event);
+  }
+
+  async chatChoice({ kind = 'decision', title = 'Decision needed', message = '', choices = [] } = {}) {
+    if (typeof this.stream?.button !== 'function' || !Array.isArray(choices) || choices.length === 0) return null;
+    const id = `convergent-chat-decision-${Date.now()}-${++this.chatDecisionSequence}`;
+    const normalizedChoices = choices.map((choice) => String(choice));
+    const rendered = String(message ?? '').replace(/\n/g, '\n> ');
+    this.stream.markdown(`
+> **${title}**
+>
+> ${rendered}
+
+`);
+    const answer = new Promise((resolve) => {
+      this.pendingChatDecisions.set(id, { resolve, kind, choices: normalizedChoices });
+    });
+    for (const choice of normalizedChoices) {
+      this.stream.button({ command: 'convergent.respondDecision', title: choice, arguments: [id, choice] });
+    }
+    this.log(`Chat decision requested: kind=${kind}; choices=${normalizedChoices.join(' | ')}`);
+    this.audit({ type: 'chat_decision_requested', id, kind, title, choices: normalizedChoices });
+    return answer;
+  }
+
+  resolveChatDecision(id, choice) {
+    const pending = this.pendingChatDecisions.get(String(id));
+    if (!pending) return false;
+    const normalized = String(choice);
+    if (!pending.choices.includes(normalized)) return false;
+    this.pendingChatDecisions.delete(String(id));
+    pending.resolve(normalized);
+    this.stream.markdown(`
+✓ **Selected:** ${normalized}
+`);
+    this.log(`Chat decision resolved: kind=${pending.kind}; choice=${normalized}`);
+    this.audit({ type: 'chat_decision_resolved', id: String(id), kind: pending.kind, choice: normalized });
+    return true;
+  }
+
+  cancelPendingChatDecisions() {
+    for (const [id, pending] of this.pendingChatDecisions) {
+      this.pendingChatDecisions.delete(id);
+      pending.resolve(undefined);
+    }
+  }
+
+  announceFreeformQuestion(question) {
+    const text = String(question ?? '').trim();
+    if (!text) return;
+    this.stream.markdown(`
+> **Clarification needed**
+>
+> ${text.replace(/\n/g, '\n> ')}
+
+_Enter the answer in the input box; VS Code's stable Chat API does not currently expose blocking free-form text input inside an active participant response._
+`);
+    this.log(`Free-form clarification requested: ${compactActivity(text, 300)}`);
   }
 
   log(message) {
@@ -396,20 +455,27 @@ class VscodeWorkflowUi {
   async agentToolStallDecision(agent, snapshot) {
     const tool = snapshot?.currentTool;
     if (!tool) return { action: 'continue', waitMs: 5 * 60_000 };
-    const command = tool.detail ? `\n\n${tool.detail}` : '';
+    const command = tool.detail ? `
+
+${tool.detail}` : '';
     const managed = tool.name === 'run_command';
     const abortChoice = managed ? 'Terminate command & recover' : 'Abort agent turn';
     const consequence = managed
       ? 'Convergent owns this managed process. Choosing termination kills the managed process tree first; automatic recovery is allowed only if termination is proven.'
       : 'This built-in Copilot tool cannot currently be killed independently; aborting stops this agent turn.';
-    const choice = await this.vscode.window.showWarningMessage(
-      `${agent}: ${tool.name} has produced no progress for ${formatDuration(tool.quietMs)} after ${formatDuration(tool.elapsedMs)} total.${command}\n\n${consequence}`,
-      { modal: true },
-      'Continue 5 min',
-      'Continue 15 min',
-      abortChoice,
-    );
-    if (choice === abortChoice) return { action: 'abort' };
+    const message = `${agent}: ${tool.name} has produced no progress for ${formatDuration(tool.quietMs)} after ${formatDuration(tool.elapsedMs)} total.${command}
+
+${consequence}`;
+    let choice = await this.chatChoice({
+      kind: 'tool_stall',
+      title: `${agent}: stalled tool`,
+      message,
+      choices: ['Continue 5 min', 'Continue 15 min', abortChoice],
+    });
+    if (choice === null) {
+      choice = await this.vscode.window.showWarningMessage(message, { modal: true }, 'Continue 5 min', 'Continue 15 min', abortChoice);
+    }
+    if (choice === abortChoice || choice === undefined) return { action: 'abort' };
     if (choice === 'Continue 15 min') return { action: 'continue', waitMs: 15 * 60_000 };
     return { action: 'continue', waitMs: 5 * 60_000 };
   }
@@ -438,13 +504,17 @@ class VscodeWorkflowUi {
   }
 
   async agentInactivityDecision(agent, snapshot) {
-    const choice = await this.vscode.window.showWarningMessage(
-      `${agent} has produced no agent or tool activity for ${formatDuration(snapshot?.lastActivityAgoMs ?? 0)}. Continue waiting or abort this agent turn?`,
-      { modal: true },
-      'Continue 5 min',
-      'Abort agent turn',
-    );
-    if (choice === 'Abort agent turn') return { action: 'abort' };
+    const message = `${agent} has produced no agent or tool activity for ${formatDuration(snapshot?.lastActivityAgoMs ?? 0)}. Continue waiting or abort this agent turn?`;
+    let choice = await this.chatChoice({
+      kind: 'agent_inactivity',
+      title: `${agent}: no activity`,
+      message,
+      choices: ['Continue 5 min', 'Abort agent turn'],
+    });
+    if (choice === null) {
+      choice = await this.vscode.window.showWarningMessage(message, { modal: true }, 'Continue 5 min', 'Abort agent turn');
+    }
+    if (choice === 'Abort agent turn' || choice === undefined) return { action: 'abort' };
     return { action: 'continue', waitMs: 5 * 60_000 };
   }
 
@@ -471,7 +541,8 @@ class VscodeWorkflowUi {
       const increment = Math.max(1, Number(details.increment) || limit || 100);
       message = `Convergent has reached the configured soft AI-credit budget (${limit.toFixed(3)}); reported usage is ≈${current.toFixed(3)} AI credits. The current agent turn has finished at a safe boundary.`;
       choices = [`Continue +${increment} credits`, 'Continue without budget', 'Pause & resume later'];
-      const choice = await this.vscode.window.showWarningMessage(message, { modal: true }, ...choices);
+      let choice = await this.chatChoice({ kind: 'ai_credits', title: 'AI-credit budget reached', message, choices });
+      if (choice === null) choice = await this.vscode.window.showWarningMessage(message, { modal: true }, ...choices);
       this.log(`AI-credit limit decision: ${choice ?? 'dismissed'}; usage=${current}; ceiling=${limit}`);
       this.audit({ type: 'limit_decision', kind, current, limit, choice });
       if (choice === 'Continue without budget') return { action: 'unlimited' };
@@ -482,7 +553,8 @@ class VscodeWorkflowUi {
     const noun = kind === 'worker_passes' ? 'A/B review/fix passes' : 'strong-review cycles';
     message = `Convergent reached the configured soft limit of ${limit} ${noun}. The workflow is at a safe decision boundary rather than failed.`;
     choices = ['Continue 1 more', 'Continue 3 more', 'Pause & resume later'];
-    const choice = await this.vscode.window.showWarningMessage(message, { modal: true }, ...choices);
+    let choice = await this.chatChoice({ kind, title: 'Convergent limit reached', message, choices });
+    if (choice === null) choice = await this.vscode.window.showWarningMessage(message, { modal: true }, ...choices);
     this.log(`${kind} limit decision: ${choice ?? 'dismissed'}; current=${current}; limit=${limit}`);
     this.audit({ type: 'limit_decision', kind, current, limit, choice });
     if (choice === choices[0]) return { action: 'continue', additional: 1 };

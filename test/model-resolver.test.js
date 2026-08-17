@@ -81,15 +81,16 @@ test('adaptive worker presets scale with route risk and flow', () => {
   assert.equal(adaptivePreset('B', 'standard', 'high', 'fast'), 'high-risk-b');
 });
 
-test('adaptive Worker A promotes high-risk work to a stronger implementation tier', () => {
+test('adaptive Worker A stays Luna-first even for high-risk work when Luna is available', () => {
   const available = [
+    { id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna' },
     { id: 'claude-haiku-4.5', name: 'Claude Haiku 4.5' },
     { id: 'gpt-5.4-mini', name: 'GPT-5.4 mini' },
     { id: 'gpt-5.5', name: 'GPT-5.5' },
     { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra' },
   ];
   const result = resolveWorkerModel('adaptive', available, { worker: 'A', route: 'high_risk', risk: 'high' });
-  assert.equal(result.id, 'gpt-5.6-terra');
+  assert.equal(result.id, 'gpt-5.6-luna');
   assert.match(result.reason, /high-risk-a/);
 });
 
@@ -113,17 +114,16 @@ test('fast low-risk standard work stays on balanced tier instead of blindly prom
   assert.match(result.reason, /balanced-a/);
 });
 
-test('fast medium-risk standard work can promote adaptive Worker A', () => {
+test('fast medium-risk standard work remains Luna-first when Luna is available', () => {
   const available = [
+    { id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna' },
     { id: 'gpt-5.4-mini', name: 'GPT-5.4 mini' },
     { id: 'gpt-5.4', name: 'GPT-5.4' },
     { id: 'gpt-5.5', name: 'GPT-5.5' },
     { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra' },
   ];
-  const result = resolveWorkerModel('adaptive', available, {
-    worker: 'A', route: 'standard', risk: 'medium', flowMode: 'fast',
-  });
-  assert.equal(result.id, 'gpt-5.6-terra');
+  const result = resolveWorkerModel('adaptive', available, { worker: 'A', route: 'standard', risk: 'medium', flowMode: 'fast' });
+  assert.equal(result.id, 'gpt-5.6-luna');
   assert.match(result.reason, /fast-a/);
 });
 

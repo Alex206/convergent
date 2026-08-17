@@ -5,7 +5,7 @@ const path = require('node:path');
 const vscode = require('vscode');
 const packageJson = require('../package.json');
 const { RecoveryConvergentEngine } = require('./orchestrator/recovery-engine');
-const { resolveModel } = require('./orchestrator/model-resolver');
+const { resolveModel, isAdaptiveWorkerSelector } = require('./orchestrator/model-resolver');
 const { ensureConcreteUserRequest } = require('./orchestrator/request-preflight');
 const { normalizeResumeState, resumeSummary } = require('./orchestrator/resume');
 const { workspaceRevision } = require('./orchestrator/revision');
@@ -199,7 +199,12 @@ async function resolveConfiguredModels(copilotClient, selectors, flowMode = 'aut
     const efforts = model.supportedReasoningEfforts?.length ? `; reasoning=${model.supportedReasoningEfforts.join('/')}` : '';
     output.appendLine(`${role}: ${model.name ?? model.id} (${model.id}) — ${model.reason}${efforts}`);
   }
-  output.appendLine(`workerA policy: ${selectors.workerA} — resolved per task after route/risk classification`);
+  const workerAAdaptive = isAdaptiveWorkerSelector(selectors.workerA);
+  output.appendLine(
+    workerAAdaptive
+      ? `workerA policy: ${selectors.workerA} — Luna-first adaptive implementer; resolved per task after route/risk classification`
+      : `workerA policy: ${selectors.workerA} — explicit override; adaptive Luna-first implementer policy is disabled`,
+  );
   output.appendLine(`workerB policy: ${selectors.workerB} — resolved per task after route/risk classification; adaptive-diverse/cheap-b avoid Worker A when possible`);
   return resolved;
 }
@@ -313,8 +318,13 @@ async function executeWorkflow(prompt, stream, token, resumeState = null, flowOv
     sdk: runtime.sdk,
     workspace,
     models,
-    permissionHandler: createPermissionHandler(vscode, workspace, config.permissionMode, output),
-    userInputHandler: createUserInputHandler(vscode),
+    permissionHandler: createPermissionHandler(vscode, workspace, config.permissionMode, output, {
+      chatChoice: (request) => ui.chatChoice(request),
+    }),
+    userInputHandler: createUserInputHandler(vscode, {
+      chatChoice: (request) => ui.chatChoice(request),
+      announceFreeformQuestion: (question) => ui.announceFreeformQuestion(question),
+    }),
     ui,
     maxWorkerPasses: flow.maxWorkerPasses,
     maxReviewerCycles: flow.maxReviewerCycles,
@@ -332,8 +342,9 @@ async function executeWorkflow(prompt, stream, token, resumeState = null, flowOv
       output.appendLine(`[${new Date().toISOString()}] Resume checkpoint: stage=${state.stage}; nextTask=${state.nextTaskIndex}; currentTask=${state.currentTaskIndex ?? 'none'}`);
     },
   });
-  activeRun = { engine, controller, latestCheckpoint, audit, flow, version: EXTENSION_VERSION };
+  activeRun = { engine, controller, latestCheckpoint, audit, flow, version: EXTENSION_VERSION, ui };
   const cancellation = token.onCancellationRequested(() => {
+    ui.cancelPendingChatDecisions();
     controller.abort();
     void audit.record({ type: 'operator_cancel', reason: 'Chat request cancelled by user.' });
     void markResumeInterrupted(activeRun?.latestCheckpoint, 'Chat request cancelled by user.');
@@ -366,6 +377,7 @@ async function executeWorkflow(prompt, stream, token, resumeState = null, flowOv
     throw error;
   } finally {
     cancellation.dispose();
+    ui.cancelPendingChatDecisions();
     lastUsage = engine.getUsageSummary();
     await persistDiagnostics(collectDiagnostics(engine));
     await audit.finish({ status: runStatus, usage: lastUsage, stats: engine.stats, error: runError });
@@ -455,11 +467,15 @@ async function activate(context) {
       }
       await vscode.commands.executeCommand('workbench.action.chat.open', { query: '@convergent /resume' });
     }),
+    vscode.commands.registerCommand('convergent.respondDecision', (id, choice) => {
+      return activeRun?.ui?.resolveChatDecision(id, choice) ?? false;
+    }),
     vscode.commands.registerCommand('convergent.stop', async () => {
       if (!activeRun) {
         vscode.window.showInformationMessage('No Convergent workflow is running.');
         return;
       }
+      activeRun.ui?.cancelPendingChatDecisions();
       activeRun.controller.abort();
       await activeRun.audit?.record({ type: 'operator_stop' });
       await markResumeInterrupted(activeRun.latestCheckpoint, 'Stopped by user.');
@@ -544,6 +560,7 @@ async function activate(context) {
 
 async function deactivate() {
   if (activeRun) {
+    activeRun.ui?.cancelPendingChatDecisions();
     activeRun.controller.abort();
     await activeRun.audit?.record({ type: 'extension_deactivate' }).catch(() => {});
     await markResumeInterrupted(activeRun.latestCheckpoint, 'VS Code extension deactivated.').catch(() => {});

@@ -40,7 +40,7 @@ function riskyCommand(command) {
     || /\bgit\s+push\b|\bgit\s+reset\s+--hard\b|\bgit\s+clean\s+-[^\n]*f|\brm\s+-[^\n]*r[^\n]*f|\bRemove-Item\b[^\n]*-Recurse[^\n]*-Force|\bformat\b|\bshutdown\b/i.test(text);
 }
 
-function createPermissionHandler(vscode, workspace, mode, output) {
+function createPermissionHandler(vscode, workspace, mode, output, options = {}) {
   return async (request) => {
     const approve = () => ({ kind: 'approve-once' });
     const deny = () => ({ kind: 'deny' });
@@ -67,27 +67,33 @@ function createPermissionHandler(vscode, workspace, mode, output) {
         ? `Write ${request.fileName ?? request.path ?? ''}`
         : `${request.kind} permission`;
 
-    const choice = await vscode.window.showWarningMessage(
-      `Convergent agent requests permission: ${description}`,
-      { modal: true },
-      'Allow once',
-      'Deny',
-    );
+    const message = `Convergent agent requests permission: ${description}`;
+    let choice = typeof options.chatChoice === 'function'
+      ? await options.chatChoice({ kind: 'permission', title: 'Permission needed', message, choices: ['Allow once', 'Deny'] })
+      : null;
+    if (choice === null) choice = await vscode.window.showWarningMessage(message, { modal: true }, 'Allow once', 'Deny');
     return choice === 'Allow once' ? approve() : deny();
   };
 }
 
-function createUserInputHandler(vscode) {
+function createUserInputHandler(vscode, options = {}) {
   return async (request) => {
     if (request.choices?.length) {
-      const picked = await vscode.window.showQuickPick(request.choices, {
-        title: 'Convergent needs clarification',
-        placeHolder: request.question,
-        ignoreFocusOut: true,
-      });
+      let picked = typeof options.chatChoice === 'function'
+        ? await options.chatChoice({ kind: 'clarification', title: 'Clarification needed', message: request.question, choices: request.choices })
+        : null;
+      if (picked === null) {
+        picked = await vscode.window.showQuickPick(request.choices, {
+          title: 'Convergent needs clarification',
+          placeHolder: request.question,
+          ignoreFocusOut: true,
+        });
+      }
       if (picked !== undefined) return { answer: picked, wasFreeform: false };
+      return { answer: 'User cancelled the clarification request.', wasFreeform: true };
     }
 
+    options.announceFreeformQuestion?.(request.question);
     const answer = await vscode.window.showInputBox({
       title: 'Convergent needs clarification',
       prompt: request.question,

@@ -54,6 +54,7 @@ const PRESETS = {
     /claude.*haiku.*4\.5/i,
   ],
   'fast-a': [
+    /gpt[- ]?5\.6.*luna/i,
     /gpt[- ]?5\.6.*terra/i,
     /claude.*sonnet.*5/i,
     /gpt[- ]?5\.6.*sol/i,
@@ -74,6 +75,7 @@ const PRESETS = {
     /claude.*haiku.*4\.5/i,
   ],
   'high-risk-a': [
+    /gpt[- ]?5\.6.*luna/i,
     /gpt[- ]?5\.6.*terra/i,
     /claude.*sonnet.*5/i,
     /gpt[- ]?5\.6.*sol/i,
