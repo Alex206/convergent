@@ -26,44 +26,46 @@ function fixture(choice = 'Terminate command & recover') {
   return { ui: new VscodeWorkflowUi(vscode, stream, output, { workspace: '/repo' }), progress, markdown, logs, warnings };
 }
 
-test('VS Code shows managed command start and bounded output progress without command text', () => {
+test('VS Code shows a sanitized managed command while it runs plus bounded output progress', () => {
   const { ui, progress, logs } = fixture();
-  ui.agentManagedCommandProgress('Worker A', { phase: 'started', commandId: 'cmd-1', pid: 321 });
+  ui.agentManagedCommandProgress('Worker A', { phase: 'started', commandId: 'cmd-1', pid: 321, displayCommand: 'pytest -q tests', shellLanguage: 'powershell' });
   ui.managedCommandProgressAt.set('cmd-1', 0);
   ui.agentManagedCommandProgress('Worker A', { phase: 'output', commandId: 'cmd-1', pid: 321, stream: 'stdout', bytes: 2048 });
 
-  assert.match(progress[0], /managed command started.*PID 321/i);
+  assert.match(progress[0], /running command.*pytest -q tests.*PID 321/i);
   assert.match(progress[1], /managed command still running/i);
   assert.match(progress[1], /2\.0kB output observed/i);
-  assert.doesNotMatch(progress.join('\n'), /secret-command/);
   assert.match(logs.join('\n'), /cmd-1/);
 });
 
 
-test('VS Code managed completion clears per-command progress state and reports outcome', () => {
-  const { ui, progress, logs } = fixture();
-  ui.agentManagedCommandProgress('Worker A', { phase: 'started', commandId: 'cmd-done', pid: 456 });
+test('VS Code managed completion clears state and renders command plus bounded result in chat', () => {
+  const { ui, markdown, logs } = fixture();
+  ui.agentManagedCommandProgress('Worker A', { phase: 'started', commandId: 'cmd-done', pid: 456, displayCommand: 'pytest -q' });
   assert.equal(ui.managedCommandBytes.has('cmd-done'), true);
   assert.equal(ui.managedCommandProgressAt.has('cmd-done'), true);
 
   ui.agentManagedCommandComplete('Worker A', {
     commandId: 'cmd-done', pid: 456, state: 'completed', exitCode: 7, elapsedMs: 1200,
+    displayCommand: 'pytest -q', shellLanguage: 'powershell', stderr: '1 failed', stdout: '',
   });
 
   assert.equal(ui.managedCommandBytes.has('cmd-done'), false);
   assert.equal(ui.managedCommandProgressAt.has('cmd-done'), false);
-  assert.match(progress.at(-1), /managed command exit 7/i);
-  assert.match(progress.at(-1), /PID 456/);
+  assert.match(markdown.join('\n'), /Worker A ran command.*exit 7/i);
+  assert.match(markdown.join('\n'), /pytest -q/);
+  assert.match(markdown.join('\n'), /1 failed/);
   assert.match(logs.at(-1), /id=cmd-done/);
 });
 
-test('VS Code managed completion surfaces unproven cancellation without command text', () => {
-  const { ui, progress } = fixture();
+test('VS Code managed completion surfaces unproven cancellation as a command result', () => {
+  const { ui, markdown } = fixture();
   ui.agentManagedCommandComplete('Strong reviewer', {
     commandId: 'cmd-cancel', pid: 789, state: 'cancelled', elapsedMs: 3400, terminationProven: false,
+    displayCommand: 'pytest -q', stderr: 'interrupted',
   });
-  assert.match(progress.at(-1), /cancelled.*termination unproven/i);
-  assert.doesNotMatch(progress.at(-1), /secret-command/);
+  assert.match(markdown.join('\n'), /cancelled.*termination unproven/i);
+  assert.match(markdown.join('\n'), /pytest -q/);
 });
 
 test('VS Code stall decision explains managed tree termination and recovery semantics', async () => {
@@ -93,4 +95,29 @@ test('VS Code stalled message distinguishes proven and unproven managed terminat
   });
   assert.match(unproven.markdown.join('\n'), /could not be proven/i);
   assert.match(unproven.markdown.join('\n'), /will not auto-retry/i);
+});
+
+
+test('successful command card keeps output compact and marks runtime truncation', () => {
+  const { ui, markdown } = fixture();
+  const manyLines = Array.from({ length: 80 }, (_, index) => `line-${index}`).join('\n');
+  ui.agentManagedCommandComplete('Worker A', {
+    commandId: 'cmd-success', pid: 100, state: 'completed', exitCode: 0, elapsedMs: 2200,
+    displayCommand: 'node --test', shellLanguage: 'powershell', stdout: manyLines, stderr: '', stdoutTruncated: true,
+  });
+  const text = markdown.join('\n');
+  assert.match(text, /✓.*Worker A ran command.*exit 0/i);
+  assert.match(text, /node --test/);
+  assert.match(text, /line-79/);
+  assert.doesNotMatch(text, /line-0\n/);
+  assert.match(text, /Output preview truncated/i);
+});
+
+
+test('managed command completion does not emit a duplicate generic tool progress line', () => {
+  const { ui, progress } = fixture();
+  ui.agentToolComplete('Worker A', 'run_command', 12_000, false);
+  assert.equal(progress.length, 0);
+  ui.agentToolComplete('Worker A', 'powershell', 12_000, false);
+  assert.equal(progress.length, 1);
 });

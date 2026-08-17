@@ -1,6 +1,7 @@
 'use strict';
 
 const path = require('node:path');
+const { isSensitiveCredentialName } = require('./operator-credential-guard');
 
 const DEFAULT_TOOL_TIMEOUT_SECONDS = 300;
 const MAX_TOOL_TIMEOUT_SECONDS = 3600;
@@ -10,6 +11,34 @@ function auditUi(ui, event) {
     if (typeof ui?.audit === 'function') void ui.audit(event);
     else void ui?.auditEvent?.(event);
   } catch {}
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function redactSensitiveText(value, environment = process.env) {
+  let text = String(value ?? '');
+  if (!text) return text;
+
+  const secretValues = Object.entries(environment ?? {})
+    .filter(([name, secret]) => isSensitiveCredentialName(name) && String(secret ?? '').length >= 4)
+    .map(([, secret]) => String(secret))
+    .sort((a, b) => b.length - a.length);
+  for (const secret of secretValues) {
+    text = text.replace(new RegExp(escapeRegExp(secret), 'g'), '[REDACTED]');
+  }
+
+  // Common bearer/token shapes that may be literal rather than inherited from
+  // an environment variable. This is intentionally best-effort; raw command
+  // text/output never needs to be copied into Chat for Convergent to function.
+  text = text
+    .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g, '[REDACTED]')
+    .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, '[REDACTED]')
+    .replace(/(Authorization\s*:\s*(?:Bearer|Basic)\s+)([^\s\"'`;]+)/gi, '$1[REDACTED]')
+    .replace(/((?:--?(?:token|password|passwd|secret|api[-_]?key|access[-_]?token|client[-_]?secret))\s*(?:=|\s)\s*)(?:\"[^\"]*\"|'[^']*'|[^\s;]+)/gi, '$1[REDACTED]')
+    .replace(/(\"(?:token|password|secret|api[_-]?key|access[_-]?token|client[_-]?secret)\"\s*:\s*)\"(?:\\.|[^\"])*\"/gi, '$1\"[REDACTED]\"');
+  return text;
 }
 
 function clampTimeoutSeconds(value) {
@@ -75,6 +104,8 @@ function createRunCommandTool(defineTool, {
         return { accepted: false, error: error.message };
       }
       const timeoutSeconds = clampTimeoutSeconds(args.timeoutSeconds);
+      const displayCommand = redactSensitiveText(command);
+      const shellLanguage = process.platform === 'win32' ? 'powershell' : 'sh';
       if (typeof permissionHandler !== 'function') {
         return { accepted: false, error: 'run_command permission handler is unavailable; command was not started.' };
       }
@@ -102,6 +133,10 @@ function createRunCommandTool(defineTool, {
             commandId: info.commandId,
             pid: info.pid,
             phase: 'started',
+            displayCommand,
+            cwd,
+            timeoutSeconds,
+            shellLanguage,
           });
           auditUi(ui, {
             type: 'managed_command_start',
@@ -155,6 +190,13 @@ function createRunCommandTool(defineTool, {
           signal: result.signal,
           elapsedMs: result.elapsedMs,
           terminationProven: result.termination?.proven ?? null,
+          displayCommand,
+          cwd,
+          shellLanguage,
+          stdout: redactSensitiveText(result.stdout),
+          stderr: redactSensitiveText(result.stderr),
+          stdoutTruncated: Boolean(result.stdoutTruncated),
+          stderrTruncated: Boolean(result.stderrTruncated),
         });
       } catch {}
       return result;
@@ -166,6 +208,7 @@ module.exports = {
   createRunCommandTool,
   normalizeCwd,
   clampTimeoutSeconds,
+  redactSensitiveText,
   auditUi,
   DEFAULT_TOOL_TIMEOUT_SECONDS,
   MAX_TOOL_TIMEOUT_SECONDS,

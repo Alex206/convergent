@@ -38,6 +38,8 @@ function oneLine(value, max = 260) {
 }
 
 function describeToolCall(data = {}) {
+  const toolName = String(data.toolName ?? data.tool_name ?? '').toLowerCase();
+  if (/(^|:)run[_-]?command$/.test(toolName)) return 'managed command';
   const raw = data.arguments ?? data.toolArgs ?? data.args ?? data.input ?? data.parameters;
   let args = raw;
   if (typeof raw === 'string') {
@@ -294,6 +296,9 @@ class SessionGuard {
   managedCommandProgress(detail = {}) {
     const now = Date.now();
     if (this.currentTool) {
+      if (detail.phase === 'started' && /run[_-]?command$/i.test(this.currentTool.name) && detail.displayCommand) {
+        this.currentTool.detail = oneLine(detail.displayCommand);
+      }
       this.currentTool.lastProgressAt = now;
       this.currentTool.steeringSentAt = 0;
       this.currentTool.ignoreUntil = 0;

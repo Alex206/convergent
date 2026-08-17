@@ -34,6 +34,44 @@ function compactActivity(value, max = 420) {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
+function boundedTail(value, maxChars = 3500, maxLines = 30) {
+  const normalized = String(value ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trimEnd();
+  if (!normalized) return { text: '', truncated: false };
+  const lines = normalized.split('\n');
+  let text = lines.slice(-maxLines).join('\n');
+  let truncated = lines.length > maxLines;
+  if (text.length > maxChars) {
+    text = text.slice(-maxChars);
+    truncated = true;
+  }
+  return { text, truncated };
+}
+
+function fencedCode(value, language = 'text') {
+  const text = String(value ?? '');
+  const longest = Math.max(0, ...(text.match(/`+/g) ?? []).map((run) => run.length));
+  const fence = '`'.repeat(Math.max(3, longest + 1));
+  return `${fence}${language}\n${text}\n${fence}`;
+}
+
+function managedCommandOutput(detail = {}, failed = false) {
+  const maxChars = failed ? 7000 : 3500;
+  const maxLines = failed ? 60 : 30;
+  const stdout = boundedTail(detail.stdout, maxChars, maxLines);
+  const stderr = boundedTail(detail.stderr, maxChars, maxLines);
+  const parts = [];
+  if (stdout.text) parts.push(stderr.text ? `[stdout]\n${stdout.text}` : stdout.text);
+  if (stderr.text) parts.push(stdout.text ? `[stderr]\n${stderr.text}` : stderr.text);
+  return {
+    text: parts.join('\n\n'),
+    truncated: stdout.truncated || stderr.truncated || Boolean(detail.stdoutTruncated) || Boolean(detail.stderrTruncated),
+  };
+}
+
+function isManagedCommandTool(tool) {
+  return /(^|:)run[_-]?command$/i.test(String(tool ?? ''));
+}
+
 function aggregateAgentUsage(summary) {
   const groups = new Map();
   for (const entry of summary?.agents ?? []) {
@@ -383,6 +421,11 @@ _Enter the answer in the input box; VS Code's stable Chat API does not currently
   }
 
   agentTool(agent, tool, detail = '') {
+    if (isManagedCommandTool(tool)) {
+      this.log(`${agent} tool: ${tool} — managed lifecycle rendered separately`);
+      this.audit({ type: 'agent_tool', agent, tool, detail: 'managed command; lifecycle rendered separately' });
+      return;
+    }
     const text = `${agent} tool: ${tool}${detail ? ` — ${compactActivity(detail, 300)}` : ''}`;
     this.log(text);
     this.audit({ type: 'agent_tool', agent, tool, detail: compactActivity(detail, 600) });
@@ -401,7 +444,7 @@ _Enter the answer in the input box; VS Code's stable Chat API does not currently
 
   agentToolComplete(agent, tool, durationMs, success) {
     const text = `${agent} tool complete: ${tool} · ${formatDuration(durationMs)} · ${success ? 'success' : 'failure'}`;
-    if (!success || durationMs >= 10_000) this.stream.progress(text);
+    if (!isManagedCommandTool(tool) && (!success || durationMs >= 10_000)) this.stream.progress(text);
     this.log(text);
   }
 
@@ -411,8 +454,9 @@ _Enter the answer in the input box; VS Code's stable Chat API does not currently
       this.managedCommandBytes.set(id, 0);
       this.managedCommandProgressAt.set(id, Date.now());
       const pid = Number.isInteger(detail.pid) ? ` · PID ${detail.pid}` : '';
-      this.stream.progress(`${agent}: managed command started${pid}`);
-      this.log(`${agent} managed command ${id} started${pid}.`);
+      const command = compactActivity(detail.displayCommand, 180);
+      this.stream.progress(`${agent}: running command${command ? ` — ${command}` : ''}${pid}`);
+      this.log(`${agent} managed command ${id} started${pid}${command ? `; command=${command}` : ''}.`);
       return;
     }
     if (detail.phase !== 'output') return;
@@ -442,9 +486,18 @@ _Enter the answer in the input box; VS Code's stable Chat API does not currently
       outcome = String(detail.state ?? 'finished').replace(/_/g, ' ');
     }
     const pid = Number.isInteger(detail.pid) ? ` · PID ${detail.pid}` : '';
-    const text = `${agent}: managed command ${outcome} · ${elapsed}${pid}`;
-    this.stream.progress(text);
-    this.log(`${text}; id=${id}`);
+    const failed = detail.state !== 'completed' || (Number.isInteger(detail.exitCode) && detail.exitCode !== 0);
+    const mark = detail.state === 'completed' ? (failed ? '✗' : '✓') : '⚠';
+    const command = String(detail.displayCommand ?? '').trim();
+    const cwd = String(detail.cwd ?? '.');
+    const output = managedCommandOutput(detail, failed);
+    const heading = `${mark} **${agent} ran command** · ${outcome} · ${elapsed}${cwd && cwd !== '.' ? ` · cwd \`${cwd}\`` : ''}`;
+    const lines = ['', heading];
+    if (command) lines.push('', fencedCode(command, detail.shellLanguage || (process.platform === 'win32' ? 'powershell' : 'sh')));
+    if (output.text) lines.push('', fencedCode(output.text, 'text'));
+    if (output.truncated) lines.push('', '_Output preview truncated; the managed tool result retained bounded output for agent validation._');
+    this.stream.markdown(`${lines.join('\n')}\n`);
+    this.log(`${agent}: managed command ${outcome} · ${elapsed}${pid}; id=${id}`);
   }
 
   agentHeartbeat(agent, snapshot) {

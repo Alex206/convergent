@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const { createRunCommandTool, normalizeCwd, clampTimeoutSeconds } = require('../src/copilot/run-command-tool');
+const { createRunCommandTool, normalizeCwd, clampTimeoutSeconds, redactSensitiveText } = require('../src/copilot/run-command-tool');
 
 test('run_command normalizes cwd and timeout and forwards managed lifecycle progress', async () => {
   let definition;
@@ -12,6 +12,7 @@ test('run_command normalizes cwd and timeout and forwards managed lifecycle prog
     return definition;
   };
   const progress = [];
+  const completions = [];
   const audits = [];
   const runtime = {
     async execute(owner, options) {
@@ -28,7 +29,7 @@ test('run_command normalizes cwd and timeout and forwards managed lifecycle prog
     },
   };
   const guard = { managedCommandProgress: (event) => progress.push(event) };
-  const ui = { auditEvent: (event) => { audits.push(event); } };
+  const ui = { auditEvent: (event) => { audits.push(event); }, agentManagedCommandComplete: (agent, detail) => completions.push({ agent, detail }) };
   createRunCommandTool(defineTool, { runtime, workspace: '/workspace', owner: 'Worker A', ui, permissionHandler: async (request) => { assert.equal(request.kind, 'shell'); assert.equal(request.fullCommandText, 'node --test'); return { kind: 'approve-once' }; }, getGuard: () => guard });
 
   assert.equal(definition.name, 'run_command');
@@ -37,6 +38,9 @@ test('run_command normalizes cwd and timeout and forwards managed lifecycle prog
 
   assert.equal(result.state, 'completed');
   assert.deepEqual(progress.map((item) => item.phase), ['started', 'output']);
+  assert.equal(progress[0].displayCommand, 'node --test');
+  assert.equal(completions[0].detail.displayCommand, 'node --test');
+  assert.equal(completions[0].detail.stdout, 'ok');
   assert.deepEqual(audits.map((event) => event.type), ['managed_command_start', 'managed_command_progress', 'managed_command_complete']);
   assert.equal(audits[1].bytes, 2);
   assert.equal(Object.hasOwn(audits[1], 'chunk'), false, 'progress audit must not duplicate command output content');
@@ -111,4 +115,16 @@ test('normalizeCwd accepts workspace-relative paths and rejects escapes', () => 
   assert.equal(normalizeCwd('/workspace', undefined), '.');
   assert.equal(normalizeCwd('/workspace', 'sub/dir'), path.join('sub', 'dir'));
   assert.throws(() => normalizeCwd('/workspace', '../escape'), /cwd must stay inside/);
+});
+
+
+test('managed command chat text redacts inherited and common literal credentials', () => {
+  const env = { GITHUB_TOKEN: 'ghp_supersecretvalue1234567890', NORMAL: 'visible' };
+  const text = redactSensitiveText(
+    'curl -H "Authorization: Bearer ghp_supersecretvalue1234567890" --token literal-secret-value ' +
+      '{"password":"do-not-show"}',
+    env,
+  );
+  assert.doesNotMatch(text, /supersecret|literal-secret|do-not-show/);
+  assert.match(text, /\[REDACTED\]/);
 });
