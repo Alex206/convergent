@@ -51,7 +51,7 @@ function isClearlyTrivialChange(task) {
 }
 
 function hasHighRiskSemantics(task) {
-  return HIGH_RISK_HINTS.test(taskObjectiveText(task));
+  return task?.deterministicHighRisk === true || HIGH_RISK_HINTS.test(taskObjectiveText(task));
 }
 
 function architectureSignificance(task) {
