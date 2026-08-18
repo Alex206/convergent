@@ -11,7 +11,7 @@ const task = {
   acceptanceCriteria: ['Required external validation is completed rather than silently weakened.'],
 };
 
-test('missing token prerequisite forces operator input before retrying a blocked worker', async () => {
+test('recovery coordinator structured action is not overridden by regex-parsing blocker prose', async () => {
   const events = [];
   const sink = { value: null };
   let sends = 0;
@@ -19,19 +19,12 @@ test('missing token prerequisite forces operator input before retrying a blocked
     sessionId: 'recovery-session',
     async sendAndWait() {
       sends += 1;
-      sink.value = sends === 1
-        ? {
-            action: 'retry',
-            rationale: 'Implementation is correct; retry the unchanged validation.',
-            question: '',
-            guidance: 'Rerun the external validator.',
-          }
-        : {
-            action: 'retry',
-            rationale: 'Operator supplied a benchmark-only token.',
-            question: '',
-            guidance: 'Use TASKFLOW_RELEASE_TOKEN=benchmark-only-secret only for the required validation command.',
-          };
+      sink.value = {
+        action: 'retry',
+        rationale: 'I evaluated the supplied blocker and a bounded retry is appropriate.',
+        question: '',
+        guidance: 'Retry once with the preserved workspace and report the exact result.',
+      };
     },
     async disconnect() {},
   };
@@ -46,9 +39,9 @@ test('missing token prerequisite forces operator input before retrying a blocked
       log() {},
       audit(event) { events.push(event); },
     },
-    userInputHandler: async () => ({
-      answer: 'Use TASKFLOW_RELEASE_TOKEN=benchmark-only-secret only for the external validation command.',
-    }),
+    userInputHandler: async () => {
+      throw new Error('deterministic prose parsing must not force operator input');
+    },
   });
   engine.finishTurn = async () => ({});
   engine.recoveryFactory = () => ({
@@ -62,10 +55,9 @@ test('missing token prerequisite forces operator input before retrying a blocked
     checks: ['python tools/validate_release_signature.py: TASKFLOW_RELEASE_TOKEN is not configured'],
   }, { allowPeer: true });
 
-  assert.equal(sends, 2, 'operator answer must be returned to the recovery coordinator before a retry is accepted');
+  assert.equal(sends, 1);
   assert.equal(decision.action, 'retry');
-  assert.match(decision.guidance, /benchmark-only-secret/);
-  assert.equal(events.some((event) => event.type === 'recovery_operator_prerequisite_required'), true);
+  assert.equal(events.some((event) => event.type === 'recovery_operator_prerequisite_required'), false);
   const recovery = events.find((event) => event.type === 'recovery_decision');
-  assert.match(recovery.operatorAnswer, /benchmark-only-secret/);
+  assert.equal(recovery?.report?.action, 'retry');
 });

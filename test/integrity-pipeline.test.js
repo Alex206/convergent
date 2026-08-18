@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { reconcileDeterministicIntegrity } = require('../src/orchestrator/engine');
 
-test('credential-integrity BLOCKED is preserved through later deterministic reconciliation', () => {
+test('credential-integrity BLOCKED is preserved as a deterministic override', () => {
   const result = reconcileDeterministicIntegrity({
     verdict: 'clean',
     summary: 'Implementation is complete. No unresolved issues.',
@@ -22,7 +22,7 @@ test('credential-integrity BLOCKED is preserved through later deterministic reco
   assert.doesNotMatch(JSON.stringify(result.report), /made-up-secret/);
 });
 
-test('required-validation blocker reconciliation precedes contradictory-BLOCKED cleanup', () => {
+test('required-validation prose does not rewrite CHANGED into BLOCKED', () => {
   const result = reconcileDeterministicIntegrity({
     verdict: 'changed',
     summary: 'Implementation is complete. No unresolved issues.',
@@ -33,11 +33,11 @@ test('required-validation blocker reconciliation precedes contradictory-BLOCKED 
     ],
   }, { changed: true, role: 'Worker A' });
 
-  assert.equal(result.report.verdict, 'blocked');
-  assert.match(result.correction, /BLOCKED/);
+  assert.equal(result.report.verdict, 'changed');
+  assert.equal(result.correction, null);
 });
 
-test('unsupported BLOCKED is reconciled only after stronger blocker evidence checks are exhausted', () => {
+test('completion prose does not rewrite structured BLOCKED into CLEAN', () => {
   const result = reconcileDeterministicIntegrity({
     verdict: 'blocked',
     summary: 'Implementation is complete. No unresolved issues.',
@@ -45,6 +45,6 @@ test('unsupported BLOCKED is reconciled only after stronger blocker evidence che
     checks: ['Focused tests passed'],
   }, { changed: false, role: 'Strong reviewer' });
 
-  assert.equal(result.report.verdict, 'clean');
-  assert.match(result.correction, /BLOCKED -> CLEAN/);
+  assert.equal(result.report.verdict, 'blocked');
+  assert.equal(result.correction, null);
 });
