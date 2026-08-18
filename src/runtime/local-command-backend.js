@@ -3,6 +3,7 @@
 const crypto = require('node:crypto');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
+const { normalizeWorkspaceFolders, rootForPath } = require('../orchestrator/workspace-scope');
 
 const DEFAULT_TIMEOUT_MS = 5 * 60_000;
 const DEFAULT_MAX_CAPTURE_BYTES = 256 * 1024;
@@ -34,13 +35,11 @@ function normalizeWorkspace(workspace) {
   return path.resolve(workspace);
 }
 
-function resolveWorkingDirectory(workspace, requested) {
-  const root = normalizeWorkspace(workspace);
-  const candidate = requested ? path.resolve(root, requested) : root;
-  const relative = path.relative(root, candidate);
-  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-    throw new Error(`Managed command cwd must stay inside the workspace: ${requested}`);
-  }
+function resolveWorkingDirectory(workspace, value, workspaceFolders = null) {
+  const root = normalizeWorkspace(workspace); const roots = normalizeWorkspaceFolders(root, workspaceFolders);
+  if (value === undefined || value === null || value === '') return root;
+  const candidate = path.isAbsolute(String(value)) ? path.resolve(String(value)) : path.resolve(root, String(value));
+  if (!rootForPath(root, roots, candidate)) throw new Error(`Managed command cwd must stay inside the workspace or another opened workspace folder: ${value}`);
   return candidate;
 }
 
@@ -133,8 +132,9 @@ function spawnAndCollect(file, args, options = {}) {
 }
 
 class LocalCommandBackend {
-  constructor({ workspace, maxCaptureBytes = DEFAULT_MAX_CAPTURE_BYTES, terminationGraceMs = DEFAULT_TERMINATION_GRACE_MS } = {}) {
+  constructor({ workspace, workspaceFolders = null, maxCaptureBytes = DEFAULT_MAX_CAPTURE_BYTES, terminationGraceMs = DEFAULT_TERMINATION_GRACE_MS } = {}) {
     this.workspace = normalizeWorkspace(workspace);
+    this.workspaceFolders = normalizeWorkspaceFolders(this.workspace, workspaceFolders);
     this.maxCaptureBytes = clampPositiveInteger(maxCaptureBytes, DEFAULT_MAX_CAPTURE_BYTES, 1024, 16 * 1024 * 1024);
     this.terminationGraceMs = clampPositiveInteger(terminationGraceMs, DEFAULT_TERMINATION_GRACE_MS, 50, 10_000);
     this.active = new Map();
@@ -144,7 +144,7 @@ class LocalCommandBackend {
     const command = String(options.command ?? '').trim();
     if (!command) throw new Error('Managed command requires a non-empty command string.');
 
-    const cwd = resolveWorkingDirectory(this.workspace, options.cwd);
+    const cwd = resolveWorkingDirectory(this.workspace, options.cwd, this.workspaceFolders);
     const timeoutMs = clampPositiveInteger(options.timeoutMs, DEFAULT_TIMEOUT_MS, 100, 24 * 60 * 60_000);
     const maxCaptureBytes = clampPositiveInteger(options.maxCaptureBytes, this.maxCaptureBytes, 1024, 16 * 1024 * 1024);
     const id = commandId();

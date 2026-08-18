@@ -57,16 +57,17 @@ async function getClient(requestedTransport = 'auto') {
   return { client, sdk, transport: clientTransport };
 }
 
-function workspacePath() {
+function workspaceContext(preferredPrimary = null) {
   const folders = vscode.workspace.workspaceFolders;
   if (!folders?.length) throw new Error('Open a Git repository workspace before starting Convergent.');
-  if (folders.length > 1) {
-    const active = vscode.window.activeTextEditor?.document?.uri;
-    const folder = active ? vscode.workspace.getWorkspaceFolder(active) : undefined;
-    if (folder) return folder.uri.fsPath;
-  }
-  return folders[0].uri.fsPath;
+  const preferred = preferredPrimary ? folders.find((folder) => path.resolve(folder.uri.fsPath) === path.resolve(preferredPrimary)) : undefined;
+  const active = vscode.window.activeTextEditor?.document?.uri;
+  const activeFolder = active ? vscode.workspace.getWorkspaceFolder(active) : undefined;
+  const primaryFolder = preferred ?? activeFolder ?? folders[0];
+  return { primary: primaryFolder.uri.fsPath, folders: [primaryFolder, ...folders.filter((folder) => folder !== primaryFolder)].map((folder) => ({ name: folder.name, path: folder.uri.fsPath })) };
 }
+
+function workspacePath() { return workspaceContext().primary; }
 
 function explicitConfigValue(config, key) {
   const inspected = config.inspect?.(key);
@@ -128,9 +129,10 @@ async function persistDiagnostics(diagnostics) {
   }
 }
 
-function loadResumeState(workspace = workspacePath()) {
+function loadResumeState() {
   const value = extensionContext?.workspaceState.get(RESUME_STATE_KEY);
-  return normalizeResumeState(value, workspace);
+  const context = workspaceContext(value?.workspace);
+  return normalizeResumeState(value, context.primary, context.folders);
 }
 
 function tryLoadResumeState() {
@@ -163,7 +165,7 @@ async function confirmBoundaryResume(state, workspace) {
   if (!state?.plan || !state?.revision || state.currentTaskIndex !== null) return true;
   let current;
   try {
-    current = await workspaceRevision(workspace);
+    current = await workspaceRevision(workspace, workspaceContext(state?.workspace ?? workspace).folders);
   } catch {
     return true;
   }
@@ -274,7 +276,9 @@ async function steerActiveAgent() {
 
 async function executeWorkflow(prompt, stream, token, resumeState = null, flowOverride = null) {
   if (activeRun) throw new Error('A Convergent workflow is already running. Stop it before starting another one.');
-  const workspace = workspacePath();
+  const workspaceContextValue = workspaceContext(resumeState?.workspace);
+  const workspace = workspaceContextValue.primary;
+  const workspaceFolders = workspaceContextValue.folders;
   const config = readConfig();
   const flow = flowPolicy(flowOverride ?? resumeState?.flowMode ?? config.flowMode, config);
   const runtime = await getClient(config.runtimeTransport);
@@ -289,6 +293,7 @@ async function executeWorkflow(prompt, stream, token, resumeState = null, flowOv
     runId: auditRunId,
     convergentVersion: EXTENSION_VERSION,
     workspace,
+    workspaceFolders,
     flowMode: flow.mode,
     flowPolicy: flow,
     request: prompt,
@@ -298,6 +303,7 @@ async function executeWorkflow(prompt, stream, token, resumeState = null, flowOv
 
   const ui = new VscodeWorkflowUi(vscode, stream, output, {
     workspace,
+    workspaceFolders,
     version: EXTENSION_VERSION,
     flowMode: flow.mode,
     eventSink: (event) => audit.record(event),
@@ -317,8 +323,10 @@ async function executeWorkflow(prompt, stream, token, resumeState = null, flowOv
     client: runtime.client,
     sdk: runtime.sdk,
     workspace,
+    workspaceFolders,
     models,
     permissionHandler: createPermissionHandler(vscode, workspace, config.permissionMode, output, {
+      workspaceFolders,
       chatChoice: (request) => ui.chatChoice(request),
     }),
     userInputHandler: createUserInputHandler(vscode, {

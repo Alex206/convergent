@@ -257,3 +257,8 @@ Optional task checkpoint commits can be enabled with:
 ```
 
 Safe mode creates a checkpoint commit after an accepted modifying task only when that task began with a clean worktree. The default is `off`.
+
+
+### Multi-root VS Code workspaces
+
+Convergent supports VS Code multi-root workspaces. The active editor folder is the primary agent working directory, while every opened workspace folder is part of the deterministic Convergent scope. Agents may inspect and modify any required opened Git workspace folder; combined fingerprints, task-change evidence, managed-command cwd selection, permissions, review findings, resume identity, and safe task commits cover the full root set. The primary folder keeps Copilot's native edit/create/apply-patch tools; writes to another opened folder use Convergent's bounded `workspace_edit` tool so cross-root mutation does not depend on Copilot CLI working-directory behavior. Every opened folder in scope must be a Git worktree.

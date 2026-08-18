@@ -1,6 +1,7 @@
 'use strict';
 
 const path = require('node:path');
+const { normalizeWorkspaceFolders, parseQualifiedWorkspacePath } = require('../orchestrator/workspace-scope');
 
 function formatDuration(ms) {
   const seconds = Math.max(0, Number(ms) || 0) / 1000;
@@ -154,6 +155,7 @@ class VscodeWorkflowUi {
     this.stream = stream;
     this.output = output;
     this.workspace = options.workspace;
+    this.workspaceFolders = normalizeWorkspaceFolders(options.workspace, options.workspaceFolders);
     this.version = options.version;
     this.flowMode = options.flowMode;
     this.eventSink = options.eventSink;
@@ -259,7 +261,9 @@ _Enter the answer in the input box; VS Code's stable Chat API does not currently
     if (!value) return null;
     if (path.isAbsolute(value) || /^[A-Za-z]:[\\/]/.test(value)) return this.vscode.Uri.file(value);
     if (!this.workspace) return null;
-    return this.vscode.Uri.file(path.join(this.workspace, value));
+    const parsed = parseQualifiedWorkspacePath(this.workspace, this.workspaceFolders, value);
+    if (!parsed.root) return null;
+    return this.vscode.Uri.file(path.join(parsed.root.path, parsed.relative));
   }
 
   fileReference(file) {
@@ -335,10 +339,10 @@ _Enter the answer in the input box; VS Code's stable Chat API does not currently
     this.audit({ type: 'task_complete', taskId: task.id, title: task.title, route });
   }
 
-  taskCommitted(task, sha) {
-    this.stream.markdown(`  ↳ checkpoint commit \`${String(sha).slice(0, 12)}\` for **${task.id}**\n`);
-    this.log(`Task ${task.id} checkpoint committed at ${sha}.`);
-    this.audit({ type: 'task_commit', taskId: task.id, sha });
+  taskCommitted(task, value) {
+    const commits = Array.isArray(value) ? value : [{ sha: value }];
+    for (const commit of commits) { const folder = commit.workspaceFolder ? ` in **${commit.workspaceFolder}**` : ''; this.stream.markdown(`  ↳ checkpoint commit \`${String(commit.sha).slice(0, 12)}\`${folder} for **${task.id}**\n`); this.log(`Task ${task.id} checkpoint committed${commit.workspaceFolder ? ` in ${commit.workspaceFolder}` : ''} at ${commit.sha}.`); }
+    this.audit({ type: 'task_commit', taskId: task.id, commits });
   }
 
   taskCommitSkipped(task, reason) {

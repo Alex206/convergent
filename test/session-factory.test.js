@@ -65,6 +65,7 @@ test('role tool allowlists expose purpose-built tools and keep recovery coordina
   assert.ok(WORKER_TOOLS.includes('builtin:apply_patch'));
   assert.ok(WORKER_TOOLS.includes('builtin:edit'));
   assert.ok(WORKER_TOOLS.includes('builtin:create'));
+  assert.ok(WORKER_TOOLS.includes('custom:workspace_edit'));
   assert.ok(WORKER_TOOLS.includes('custom:report_pass'));
   assert.ok(!WORKER_TOOLS.includes('builtin:ask_user'));
 });

@@ -2,6 +2,7 @@
 
 const path = require('node:path');
 const { isSensitiveCredentialName } = require('./operator-credential-guard');
+const { normalizeWorkspaceFolders, findWorkspaceFolder, rootForPath, qualifiedWorkspacePath } = require('../orchestrator/workspace-scope');
 
 const DEFAULT_TOOL_TIMEOUT_SECONDS = 300;
 const MAX_TOOL_TIMEOUT_SECONDS = 3600;
@@ -58,6 +59,17 @@ function normalizeCwd(workspace, value) {
   return relative || '.';
 }
 
+function resolveRunCommandCwd(workspace, workspaceFolders, value, workspaceFolder) {
+  const roots = normalizeWorkspaceFolders(workspace, workspaceFolders);
+  const selected = findWorkspaceFolder(workspace, roots, workspaceFolder);
+  if (!selected) throw new Error(`run_command workspaceFolder is not one of the opened workspace folders: ${workspaceFolder}`);
+  const candidate = value === undefined || value === null || value === '' ? selected.path : path.isAbsolute(String(value)) ? path.resolve(String(value)) : path.resolve(selected.path, String(value));
+  const owner = rootForPath(workspace, roots, candidate);
+  if (!owner || owner.path !== selected.path) throw new Error(`run_command cwd must stay inside workspace folder ${selected.name}: ${value}`);
+  const relative = path.relative(selected.path, candidate) || '.';
+  return { root: selected, absolute: candidate, relative, display: qualifiedWorkspacePath(workspace, roots, selected, relative) };
+}
+
 function createRunCommandTool(defineTool, {
   runtime,
   workspace,
@@ -65,6 +77,7 @@ function createRunCommandTool(defineTool, {
   ui,
   permissionHandler,
   getGuard = () => null,
+  workspaceFolders = null,
 } = {}) {
   if (!runtime) throw new Error('createRunCommandTool requires a managed command runtime.');
   if (!workspace) throw new Error('createRunCommandTool requires a workspace.');
@@ -78,10 +91,8 @@ function createRunCommandTool(defineTool, {
           type: 'string',
           description: 'Shell command to execute. Do not background the command; Convergent manages its lifecycle.',
         },
-        cwd: {
-          type: 'string',
-          description: 'Optional workspace-relative working directory. It may not escape the workspace.',
-        },
+        workspaceFolder: { type: 'string', description: 'Optional exact opened VS Code workspace-folder name. Defaults to the primary folder.' },
+        cwd: { type: 'string', description: 'Optional path relative to workspaceFolder, or an absolute path inside that same opened folder.' },
         timeoutSeconds: {
           type: 'integer',
           minimum: 1,
@@ -97,12 +108,13 @@ function createRunCommandTool(defineTool, {
     handler: async (args = {}) => {
       const command = String(args.command ?? '').trim();
       if (!command) return { accepted: false, error: 'run_command requires a non-empty command.' };
-      let cwd;
+      let cwdInfo;
       try {
-        cwd = normalizeCwd(workspace, args.cwd);
+        cwdInfo = resolveRunCommandCwd(workspace, workspaceFolders, args.cwd, args.workspaceFolder);
       } catch (error) {
         return { accepted: false, error: error.message };
       }
+      const cwd = cwdInfo.display;
       const timeoutSeconds = clampTimeoutSeconds(args.timeoutSeconds);
       const displayCommand = redactSensitiveText(command);
       const shellLanguage = process.platform === 'win32' ? 'powershell' : 'sh';
@@ -114,7 +126,7 @@ function createRunCommandTool(defineTool, {
         permission = await permissionHandler({
           kind: 'shell',
           fullCommandText: command,
-          cwd: path.resolve(workspace, cwd),
+          cwd: cwdInfo.absolute,
           toolName: 'run_command',
         });
       } catch (error) {
@@ -124,9 +136,10 @@ function createRunCommandTool(defineTool, {
         auditUi(ui, { type: 'managed_command_permission_denied', agent: owner, cwd, timeoutSeconds });
         return { accepted: false, error: 'run_command permission denied; command was not started.' };
       }
+      const runtimeCwd = path.resolve(cwdInfo.root.path) === path.resolve(workspace) ? cwdInfo.relative : cwdInfo.absolute;
       const result = await runtime.execute(owner, {
         command,
-        cwd,
+        cwd: runtimeCwd,
         timeoutMs: timeoutSeconds * 1000,
         onStart: (info) => {
           getGuard()?.managedCommandProgress?.({
@@ -207,6 +220,7 @@ function createRunCommandTool(defineTool, {
 module.exports = {
   createRunCommandTool,
   normalizeCwd,
+  resolveRunCommandCwd,
   clampTimeoutSeconds,
   redactSensitiveText,
   auditUi,

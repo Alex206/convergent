@@ -3,6 +3,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { isWithin } = require('./permissions');
+const { normalizeWorkspaceFolders, parseQualifiedWorkspacePath, rootForPath, qualifiedWorkspacePath } = require('../orchestrator/workspace-scope');
 const {
   boundedStrings,
   globToRegExp,
@@ -32,29 +33,13 @@ function relativePathAllowed(value) {
   return !containsForbiddenRelativePart(text);
 }
 
-function resolveRequestedPath(root, value) {
-  const requested = String(value ?? '').trim();
-  if (!requested) return { ok: false, path: requested, error: 'invalid_path' };
-
-  const looksAbsolute = path.posix.isAbsolute(requested) || path.win32.isAbsolute(requested);
-  if (looksAbsolute && !path.isAbsolute(requested)) {
-    return { ok: false, path: requested, error: 'invalid_path' };
-  }
-
-  if (!looksAbsolute && containsForbiddenRelativePart(requested)) {
-    return { ok: false, path: requested, error: 'invalid_path' };
-  }
-
-  const target = looksAbsolute ? path.resolve(requested) : path.resolve(root, requested);
-  if (!isWithin(root, target)) {
-    return { ok: false, path: requested, error: 'outside_workspace' };
-  }
-
-  const relative = path.relative(root, target).replace(/\\/g, '/');
-  if (!relative || containsForbiddenRelativePart(relative)) {
-    return { ok: false, path: requested, error: 'invalid_path' };
-  }
-  return { ok: true, path: relative, target };
+function resolveRequestedPath(root, value, workspaceFolders = null) {
+  const requested = String(value ?? '').trim(); if (!requested) return { ok: false, path: requested, error: 'invalid_path' };
+  const roots = normalizeWorkspaceFolders(root, workspaceFolders); const parsed = parseQualifiedWorkspacePath(root, roots, requested); if (!parsed.root) return { ok: false, path: requested, error: 'unknown_workspace_folder' };
+  const source = parsed.relative; const looksAbsolute = path.posix.isAbsolute(source) || path.win32.isAbsolute(source); if (looksAbsolute && !path.isAbsolute(source)) return { ok: false, path: requested, error: 'invalid_path' }; if (!looksAbsolute && containsForbiddenRelativePart(source)) return { ok: false, path: requested, error: 'invalid_path' };
+  const target = looksAbsolute ? path.resolve(source) : path.resolve(parsed.root.path, source); const owner = rootForPath(root, roots, target); if (!owner) return { ok: false, path: requested, error: 'outside_workspace' };
+  const relative = path.relative(owner.path, target).replace(/\\/g, '/'); if (!relative || containsForbiddenRelativePart(relative)) return { ok: false, path: requested, error: 'invalid_path' };
+  return { ok: true, path: qualifiedWorkspacePath(root, roots, owner, relative), relative, target, root: owner };
 }
 
 async function readBoundedFile(filePath) {
@@ -138,8 +123,9 @@ function discoveredPaths(discovery) {
   return result.slice(0, MAX_BATCH_VIEW_PATHS);
 }
 
-function createBatchViewTool(defineTool, workspace) {
+function createBatchViewTool(defineTool, workspace, workspaceFolders = null) {
   const root = path.resolve(workspace);
+  const roots = normalizeWorkspaceFolders(root, workspaceFolders);
   return defineTool('batch_view', {
     description: `Perform one bounded read-only repository inspection. It can search up to ${MAX_BATCH_SEARCH_QUERIES} literal symbols/texts, list up to ${MAX_BATCH_SEARCH_GLOBS} tracked-file globs, and read up to ${MAX_BATCH_VIEW_PATHS} text files in the SAME tool call. Use readMatches=true to immediately read files found by the searches/globs. Prefer this over serial grep/rg/glob/view calls. Absolute paths are accepted only when they resolve inside the current workspace; .git, outside-workspace paths, symlink escapes, and binary files are denied.`,
     parameters: {
@@ -180,19 +166,13 @@ function createBatchViewTool(defineTool, workspace) {
         return { files: [], searches: [], globs: [], error: 'provide at least one path, literal query, or tracked-file glob' };
       }
 
-      let rootReal;
-      try {
-        rootReal = await fs.realpath(root);
-      } catch (error) {
-        return { files: [], searches: [], globs: [], error: `workspace_unavailable: ${error?.message ?? String(error)}` };
-      }
-
+      const rootReals = new Map();
+      try { for (const item of roots) rootReals.set(item.path, await fs.realpath(item.path)); } catch (error) { return { files: [], searches: [], globs: [], error: `workspace_unavailable: ${error?.message ?? String(error)}` }; }
       let discovery;
       try {
-        discovery = await discoverRepository(root, queries, globs);
-      } catch (error) {
-        return { files: [], searches: [], globs: [], error: `repository_search_failed: ${error?.message ?? String(error)}` };
-      }
+        const perRoot = await Promise.all(roots.map(async (item) => ({ root: item, discovery: await discoverRepository(item.path, queries, globs) })));
+        discovery = { searches: queries.map((query) => ({ query, matches: perRoot.flatMap(({ root: item, discovery: value }) => (value.searches.find((entry) => entry.query === query)?.matches ?? []).map((match) => ({ ...match, path: qualifiedWorkspacePath(root, roots, item, match.path), workspaceFolder: item.name }))).slice(0, MAX_BATCH_SEARCH_MATCHES) })), globs: globs.map((glob) => ({ glob, paths: perRoot.flatMap(({ root: item, discovery: value }) => (value.globs.find((entry) => entry.glob === glob)?.paths ?? []).map((file) => qualifiedWorkspacePath(root, roots, item, file))).slice(0, MAX_BATCH_SEARCH_PATHS) })) };
+      } catch (error) { return { files: [], searches: [], globs: [], error: `repository_search_failed: ${error?.message ?? String(error)}` }; }
 
       const requested = [...explicitPaths];
       if (args.readMatches === true) {
@@ -203,7 +183,7 @@ function createBatchViewTool(defineTool, workspace) {
       }
 
       const loaded = await Promise.all(requested.map(async (rawPath) => {
-        const resolved = resolveRequestedPath(root, rawPath);
+        const resolved = resolveRequestedPath(root, rawPath, roots);
         if (!resolved.ok) return { path: resolved.path, ok: false, error: resolved.error };
 
         let targetReal;
@@ -212,7 +192,8 @@ function createBatchViewTool(defineTool, workspace) {
         } catch (error) {
           return { path: resolved.path, ok: false, error: errorCode(error) };
         }
-        if (!isWithin(rootReal, targetReal)) {
+        const realRoot = rootReals.get(resolved.root.path);
+        if (!realRoot || !isWithin(realRoot, targetReal)) {
           return { path: resolved.path, ok: false, error: 'outside_workspace' };
         }
 

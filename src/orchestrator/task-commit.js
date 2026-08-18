@@ -4,6 +4,7 @@ const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 
 const execFileAsync = promisify(execFile);
+const { normalizeWorkspaceFolders } = require('./workspace-scope');
 
 async function git(workspace, args, options = {}) {
   const result = await execFileAsync('git', ['-C', workspace, ...args], {
@@ -18,8 +19,9 @@ async function workingTreeStatus(workspace) {
   return git(workspace, ['status', '--porcelain=v1', '--untracked-files=all']);
 }
 
-async function isWorkingTreeClean(workspace) {
-  return !(await workingTreeStatus(workspace)).trim();
+async function isWorkingTreeClean(workspace, workspaceFolders = null) {
+  for (const root of normalizeWorkspaceFolders(workspace, workspaceFolders)) if ((await workingTreeStatus(root.path)).trim()) return false;
+  return true;
 }
 
 function commitSubject(task) {
@@ -44,9 +46,12 @@ async function createTaskCommit(workspace, task) {
   return (await git(workspace, ['rev-parse', 'HEAD'])).trim();
 }
 
+async function createTaskCommits(workspace, task, workspaceFolders = null) { const commits = []; for (const root of normalizeWorkspaceFolders(workspace, workspaceFolders)) { const sha = await createTaskCommit(root.path, task); if (sha) commits.push({ workspaceFolder: root.name, workspace: root.path, sha }); } return commits; }
+
 module.exports = {
   workingTreeStatus,
   isWorkingTreeClean,
   commitSubject,
   createTaskCommit,
+  createTaskCommits,
 };

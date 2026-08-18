@@ -7,6 +7,7 @@ const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 
 const execFileAsync = promisify(execFile);
+const { normalizeWorkspaceFolders, qualifiedWorkspacePath } = require('./workspace-scope');
 const MAX_TASK_CHANGE_ENTRIES = 80;
 
 async function git(workspace, args) {
@@ -67,7 +68,7 @@ function dirtyStatus(pathname, staged, unstaged, untracked) {
   return `${indexStatus}${worktreeStatus}`;
 }
 
-async function captureWorkspaceChangeState(workspace, baseHead = null) {
+async function captureSingleWorkspaceChangeState(workspace, baseHead = null) {
   let head = 'NO_HEAD';
   try {
     head = (await git(workspace, ['rev-parse', 'HEAD'])).trim() || 'NO_HEAD';
@@ -122,6 +123,14 @@ async function captureWorkspaceChangeState(workspace, baseHead = null) {
   }
 
   return { head, entries };
+}
+
+async function captureWorkspaceChangeState(workspace, baseHead = null, workspaceFolders = null, baseHeads = null) {
+  const roots = normalizeWorkspaceFolders(workspace, workspaceFolders);
+  if (roots.length === 1) return captureSingleWorkspaceChangeState(roots[0].path, baseHead);
+  const entries = []; const heads = {}; const states = [];
+  for (const root of roots) { const state = await captureSingleWorkspaceChangeState(root.path, baseHeads?.[root.path] ?? null); heads[root.path] = state.head; states.push({ name: root.name, path: root.path, head: state.head }); for (const entry of state.entries) entries.push({ ...entry, path: qualifiedWorkspacePath(workspace, roots, root, entry.path), workspaceFolder: root.name }); }
+  return { head: states.map((state) => `${state.name}:${state.head}`).join('|'), heads, roots: states, entries };
 }
 
 function buildTaskChangeManifest(baselineState, currentState) {
@@ -184,6 +193,7 @@ function formatTaskChangeManifest(manifest, heading = 'TASK CHANGE MANIFEST') {
 
 module.exports = {
   captureWorkspaceChangeState,
+  captureSingleWorkspaceChangeState,
   buildTaskChangeManifest,
   formatTaskChangeManifest,
   parseNameStatusZ,
