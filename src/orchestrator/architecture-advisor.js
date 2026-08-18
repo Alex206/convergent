@@ -99,15 +99,30 @@ function formatArchitectureAssessment(assessment) {
   ].join('\n');
 }
 
+function architectureInspectionHints(task) {
+  const hints = Array.isArray(task?.inspectionHints)
+    ? task.inspectionHints.map(text).filter(Boolean).slice(0, 12)
+    : [];
+  if (!hints.length) return '';
+  return [
+    'PLANNING INSPECTION HANDOFF (bounded, non-authoritative):',
+    ...hints.map((hint) => `- ${hint}`),
+    'The planning coordinator already spent repository-inspection budget identifying these likely relevant surfaces. Start here. Do not repeat broad glob/rg/repository discovery merely to rediscover the same locations; expand only when a specific unresolved architectural question requires it.',
+  ].join('\n');
+}
+
 function architectureTaskPrompt(task) {
+  const inspectionHints = architectureInspectionHints(task);
   return [
     `Task ${task.id}: ${task.title}`,
     '',
     task.description,
+    inspectionHints ? '' : null,
+    inspectionHints || null,
     '',
     'Acceptance criteria:',
     ...(Array.isArray(task.acceptanceCriteria) ? task.acceptanceCriteria : []).map((criterion) => `- ${criterion}`),
-  ].join('\n');
+  ].filter((line) => line !== null).join('\n');
 }
 
 async function createArchitectureAdvisor(factory, taskId, route, risk) {
@@ -158,7 +173,7 @@ async function runArchitectureAssessment(engine, factory, task, routing) {
         architectureTaskPrompt(task),
         '',
         `Task workflow: ${routing.route}; task risk: ${routing.risk}; architecture significance: ${routing.architecture}.`,
-        'Inspect the existing architecture only as far as needed to give implementation constraints and the simplest suitable structural approach. Do not implement the task.',
+        'Inspect the existing architecture only as far as needed to give implementation constraints and the simplest suitable structural approach. Start from the planning handoff when present; do not redo repository discovery that planning already completed. Do not implement the task.',
       ].join('\n'),
       'report_architecture',
       engine.agentTurnTimeoutMs,
@@ -181,6 +196,7 @@ module.exports = {
   normalizeArchitectureAssessment,
   createArchitectureTool,
   formatArchitectureAssessment,
+  architectureInspectionHints,
   createArchitectureAdvisor,
   runArchitectureAssessment,
 };
