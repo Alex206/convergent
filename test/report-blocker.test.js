@@ -6,9 +6,10 @@ const {
   explicitBlockerEvidence,
   operatorPrerequisiteEvidence,
   reconcileExplicitValidationBlocker,
+  reconcileSupersededValidationBlocker,
 } = require('../src/orchestrator/report-blocker');
 
-test('non-BLOCKED worker report is reconciled when its own summary says required validation is blocked', () => {
+test('non-BLOCKED structured worker verdict is not rewritten from blocker prose', () => {
   const original = {
     verdict: 'changed',
     summary: 'Implementation is complete. The unmodified external validator is explicitly blocked because TASKFLOW_RELEASE_TOKEN is unavailable.',
@@ -16,47 +17,56 @@ test('non-BLOCKED worker report is reconciled when its own summary says required
     checks: ['python tools/validate_release_signature.py (exit 2: TASKFLOW_RELEASE_TOKEN is not configured)'],
   };
   const reconciled = reconcileExplicitValidationBlocker(original);
-  assert.equal(reconciled.report.verdict, 'blocked');
-  assert.match(reconciled.correction, /CHANGED -> BLOCKED/);
+  assert.equal(reconciled.report.verdict, 'changed');
+  assert.equal(reconciled.correction, null);
   assert.match(explicitBlockerEvidence(original), /explicitly blocked/);
 });
 
-test('blocker noun wording from the live Scenario 04 report is also reconciled', () => {
-  const report = {
-    verdict: 'changed',
-    summary: 'The unchanged release validator reported its explicit missing-token blocker.',
-    findings: [],
-    checks: ['python tools/validate_release_signature.py (exit 2: TASKFLOW_RELEASE_TOKEN is not configured)'],
-  };
-  assert.equal(reconcileExplicitValidationBlocker(report).report.verdict, 'blocked');
+test('review FINDINGS/clean semantics are not redirected into blocker recovery by check wording', () => {
+  for (const report of [
+    {
+      verdict: 'changed',
+      summary: 'The unchanged release validator reported its explicit missing-token blocker.',
+      findings: [],
+      checks: ['python tools/validate_release_signature.py (exit 2: TASKFLOW_RELEASE_TOKEN is not configured)'],
+    },
+    {
+      verdict: 'clean',
+      summary: 'Code review found no implementation defect.',
+      findings: [],
+      checks: ['external validation BLOCKED: signing token not configured'],
+    },
+  ]) {
+    assert.equal(reconcileExplicitValidationBlocker(report).report.verdict, report.verdict);
+  }
 });
 
-test('explicit BLOCKED check evidence cannot be reported CLEAN', () => {
+test('structured BLOCKED remains BLOCKED even when prior validation prose looks successful', () => {
   const report = {
-    verdict: 'clean',
-    summary: 'Code review found no implementation defect.',
+    verdict: 'blocked',
+    summary: 'Required validation cannot currently run.',
     findings: [],
-    checks: ['external validation BLOCKED: signing token not configured'],
+    checks: [],
   };
-  assert.equal(reconcileExplicitValidationBlocker(report).report.verdict, 'blocked');
+  const result = reconcileSupersededValidationBlocker(report, [
+    { agent: 'Worker A', check: 'required external validation passed' },
+  ], { changed: true, role: 'Worker B' });
+  assert.equal(result.report.verdict, 'blocked');
+  assert.equal(result.correction, null);
 });
 
-test('missing operator-controlled validation prerequisites are identified separately', () => {
-  assert.match(operatorPrerequisiteEvidence({
+test('operator prerequisite prose is not a deterministic recovery override', () => {
+  assert.equal(operatorPrerequisiteEvidence({
     summary: 'The external validator is blocked because TASKFLOW_RELEASE_TOKEN is unavailable.',
     checks: [],
-  }), /TASKFLOW_RELEASE_TOKEN/i);
-  assert.match(operatorPrerequisiteEvidence({
+  }), null);
+  assert.equal(operatorPrerequisiteEvidence({
     summary: 'Implementation is otherwise complete.',
     checks: ['required external validation: signing credential is not configured'],
-  }), /credential/i);
-  assert.equal(operatorPrerequisiteEvidence({
-    summary: 'The compiler is temporarily busy; retry is appropriate.',
-    checks: [],
   }), null);
 });
 
-test('negative tests and resolved blocker wording do not create false BLOCKED verdicts', () => {
+test('negative tests and resolved blocker wording remain diagnostic-only', () => {
   for (const report of [
     {
       verdict: 'changed',

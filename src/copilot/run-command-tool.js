@@ -30,9 +30,6 @@ function redactSensitiveText(value, environment = process.env) {
     text = text.replace(new RegExp(escapeRegExp(secret), 'g'), '[REDACTED]');
   }
 
-  // Common bearer/token shapes that may be literal rather than inherited from
-  // an environment variable. This is intentionally best-effort; raw command
-  // text/output never needs to be copied into Chat for Convergent to function.
   text = text
     .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g, '[REDACTED]')
     .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, '[REDACTED]')
@@ -70,6 +67,13 @@ function resolveRunCommandCwd(workspace, workspaceFolders, value, workspaceFolde
   return { root: selected, absolute: candidate, relative, display: qualifiedWorkspacePath(workspace, roots, selected, relative) };
 }
 
+function runCommandShellGuidance(platform = process.platform) {
+  if (platform === 'win32') {
+    return 'Commands run under Windows PowerShell (powershell.exe), not PowerShell 7 or cmd.exe. Do not use && or || command separators; use ; and explicitly gate dependent native commands with $LASTEXITCODE.';
+  }
+  return 'Commands run under POSIX sh syntax.';
+}
+
 function createRunCommandTool(defineTool, {
   runtime,
   workspace,
@@ -81,15 +85,16 @@ function createRunCommandTool(defineTool, {
 } = {}) {
   if (!runtime) throw new Error('createRunCommandTool requires a managed command runtime.');
   if (!workspace) throw new Error('createRunCommandTool requires a workspace.');
+  const shellGuidance = runCommandShellGuidance();
 
   return defineTool('run_command', {
-    description: 'Run a managed workspace command under Convergent lifecycle control. Use this for tests, builds, long-running commands, or any command where exact completion/timeout/cancellation evidence matters. Convergent owns the PID/process tree, bounded output capture, timeout, and termination evidence.',
+    description: `Run a managed workspace command under Convergent lifecycle control. Use this for tests, builds, long-running commands, or any command where exact completion/timeout/cancellation evidence matters. Convergent owns the PID/process tree, bounded output capture, timeout, and termination evidence. ${shellGuidance}`,
     parameters: {
       type: 'object',
       properties: {
         command: {
           type: 'string',
-          description: 'Shell command to execute. Do not background the command; Convergent manages its lifecycle.',
+          description: `Shell command to execute. Do not background the command; Convergent manages its lifecycle. ${shellGuidance}`,
         },
         workspaceFolder: { type: 'string', description: 'Optional exact opened VS Code workspace-folder name. Defaults to the primary folder.' },
         cwd: { type: 'string', description: 'Optional path relative to workspaceFolder, or an absolute path inside that same opened folder.' },
@@ -223,6 +228,7 @@ module.exports = {
   resolveRunCommandCwd,
   clampTimeoutSeconds,
   redactSensitiveText,
+  runCommandShellGuidance,
   auditUi,
   DEFAULT_TOOL_TIMEOUT_SECONDS,
   MAX_TOOL_TIMEOUT_SECONDS,

@@ -31,19 +31,36 @@ function taskText(task) {
   ].filter(Boolean).join('\n');
 }
 
+// Deterministic semantic escalation must be based on the task objective, not on
+// the coordinator's free-form explanation of why it chose a route. Otherwise a
+// sentence such as "does not introduce an irreversible data migration" becomes
+// positive evidence for the word "irreversible" and can self-escalate a normal
+// task to high-risk. requestArchitectureEvidence is intentionally excluded too:
+// it is an architecture-preservation hint, not task-local failure-impact input.
+function taskObjectiveText(task) {
+  return [
+    task?.title,
+    task?.description,
+    ...(Array.isArray(task?.acceptanceCriteria) ? task.acceptanceCriteria : []),
+  ].filter(Boolean).join('\n');
+}
+
 function isClearlyTrivialChange(task) {
   const text = taskText(task);
   return DOC_ONLY_HINTS.test(text) && !EXECUTABLE_CHANGE_HINTS.test(text);
 }
 
 function hasHighRiskSemantics(task) {
-  return HIGH_RISK_HINTS.test(taskText(task));
+  return HIGH_RISK_HINTS.test(taskObjectiveText(task));
 }
 
 function architectureSignificance(task) {
   if (task?.route === 'read_only') return 'low';
   const explicit = normalizeArchitectureSignificance(task?.architectureSignificance);
-  const text = taskText(task);
+  // Architecture preservation may deliberately carry bounded evidence from the
+  // original request, but routingReason itself must never become classifier
+  // input: it is an explanation of a classification, not evidence for one.
+  const text = [taskObjectiveText(task), task?.requestArchitectureEvidence].filter(Boolean).join('\n');
   const highEvidence = HIGH_ARCHITECTURE_HINTS.test(text);
   if (highEvidence) return 'high';
   if (explicit === 'high') return 'medium';
@@ -161,4 +178,5 @@ module.exports = {
   hasHighRiskSemantics,
   architectureSignificance,
   normalizeArchitectureSignificance,
+  taskObjectiveText,
 };

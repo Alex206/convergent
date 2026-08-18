@@ -60,6 +60,10 @@ function describeToolCall(data = {}) {
   }
 }
 
+function isInteractiveUserTool(name) {
+  return /(^|:)ask_user$/i.test(String(name ?? '').trim());
+}
+
 class SessionGuard {
   constructor(session, agentName, ui, options = {}) {
     this.session = session;
@@ -122,6 +126,7 @@ class SessionGuard {
         steeringSentAt: 0,
         ignoreUntil: 0,
         decisionPending: false,
+        interactiveWait: isInteractiveUserTool(data.toolName),
       };
       this.touch();
     });
@@ -402,6 +407,10 @@ class SessionGuard {
         }
 
         if (tool) {
+          // ask_user is an intentional operator wait, not a stalled computation.
+          // Keep diagnostics/heartbeats alive, but suspend tool and agent inactivity
+          // escalation until the operator answers or explicitly cancels the run.
+          if (tool.interactiveWait) return;
           if (tool.decisionPending || now < (tool.ignoreUntil || 0)) return;
           const quietMs = now - tool.lastProgressAt;
           if (quietMs < this.toolStallTimeoutMs) return;
@@ -524,6 +533,7 @@ class SessionGuard {
         steeringSent: Boolean(this.currentTool.steeringSentAt),
         waitExtendedMs: Math.max(0, (this.currentTool.ignoreUntil || 0) - now),
         decisionPending: Boolean(this.currentTool.decisionPending),
+        interactiveWait: Boolean(this.currentTool.interactiveWait),
       } : null,
       tools,
       stalls: [...this.stalls],
@@ -546,6 +556,7 @@ module.exports = {
   guardSession,
   settleWithin,
   describeToolCall,
+  isInteractiveUserTool,
   DEFAULT_TOOL_STALL_TIMEOUT_MS,
   DEFAULT_AGENT_INACTIVITY_TIMEOUT_MS,
   DEFAULT_STALL_GRACE_MS,
