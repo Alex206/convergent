@@ -16,6 +16,7 @@ const { guardSession, describeToolCall } = require('./session-guard');
 const { hookToolArguments, OperatorCredentialGuard } = require('./operator-credential-guard');
 const { createRunCommandTool } = require('./run-command-tool');
 const { createWorkspaceEditTool } = require('./workspace-edit-tool');
+const { wrapSendAndWaitWithCompaction } = require('./session-compaction');
 const { ManagedCommandRuntime } = require('../runtime/local-command-backend');
 const { normalizeWorkspaceFolders, workspaceScopePrompt } = require('../orchestrator/workspace-scope');
 
@@ -146,7 +147,7 @@ function attachEventLogging(session, agentName, ui, usage, model, usageKey = age
   attachOptional(session, 'session.usage_checkpoint', (event) => { usage?.recordCheckpoint(usageKey, event.data); ui.agentUsageEvent?.(agentName, usage?.summary()); audit(ui, { type: 'usage_checkpoint', agent: agentName, sessionId: session.sessionId, data: event.data }); }, disposers);
   attachOptional(session, 'session.usage_info', (event) => { usage?.recordContext(usageKey, event.data); audit(ui, { type: 'context_usage', agent: agentName, sessionId: session.sessionId, data: event.data }); }, disposers);
   attachOptional(session, 'session.compaction_start', (event) => audit(ui, { type: 'compaction_start', agent: agentName, sessionId: session.sessionId, data: event.data }), disposers);
-  attachOptional(session, 'session.compaction_end', (event) => audit(ui, { type: 'compaction_end', agent: agentName, sessionId: session.sessionId, data: event.data }), disposers);
+  attachOptional(session, 'session.compaction_complete', (event) => audit(ui, { type: 'compaction_complete', agent: agentName, sessionId: session.sessionId, data: event.data }), disposers);
   attachOptional(session, 'session.error', (event) => { ui.agentError(agentName, event.data.message); audit(ui, { type: 'session_error', agent: agentName, sessionId: session.sessionId, data: event.data }); }, disposers);
   return () => disposers.forEach((dispose) => dispose?.());
 }
@@ -167,10 +168,9 @@ class SessionFactory {
   guard(session, agentName) {
     const guard = guardSession(session, agentName, this.ui, { toolStallTimeoutMs: this.ui?.toolStallTimeoutMs, agentInactivityTimeoutMs: this.ui?.agentInactivityTimeoutMs, stallGraceMs: this.ui?.stallGraceMs, heartbeatMs: this.ui?.heartbeatMs, beforeAbort: ({ reason }) => this.commandRuntime.cancelOwner(agentName, reason) });
     const guardedSendAndWait = session.sendAndWait.bind(session);
-    session.sendAndWait = (options, timeoutMs) => {
-      audit(this.ui, { type: 'prompt_send', agent: agentName, sessionId: session.sessionId, prompt: options?.prompt, mode: options?.mode ?? 'normal' });
-      return guardedSendAndWait(options, timeoutMs);
-    };
+    session.sendAndWait = wrapSendAndWaitWithCompaction(session, agentName, this.ui, guardedSendAndWait, {
+      onPrompt: (options) => audit(this.ui, { type: 'prompt_send', agent: agentName, sessionId: session.sessionId, prompt: options?.prompt, mode: options?.mode ?? 'normal' }),
+    });
     return guard;
   }
 
