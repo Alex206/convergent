@@ -62,6 +62,46 @@ function taskWithArchitectureAssessment(task, assessment) {
   };
 }
 
+function compactRecoveryText(value, maxChars = 1200) {
+  const text = String(value ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+  if (!text) return '';
+  return text.length > maxChars ? `${text.slice(0, maxChars - 1)}…` : text;
+}
+
+function recoveryDetailItem(value) {
+  if (typeof value === 'string') return compactRecoveryText(value);
+  if (!value || typeof value !== 'object') return compactRecoveryText(value);
+  const severity = compactRecoveryText(value.severity, 40);
+  const title = compactRecoveryText(value.title, 240);
+  const file = compactRecoveryText(value.file, 320);
+  const description = compactRecoveryText(value.description ?? value.message, 900);
+  const label = [severity ? `[${severity}]` : '', title, file ? `(${file})` : ''].filter(Boolean).join(' ');
+  return [label, description].filter(Boolean).join(' — ');
+}
+
+function boundedRecoveryItems(values, maxItems = 12) {
+  const items = (Array.isArray(values) ? values : [])
+    .map(recoveryDetailItem)
+    .filter(Boolean);
+  const shown = items.slice(0, maxItems);
+  if (items.length > maxItems) shown.push(`… ${items.length - maxItems} more item(s) omitted from Chat; full structured report remains in the audit/checkpoint.`);
+  return shown;
+}
+
+function operatorQuestionWithBlockerContext(question, detail = {}) {
+  const prompt = compactRecoveryText(question, 3000);
+  const summary = compactRecoveryText(detail.summary, 2200);
+  const findings = boundedRecoveryItems(detail.findings);
+  const checks = boundedRecoveryItems(detail.checks);
+  if (!summary && !findings.length && !checks.length) return prompt;
+
+  const lines = [prompt, '', 'Blocked report context:'];
+  if (summary) lines.push(`Summary: ${summary}`);
+  if (findings.length) lines.push('', 'Unresolved findings:', ...findings.map((item) => `- ${item}`));
+  if (checks.length) lines.push('', 'Checks/evidence:', ...checks.map((item) => `- ${item}`));
+  return lines.join('\n');
+}
+
 class RecoveryConvergentEngine extends ResumableConvergentEngine {
   constructor(options) {
     super(options);
@@ -249,11 +289,12 @@ class RecoveryConvergentEngine extends ResumableConvergentEngine {
           `Workspace changed by blocked pass: ${detail.changed ? 'yes' : 'no/unknown'}.`,
           detail.workspaceFingerprint ? `Current Convergent workspace fingerprint: ${detail.workspaceFingerprint}. This is an opaque workspace-state hash, not a Git commit/ref.` : '',
           detail.summary ? `Blocked-agent summary:\n${detail.summary}` : '',
-          detail.checks?.length ? `Checks/evidence already reported:\n${detail.checks.map((item) => `- ${item}`).join('\n')}` : '',
+          detail.findings?.length ? `Unresolved findings already reported:\n${detail.findings.map((item) => `- ${recoveryDetailItem(item)}`).join('\n')}` : '',
+          detail.checks?.length ? `Checks/evidence already reported:\n${detail.checks.map((item) => `- ${recoveryDetailItem(item)}`).join('\n')}` : '',
           detail.evidence?.length ? formatValidationEvidence(detail.evidence) : '',
           detail.runtimeIncident ? 'Runtime incident note: Convergent has already aborted the stalled Copilot turn. Retry is safe only because the managed command/process tree was proven terminated; any retry must use a fresh agent session and re-inspect the preserved workspace.' : '',
           '',
-          'Treat the supplied task, working ref, blocker summary, workspace fingerprint, checks, and validation evidence as authoritative known context. Do NOT reread AGENTS.md, .aew manifests/guides/roles/skills, Git history, or broad repository state merely to reconstruct facts already supplied. Inspect at most one narrowly targeted unresolved fact when it is necessary to choose recovery.',
+          'Treat the supplied task, working ref, blocker summary, workspace fingerprint, findings, checks, and validation evidence as authoritative known context. Do NOT reread AGENTS.md, .aew manifests/guides/roles/skills, Git history, or broad repository state merely to reconstruct facts already supplied. Inspect at most one narrowly targeted unresolved fact when it is necessary to choose recovery.',
           'Decide the least wasteful safe recovery action. A required validation that is blocked by a missing operator-controlled token, credential, secret, or environment prerequisite must not be reclassified as acceptable or retried unchanged: ask_user for the missing prerequisite or guidance. Use ask_user only for a genuinely missing operator fact or decision.',
         ].filter(Boolean).join('\n'),
         'report_recovery',
@@ -292,7 +333,8 @@ class RecoveryConvergentEngine extends ResumableConvergentEngine {
       }
 
       if (report.action === 'ask_user') {
-        const response = await this.userInputHandler?.({ question: report.question });
+        const operatorQuestion = operatorQuestionWithBlockerContext(report.question, detail);
+        const response = await this.userInputHandler?.({ question: operatorQuestion });
         operatorAnswer = String(response?.answer ?? '').trim();
         if (!operatorAnswer || /^user cancelled/i.test(operatorAnswer)) {
           return { action: 'pause', rationale: 'Operator did not provide the requested recovery information.', guidance: report.guidance };
@@ -362,6 +404,7 @@ class RecoveryConvergentEngine extends ResumableConvergentEngine {
       changed: result.changed,
       workspaceFingerprint: result.revision,
       summary: result.report?.summary,
+      findings: result.report?.findings ?? [],
       checks: result.report?.checks ?? [],
     }, { allowPeer });
 
@@ -407,6 +450,7 @@ class RecoveryConvergentEngine extends ResumableConvergentEngine {
     const decision = await this.consultRecoveryCoordinator(task, 'strong-reviewer', {
       workspaceFingerprint,
       summary: review.summary,
+      findings: review.findings ?? [],
       checks: review.checks ?? [],
       evidence,
     }, { allowPeer: false });
@@ -467,4 +511,8 @@ module.exports = {
   appendTaskChangeManifestPrompt,
   taskWithArchitectureAssessment,
   recoveryCacheKey,
+  compactRecoveryText,
+  recoveryDetailItem,
+  boundedRecoveryItems,
+  operatorQuestionWithBlockerContext,
 };

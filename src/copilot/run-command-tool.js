@@ -74,6 +74,14 @@ function runCommandShellGuidance(platform = process.platform) {
   return 'Commands run under POSIX sh syntax.';
 }
 
+function managedCommandHumanOutput(stdout, stderr, truncated = false) {
+  const sections = [];
+  if (stdout) sections.push(`[stdout]\n${stdout}`);
+  if (stderr) sections.push(`[stderr]\n${stderr}`);
+  if (truncated) sections.push('[managed command capture was truncated]');
+  return sections.join('\n\n');
+}
+
 function createRunCommandTool(defineTool, {
   runtime,
   workspace,
@@ -199,6 +207,15 @@ function createRunCommandTool(defineTool, {
         stderrTruncated: result.stderrTruncated,
         termination: result.termination,
       });
+
+      const redactedStdout = redactSensitiveText(result.stdout);
+      const redactedStderr = redactSensitiveText(result.stderr);
+      const capturedTruncated = Boolean(result.stdoutTruncated) || Boolean(result.stderrTruncated);
+      const humanOutput = managedCommandHumanOutput(redactedStdout, redactedStderr, capturedTruncated);
+      if (humanOutput && typeof ui?.log === 'function') {
+        ui.log(`${owner} managed command ${result.commandId} captured output:\n${humanOutput}`);
+      }
+
       try {
         ui?.agentManagedCommandComplete?.(owner, {
           commandId: result.commandId,
@@ -211,11 +228,17 @@ function createRunCommandTool(defineTool, {
           displayCommand,
           cwd,
           shellLanguage,
-          stdout: redactSensitiveText(result.stdout),
-          stderr: redactSensitiveText(result.stderr),
-          stdoutTruncated: Boolean(result.stdoutTruncated),
-          stderrTruncated: Boolean(result.stderrTruncated),
+          // The agent receives the original managed result below. Human-facing
+          // Chat stays compact; bounded/redacted stdout and stderr are retained
+          // in the Convergent Output channel and exposed through a native button.
+          stdout: '',
+          stderr: '',
+          stdoutTruncated: capturedTruncated,
+          stderrTruncated: false,
         });
+        if (humanOutput && typeof ui?.stream?.button === 'function') {
+          ui.stream.button({ command: 'convergent.showOutput', title: 'Show command output' });
+        }
       } catch {}
       return result;
     },
@@ -229,6 +252,7 @@ module.exports = {
   clampTimeoutSeconds,
   redactSensitiveText,
   runCommandShellGuidance,
+  managedCommandHumanOutput,
   auditUi,
   DEFAULT_TOOL_TIMEOUT_SECONDS,
   MAX_TOOL_TIMEOUT_SECONDS,

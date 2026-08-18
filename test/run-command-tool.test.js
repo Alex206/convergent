@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const { createRunCommandTool, normalizeCwd, clampTimeoutSeconds, redactSensitiveText } = require('../src/copilot/run-command-tool');
+const { createRunCommandTool, normalizeCwd, clampTimeoutSeconds, redactSensitiveText, managedCommandHumanOutput } = require('../src/copilot/run-command-tool');
 
 test('run_command normalizes cwd and timeout and forwards managed lifecycle progress', async () => {
   let definition;
@@ -14,6 +14,8 @@ test('run_command normalizes cwd and timeout and forwards managed lifecycle prog
   const progress = [];
   const completions = [];
   const audits = [];
+  const logs = [];
+  const buttons = [];
   const runtime = {
     async execute(owner, options) {
       assert.equal(owner, 'Worker A');
@@ -29,7 +31,12 @@ test('run_command normalizes cwd and timeout and forwards managed lifecycle prog
     },
   };
   const guard = { managedCommandProgress: (event) => progress.push(event) };
-  const ui = { auditEvent: (event) => { audits.push(event); }, agentManagedCommandComplete: (agent, detail) => completions.push({ agent, detail }) };
+  const ui = {
+    auditEvent: (event) => { audits.push(event); },
+    agentManagedCommandComplete: (agent, detail) => completions.push({ agent, detail }),
+    log: (message) => logs.push(message),
+    stream: { button: (button) => buttons.push(button) },
+  };
   createRunCommandTool(defineTool, { runtime, workspace: '/workspace', owner: 'Worker A', ui, permissionHandler: async (request) => { assert.equal(request.kind, 'shell'); assert.equal(request.fullCommandText, 'node --test'); return { kind: 'approve-once' }; }, getGuard: () => guard });
 
   assert.equal(definition.name, 'run_command');
@@ -37,10 +44,14 @@ test('run_command normalizes cwd and timeout and forwards managed lifecycle prog
   const result = await definition.handler({ command: ' node --test ', cwd: 'test', timeoutSeconds: 12 });
 
   assert.equal(result.state, 'completed');
+  assert.equal(result.stdout, 'ok', 'agent-facing managed result keeps stdout for validation');
   assert.deepEqual(progress.map((item) => item.phase), ['started', 'output']);
   assert.equal(progress[0].displayCommand, 'node --test');
   assert.equal(completions[0].detail.displayCommand, 'node --test');
-  assert.equal(completions[0].detail.stdout, 'ok');
+  assert.equal(completions[0].detail.stdout, '', 'human Chat card does not inline stdout');
+  assert.equal(completions[0].detail.stderr, '', 'human Chat card does not inline stderr');
+  assert.match(logs.join('\n'), /\[stdout\]\nok/);
+  assert.deepEqual(buttons, [{ command: 'convergent.showOutput', title: 'Show command output' }]);
   assert.deepEqual(audits.map((event) => event.type), ['managed_command_start', 'managed_command_progress', 'managed_command_complete']);
   assert.equal(audits[1].bytes, 2);
   assert.equal(Object.hasOwn(audits[1], 'chunk'), false, 'progress audit must not duplicate command output content');
@@ -127,4 +138,11 @@ test('managed command chat text redacts inherited and common literal credentials
   );
   assert.doesNotMatch(text, /supersecret|literal-secret|do-not-show/);
   assert.match(text, /\[REDACTED\]/);
+});
+
+test('managed command human log keeps stdout/stderr labeled and reports bounded capture truncation', () => {
+  const text = managedCommandHumanOutput('build output', 'compiler error', true);
+  assert.match(text, /\[stdout\]\nbuild output/);
+  assert.match(text, /\[stderr\]\ncompiler error/);
+  assert.match(text, /capture was truncated/i);
 });
