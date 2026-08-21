@@ -9,9 +9,11 @@ function fixture(choice = 'Terminate command & recover') {
   const markdown = [];
   const logs = [];
   const warnings = [];
+  const buttons = [];
   const stream = {
     progress: (value) => progress.push(value),
     markdown: (value) => markdown.push(value),
+    button: (value) => buttons.push(value),
   };
   const output = { appendLine: (value) => logs.push(value) };
   const vscode = {
@@ -23,7 +25,7 @@ function fixture(choice = 'Terminate command & recover') {
     },
     Uri: { file: (value) => value },
   };
-  return { ui: new VscodeWorkflowUi(vscode, stream, output, { workspace: '/repo' }), progress, markdown, logs, warnings };
+  return { ui: new VscodeWorkflowUi(vscode, stream, output, { workspace: '/repo' }), progress, markdown, logs, warnings, buttons };
 }
 
 test('VS Code shows a sanitized managed command while it runs plus bounded output progress', () => {
@@ -39,7 +41,7 @@ test('VS Code shows a sanitized managed command while it runs plus bounded outpu
 });
 
 
-test('VS Code managed completion clears state and renders command plus bounded result in chat', () => {
+test('VS Code managed completion clears state and renders command metadata without stdout/stderr in chat', () => {
   const { ui, markdown, logs } = fixture();
   ui.agentManagedCommandProgress('Worker A', { phase: 'started', commandId: 'cmd-done', pid: 456, displayCommand: 'pytest -q' });
   assert.equal(ui.managedCommandBytes.has('cmd-done'), true);
@@ -47,14 +49,14 @@ test('VS Code managed completion clears state and renders command plus bounded r
 
   ui.agentManagedCommandComplete('Worker A', {
     commandId: 'cmd-done', pid: 456, state: 'completed', exitCode: 7, elapsedMs: 1200,
-    displayCommand: 'pytest -q', shellLanguage: 'powershell', stderr: '1 failed', stdout: '',
+    displayCommand: 'pytest -q', shellLanguage: 'powershell', stderr: '', stdout: '',
   });
 
   assert.equal(ui.managedCommandBytes.has('cmd-done'), false);
   assert.equal(ui.managedCommandProgressAt.has('cmd-done'), false);
   assert.match(markdown.join('\n'), /Worker A ran command.*exit 7/i);
   assert.match(markdown.join('\n'), /pytest -q/);
-  assert.match(markdown.join('\n'), /1 failed/);
+  assert.doesNotMatch(markdown.join('\n'), /stdout|stderr|Show command output/i);
   assert.match(logs.at(-1), /id=cmd-done/);
 });
 
@@ -62,7 +64,7 @@ test('VS Code managed completion surfaces unproven cancellation as a command res
   const { ui, markdown } = fixture();
   ui.agentManagedCommandComplete('Strong reviewer', {
     commandId: 'cmd-cancel', pid: 789, state: 'cancelled', elapsedMs: 3400, terminationProven: false,
-    displayCommand: 'pytest -q', stderr: 'interrupted',
+    displayCommand: 'pytest -q', stderr: '',
   });
   assert.match(markdown.join('\n'), /cancelled.*termination unproven/i);
   assert.match(markdown.join('\n'), /pytest -q/);
@@ -98,19 +100,16 @@ test('VS Code stalled message distinguishes proven and unproven managed terminat
 });
 
 
-test('successful command card keeps output compact and marks runtime truncation', () => {
+test('successful command card contains command/status only when output is retained elsewhere', () => {
   const { ui, markdown } = fixture();
-  const manyLines = Array.from({ length: 80 }, (_, index) => `line-${index}`).join('\n');
   ui.agentManagedCommandComplete('Worker A', {
     commandId: 'cmd-success', pid: 100, state: 'completed', exitCode: 0, elapsedMs: 2200,
-    displayCommand: 'node --test', shellLanguage: 'powershell', stdout: manyLines, stderr: '', stdoutTruncated: true,
+    displayCommand: 'node --test', shellLanguage: 'powershell', stdout: '', stderr: '', stdoutTruncated: false,
   });
   const text = markdown.join('\n');
   assert.match(text, /✓.*Worker A ran command.*exit 0/i);
   assert.match(text, /node --test/);
-  assert.match(text, /line-79/);
-  assert.doesNotMatch(text, /line-0\n/);
-  assert.match(text, /Output preview truncated/i);
+  assert.doesNotMatch(text, /Output preview truncated|Show command output/i);
 });
 
 
