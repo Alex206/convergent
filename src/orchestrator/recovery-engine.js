@@ -9,6 +9,8 @@ const { pauseWorkflow } = require('./control');
 const { runArchitectureAssessment, formatArchitectureAssessment } = require('./architecture-advisor');
 const { runtimeStallIncident, runtimeStallRecoveryDetail } = require('./runtime-stall');
 
+const DEFAULT_MAX_OPERATOR_DIALOGUE_ROUNDS = 6;
+
 function recoveryCacheKey(task, kind, detail = {}) {
   return [task?.id ?? '', kind ?? '', detail.workspaceFingerprint ?? '', String(detail.summary ?? '').trim()].join('\0');
 }
@@ -107,12 +109,52 @@ function operatorQuestionWithBlockerContext(question, detail = {}) {
   return lines.join('\n');
 }
 
+function operatorAgreementQuestion(report) {
+  const action = report?.action === 'peer'
+    ? 'let an independent peer worker re-evaluate the preserved implementation'
+    : 'retry the blocked agent with the agreed recovery guidance';
+  return [
+    'Before Convergent continues, please confirm that it understood our discussion correctly.',
+    '',
+    `Proposed next step: ${action}.`,
+    report?.rationale ? `Reason: ${compactRecoveryText(report.rationale, 1400)}` : '',
+    report?.guidance ? `Guidance that will be passed to the agent: ${compactRecoveryText(report.guidance, 1800)}` : '',
+    '',
+    'Confirm this if it matches your intent, or reply with a correction or question. Convergent will not continue until the recovery coordinator resolves your reply.',
+  ].filter(Boolean).join('\n');
+}
+
+function operatorDialoguePrompt(answer, { allowPeer = false, confirmation = null } = {}) {
+  const allowed = allowPeer ? 'peer, retry, ask_user, or pause' : 'retry, ask_user, or pause';
+  if (confirmation) {
+    return [
+      `You proposed recovery action ${confirmation.action}.`,
+      confirmation.rationale ? `Proposed rationale: ${confirmation.rationale}` : '',
+      confirmation.guidance ? `Proposed agent guidance: ${confirmation.guidance}` : '',
+      '',
+      `Operator reply to the confirmation request:\n${answer}`,
+      '',
+      'Interpret this as a real conversation, not as an opaque answer payload. If the operator clearly confirms the proposal without changing it, return the same peer/retry action and preserve the agreed concrete context in guidance. If the operator corrects you, asks a question, disagrees, or is ambiguous, do NOT continue: choose ask_user with a plain-language explanation and one focused follow-up question, or pause when continuing would be inappropriate.',
+      `Allowed actions now: ${allowed}.`,
+    ].filter(Boolean).join('\n');
+  }
+  return [
+    `Operator reply in the recovery discussion:\n${answer}`,
+    '',
+    'Continue the discussion rather than treating this reply as permission to continue automatically. The operator may be answering, asking you a question, correcting an assumption, disagreeing, or supplying only part of what you need.',
+    'If anything remains unclear, if the operator asks a question, or if you are not confident you share the same understanding, choose ask_user again. In question, first explain the relevant point in plain language, then ask one focused follow-up. Do not repeat a question the operator already answered.',
+    'If enough context exists to propose peer or retry, you may propose it now; Convergent will show that proposal back to the operator for explicit confirmation before executing it. Preserve the concrete agreed facts that the next agent needs in guidance. You may choose pause at any time when that is the safest resolution.',
+    `Allowed actions now: ${allowed}.`,
+  ].join('\n');
+}
+
 class RecoveryConvergentEngine extends ResumableConvergentEngine {
   constructor(options) {
     super(options);
     this.activeTaskChangeContext = null;
     this.activeRuntimeRecoveryContext = null;
     this.maxRuntimeRecoveryAttempts = Math.max(1, Number(options.maxRuntimeRecoveryAttempts) || 2);
+    this.maxOperatorDialogueRounds = Math.max(2, Number(options.maxOperatorDialogueRounds) || DEFAULT_MAX_OPERATOR_DIALOGUE_ROUNDS);
     this.blockerRecoveryHistory = new Map();
     this.operatorRecoveryHistory = new Map();
   }
@@ -262,11 +304,11 @@ class RecoveryConvergentEngine extends ResumableConvergentEngine {
     if (priorOperatorRecovery?.consumed) {
       const repeated = {
         action: 'pause',
-        rationale: `The ${kind} path blocked again after operator input was already collected and one ${priorOperatorRecovery.action} recovery attempt was consumed. Re-asking the operator or spending another recovery-model turn would repeat work.`,
+        rationale: `The ${kind} path blocked again after an operator discussion already reached agreement and one ${priorOperatorRecovery.action} recovery attempt was consumed. Re-opening the same recovery path automatically would repeat work.`,
         guidance: priorOperatorRecovery.guidance ?? '',
         cached: true,
       };
-      this.ui?.log?.(`Operator-assisted recovery for ${task.id}/${kind} was already consumed; pausing deterministically without another recovery-model call or repeated operator question.`);
+      this.ui?.log?.(`Operator-assisted recovery for ${task.id}/${kind} was already consumed; pausing deterministically without another recovery-model call or repeated operator discussion.`);
       return repeated;
     }
 
@@ -292,7 +334,8 @@ class RecoveryConvergentEngine extends ResumableConvergentEngine {
     const coordinator = await factory.createRecoveryCoordinator(task.id, kind);
     this.sessions.push(coordinator.session);
     const allowed = allowPeer ? 'peer, retry, ask_user, or pause' : 'retry, ask_user, or pause (peer is not available for this recovery path)';
-    let operatorAnswer = '';
+    let operatorDialogueStarted = false;
+    let operatorDialogueRounds = 0;
 
     try {
       this.ui?.phase?.('Recovery assessment', `Strong coordinator is assessing the ${kind} blocker for task ${task.id} before Convergent asks you or spends another implementation/review turn.`);
@@ -315,6 +358,7 @@ class RecoveryConvergentEngine extends ResumableConvergentEngine {
           '',
           'Treat the supplied task, working ref, blocker summary, workspace fingerprint, findings, checks, and validation evidence as authoritative known context. Do NOT reread AGENTS.md, .aew manifests/guides/roles/skills, Git history, or broad repository state merely to reconstruct facts already supplied. Inspect at most one narrowly targeted unresolved fact when it is necessary to choose recovery.',
           'Decide the least wasteful safe recovery action. A required validation that is blocked by a missing operator-controlled token, credential, secret, or environment prerequisite must not be reclassified as acceptable or retried unchanged: ask_user for the missing prerequisite or guidance. Use ask_user only for a genuinely missing operator fact or decision.',
+          'If you ask the operator, treat subsequent replies as a conversation. The operator may ask you to explain the question, challenge an assumption, provide a partial answer, or correct your interpretation. Keep asking focused follow-ups until the situation is mutually clear. Do not treat the first reply as automatic permission to continue. Before any peer/retry continuation after operator dialogue, Convergent will require an explicit confirmation of the proposed interpretation and next action.',
         ].filter(Boolean).join('\n'),
         'report_recovery',
         this.agentTurnTimeoutMs,
@@ -334,53 +378,114 @@ class RecoveryConvergentEngine extends ResumableConvergentEngine {
         report = {
           action: 'ask_user',
           rationale: 'Required validation remains blocked by an operator-controlled environment prerequisite, so retrying or handing to the peer without new operator context would only repeat the same blocker.',
-          question: 'A required validation is blocked by a missing environment prerequisite (for example a token, credential, secret, or environment variable). What value or safe recovery guidance should Convergent use for this validation?',
+          question: 'A required validation needs an operator-controlled prerequisite that is not available in the repository. What should Convergent use or assume here? If the question is unclear, ask me about it and I will explain before we continue.',
           guidance: report.guidance,
         };
       }
 
-      if (!allowPeer && report.action === 'peer') {
+      while (true) {
+        if (!allowPeer && report.action === 'peer') {
+          startedAt = Date.now();
+          report = await requireReport(
+            coordinator.session,
+            coordinator.sink,
+            'Peer continuation is not available for this recovery path. Choose retry, ask_user, or pause. If operator dialogue has already started, do not bypass it: preserve unresolved questions and require agreement before retry.',
+            'report_recovery',
+            this.agentTurnTimeoutMs,
+          );
+          await this.finishTurn(coordinator, startedAt);
+          continue;
+        }
+
+        if (report.action === 'pause') break;
+        if (report.action !== 'ask_user' && report.action !== 'retry' && report.action !== 'peer') break;
+
+        if (report.action === 'ask_user') {
+          if (operatorDialogueRounds >= this.maxOperatorDialogueRounds) {
+            report = {
+              action: 'pause',
+              rationale: `Operator recovery discussion did not reach a clear agreement within ${this.maxOperatorDialogueRounds} replies. Convergent pauses rather than guessing or silently continuing.`,
+              question: '',
+              guidance: report.guidance,
+            };
+            break;
+          }
+
+          const operatorQuestion = operatorDialogueStarted
+            ? report.question
+            : operatorQuestionWithBlockerContext(report.question, detail);
+          const response = await this.userInputHandler?.({ question: operatorQuestion });
+          const answer = String(response?.answer ?? '').trim();
+          if (!answer || /^user cancelled/i.test(answer)) {
+            report = {
+              action: 'pause',
+              rationale: 'Operator ended the recovery discussion before agreement was reached.',
+              question: '',
+              guidance: report.guidance,
+            };
+            break;
+          }
+
+          operatorDialogueStarted = true;
+          operatorDialogueRounds += 1;
+          this.ui?.log?.(`Recovery coordinator discussed task ${task.id} with the operator; reply ${operatorDialogueRounds} received.`);
+          startedAt = Date.now();
+          report = await requireReport(
+            coordinator.session,
+            coordinator.sink,
+            operatorDialoguePrompt(answer, { allowPeer }),
+            'report_recovery',
+            this.agentTurnTimeoutMs,
+          );
+          await this.finishTurn(coordinator, startedAt);
+          continue;
+        }
+
+        if (!operatorDialogueStarted) break;
+
+        if (operatorDialogueRounds >= this.maxOperatorDialogueRounds) {
+          report = {
+            action: 'pause',
+            rationale: `Operator recovery discussion reached its ${this.maxOperatorDialogueRounds}-reply bound before the proposed continuation could be confirmed. Convergent pauses rather than assuming agreement.`,
+            question: '',
+            guidance: report.guidance,
+          };
+          break;
+        }
+
+        const proposal = {
+          action: report.action,
+          rationale: report.rationale,
+          guidance: report.guidance,
+        };
+        const response = await this.userInputHandler?.({ question: operatorAgreementQuestion(report) });
+        const answer = String(response?.answer ?? '').trim();
+        if (!answer || /^user cancelled/i.test(answer)) {
+          report = {
+            action: 'pause',
+            rationale: 'Operator did not confirm the proposed recovery action. Convergent pauses without continuing.',
+            question: '',
+            guidance: report.guidance,
+          };
+          break;
+        }
+
+        operatorDialogueRounds += 1;
+        this.ui?.log?.(`Recovery coordinator received operator confirmation/correction for task ${task.id}; reply ${operatorDialogueRounds} received.`);
         startedAt = Date.now();
         report = await requireReport(
           coordinator.session,
           coordinator.sink,
-          'Peer continuation is not an allowed final action for this required reviewer gate. Choose retry, ask_user, or pause now and call report_recovery once.',
+          operatorDialoguePrompt(answer, { allowPeer, confirmation: proposal }),
           'report_recovery',
           this.agentTurnTimeoutMs,
         );
         await this.finishTurn(coordinator, startedAt);
+
+        if (report.action === proposal.action) break;
       }
 
-      if (report.action === 'ask_user') {
-        const operatorQuestion = operatorQuestionWithBlockerContext(report.question, detail);
-        const response = await this.userInputHandler?.({ question: operatorQuestion });
-        operatorAnswer = String(response?.answer ?? '').trim();
-        if (!operatorAnswer || /^user cancelled/i.test(operatorAnswer)) {
-          return { action: 'pause', rationale: 'Operator did not provide the requested recovery information.', guidance: report.guidance };
-        }
-        this.ui?.log?.(`Recovery coordinator asked operator for task ${task.id}: ${report.question}; answer received.`);
-        startedAt = Date.now();
-        report = await requireReport(
-          coordinator.session,
-          coordinator.sink,
-          [
-            `Operator answer to your recovery question:\n${operatorAnswer}`,
-            '',
-            `Choose the final action now from: ${allowPeer ? 'peer, retry, pause' : 'retry, pause'}. Do not ask_user again.`,
-            'Preserve useful operator context in guidance for the selected agent. A retry/peer action must use the operator context to resolve or meaningfully re-evaluate the blocker; do not simply accept the same blocked required validation.',
-          ].join('\n'),
-          'report_recovery',
-          this.agentTurnTimeoutMs,
-        );
-        await this.finishTurn(coordinator, startedAt);
-        if (report.action === 'ask_user' || (!allowPeer && report.action === 'peer')) {
-          return { action: 'pause', rationale: 'Recovery coordinator did not produce an allowed final action after operator input.', guidance: operatorAnswer };
-        }
-      }
-
-      const guidance = [report.guidance, operatorAnswer ? `Operator context: ${operatorAnswer}` : '']
-        .filter(Boolean)
-        .join('\n');
+      const guidance = String(report.guidance ?? '').trim();
       const authorizedCredentialNames = this.operatorCredentialGuard?.authorizeFromOperatorGuidance(guidance) ?? [];
       if (authorizedCredentialNames.length) {
         this.ui?.log?.(`Operator recovery authorized credential variable name(s) for retry: ${authorizedCredentialNames.join(', ')}.`);
@@ -391,13 +496,13 @@ class RecoveryConvergentEngine extends ResumableConvergentEngine {
         taskId: task.id,
         kind,
         report,
-        operatorAnswer,
-        operatorContextProvided: Boolean(operatorAnswer),
+        operatorContextProvided: operatorDialogueStarted,
+        operatorDialogueRounds,
         authorizedCredentialNames,
       });
       const finalDecision = { action: report.action, rationale: report.rationale, guidance };
       this.blockerRecoveryHistory.set(cacheKey, finalDecision);
-      if (operatorAnswer && (report.action === 'retry' || report.action === 'peer')) {
+      if (operatorDialogueStarted && (report.action === 'retry' || report.action === 'peer')) {
         this.operatorRecoveryHistory.set(operatorScopeKey, {
           consumed: true,
           action: report.action,
@@ -542,4 +647,7 @@ module.exports = {
   recoveryDetailItem,
   boundedRecoveryItems,
   operatorQuestionWithBlockerContext,
+  operatorAgreementQuestion,
+  operatorDialoguePrompt,
+  DEFAULT_MAX_OPERATOR_DIALOGUE_ROUNDS,
 };
