@@ -187,6 +187,6 @@ test('operator-assisted worker recovery is consumed once across changed revision
 
   assert.equal(decision.action, 'pause');
   assert.equal(decision.cached, true);
-  assert.match(decision.rationale, /operator input was already collected/i);
+  assert.match(decision.rationale, /operator discussion already reached agreement/i);
   assert.equal(coordinatorCreations, 0);
 });
