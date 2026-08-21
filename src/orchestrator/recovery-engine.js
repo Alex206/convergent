@@ -13,6 +13,11 @@ function recoveryCacheKey(task, kind, detail = {}) {
   return [task?.id ?? '', kind ?? '', detail.workspaceFingerprint ?? '', String(detail.summary ?? '').trim()].join('\0');
 }
 
+function operatorRecoveryScopeKey(task, kind) {
+  const normalizedKind = /^worker-[AB]$/i.test(String(kind ?? '')) ? 'worker' : String(kind ?? '');
+  return [task?.id ?? '', normalizedKind].join('\0');
+}
+
 function checkpointPass(pass) {
   if (!pass) return null;
   return {
@@ -109,6 +114,7 @@ class RecoveryConvergentEngine extends ResumableConvergentEngine {
     this.activeRuntimeRecoveryContext = null;
     this.maxRuntimeRecoveryAttempts = Math.max(1, Number(options.maxRuntimeRecoveryAttempts) || 2);
     this.blockerRecoveryHistory = new Map();
+    this.operatorRecoveryHistory = new Map();
   }
 
   recoveryFactory() {
@@ -251,6 +257,19 @@ class RecoveryConvergentEngine extends ResumableConvergentEngine {
   }
 
   async consultRecoveryCoordinator(task, kind, detail, { allowPeer = false } = {}) {
+    const operatorScopeKey = operatorRecoveryScopeKey(task, kind);
+    const priorOperatorRecovery = this.operatorRecoveryHistory.get(operatorScopeKey);
+    if (priorOperatorRecovery?.consumed) {
+      const repeated = {
+        action: 'pause',
+        rationale: `The ${kind} path blocked again after operator input was already collected and one ${priorOperatorRecovery.action} recovery attempt was consumed. Re-asking the operator or spending another recovery-model turn would repeat work.`,
+        guidance: priorOperatorRecovery.guidance ?? '',
+        cached: true,
+      };
+      this.ui?.log?.(`Operator-assisted recovery for ${task.id}/${kind} was already consumed; pausing deterministically without another recovery-model call or repeated operator question.`);
+      return repeated;
+    }
+
     const cacheKey = recoveryCacheKey(task, kind, detail);
     const prior = this.blockerRecoveryHistory.get(cacheKey);
     if (prior?.action === 'pause') {
@@ -378,6 +397,13 @@ class RecoveryConvergentEngine extends ResumableConvergentEngine {
       });
       const finalDecision = { action: report.action, rationale: report.rationale, guidance };
       this.blockerRecoveryHistory.set(cacheKey, finalDecision);
+      if (operatorAnswer && (report.action === 'retry' || report.action === 'peer')) {
+        this.operatorRecoveryHistory.set(operatorScopeKey, {
+          consumed: true,
+          action: report.action,
+          guidance,
+        });
+      }
       return finalDecision;
     } finally {
       await coordinator.session.disconnect?.().catch(() => {});
@@ -511,6 +537,7 @@ module.exports = {
   appendTaskChangeManifestPrompt,
   taskWithArchitectureAssessment,
   recoveryCacheKey,
+  operatorRecoveryScopeKey,
   compactRecoveryText,
   recoveryDetailItem,
   boundedRecoveryItems,
