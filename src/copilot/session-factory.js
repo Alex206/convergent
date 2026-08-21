@@ -227,7 +227,11 @@ class SessionFactory {
   }
 
   exploreAgent() {
-    return createExploreAgent(this.models ?? {}, this.reasoningMode);
+    return createExploreAgent(
+      this.models ?? {},
+      this.reasoningMode,
+      workspaceScopePrompt(this.workspace, this.workspaceFolders),
+    );
   }
 
   explorationPrompt() {
