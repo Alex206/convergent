@@ -50,8 +50,9 @@ test('run_command normalizes cwd and timeout and forwards managed lifecycle prog
   assert.equal(completions[0].detail.displayCommand, 'node --test');
   assert.equal(completions[0].detail.stdout, '', 'human Chat card does not inline stdout');
   assert.equal(completions[0].detail.stderr, '', 'human Chat card does not inline stderr');
+  assert.equal(completions[0].detail.stdoutTruncated, false, 'chat card does not render a fake truncated preview when output lives in Output');
   assert.match(logs.join('\n'), /\[stdout\]\nok/);
-  assert.deepEqual(buttons, [{ command: 'convergent.showOutput', title: 'Show command output' }]);
+  assert.deepEqual(buttons, [], 'one Show command output button per command would make Chat noisier than the output it hides');
   assert.deepEqual(audits.map((event) => event.type), ['managed_command_start', 'managed_command_progress', 'managed_command_complete']);
   assert.equal(audits[1].bytes, 2);
   assert.equal(Object.hasOwn(audits[1], 'chunk'), false, 'progress audit must not duplicate command output content');
