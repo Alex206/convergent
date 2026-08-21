@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { RecoveryConvergentEngine, queueRecoveryInstruction, appendTaskChangeManifestPrompt } = require('../src/orchestrator/recovery-engine');
+const { RecoveryConvergentEngine, queueRecoveryInstruction, appendTaskChangeManifestPrompt, operatorRecoveryScopeKey } = require('../src/orchestrator/recovery-engine');
 const { normalizeRecoveryReport, validateRecoveryReport } = require('../src/copilot/tools');
 
 function fakeUi() {
@@ -157,5 +157,36 @@ test('unchanged repeated blocker pauses deterministically after one retry decisi
   const decision = await engine.consultRecoveryCoordinator(task, 'worker-A', detail, { allowPeer: true });
   assert.equal(decision.action, 'pause');
   assert.equal(decision.cached, true);
+  assert.equal(coordinatorCreations, 0);
+});
+
+test('operator-assisted worker recovery is consumed once across changed revisions and worker sides', async () => {
+  let coordinatorCreations = 0;
+  const engine = new RecoveryConvergentEngine({
+    client: {}, sdk: {}, workspace: '/repo', models: {}, ui: fakeUi(), revisionProvider: async () => 'R2',
+  });
+  engine.recoveryFactory = () => ({
+    async createRecoveryCoordinator() {
+      coordinatorCreations += 1;
+      throw new Error('repeated operator-assisted blocker must pause before creating a coordinator');
+    },
+  });
+  const scopeKey = operatorRecoveryScopeKey(task, 'worker-A');
+  assert.equal(scopeKey, operatorRecoveryScopeKey(task, 'worker-B'), 'A/B worker blockers share one task-level operator recovery scope');
+  engine.operatorRecoveryHistory.set(scopeKey, {
+    consumed: true,
+    action: 'peer',
+    guidance: 'Operator cannot provide the missing downstream contract; peer may inspect once.',
+  });
+
+  const decision = await engine.consultRecoveryCoordinator(task, 'worker-B', {
+    workspaceFingerprint: 'R2-after-peer-change',
+    summary: 'Wording changed, but the worker is still blocked by the unavailable operator-owned contract.',
+    checks: ['all repository-backed tests pass'],
+  }, { allowPeer: true });
+
+  assert.equal(decision.action, 'pause');
+  assert.equal(decision.cached, true);
+  assert.match(decision.rationale, /operator input was already collected/i);
   assert.equal(coordinatorCreations, 0);
 });
