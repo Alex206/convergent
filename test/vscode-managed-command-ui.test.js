@@ -9,11 +9,9 @@ function fixture(choice = 'Terminate command & recover') {
   const markdown = [];
   const logs = [];
   const warnings = [];
-  const buttons = [];
   const stream = {
     progress: (value) => progress.push(value),
     markdown: (value) => markdown.push(value),
-    button: (value) => buttons.push(value),
   };
   const output = { appendLine: (value) => logs.push(value) };
   const vscode = {
@@ -25,7 +23,7 @@ function fixture(choice = 'Terminate command & recover') {
     },
     Uri: { file: (value) => value },
   };
-  return { ui: new VscodeWorkflowUi(vscode, stream, output, { workspace: '/repo' }), progress, markdown, logs, warnings, buttons };
+  return { ui: new VscodeWorkflowUi(vscode, stream, output, { workspace: '/repo' }), progress, markdown, logs, warnings };
 }
 
 test('VS Code shows a sanitized managed command while it runs plus bounded output progress', () => {
