@@ -25,15 +25,16 @@ const EXPLORE_DELEGATION_PROMPT = `
 A read-only Explore subagent is available for isolated repository research. Delegate to Explore only when relevant files/symbols/contracts are genuinely unknown and broad location work would otherwise consume this agent's main context. Do NOT delegate when task inspection hints, the deterministic task-change manifest, prior validation evidence, or your retained context already identify the needed surfaces. Use Explore for repository discovery, not implementation, validation execution, architecture decisions, or routine re-checking. Continue your own task from Explore's compact findings; do not repeat its search merely for reassurance.
 `;
 
-function createExploreAgent(models = {}, reasoningMode = 'adaptive') {
+function createExploreAgent(models = {}, reasoningMode = 'adaptive', workspacePrompt = '') {
   const model = resolveModel('cheap-a', models.available ?? []);
   const reasoningEffort = chooseReasoningEffort(model, 'low', reasoningMode);
+  const prompt = [EXPLORE_PROMPT, String(workspacePrompt ?? '').trim()].filter(Boolean).join('\n\n');
   return {
     name: EXPLORE_AGENT_NAME,
     displayName: 'Explore',
     description: 'Read-only codebase exploration for locating relevant files, symbols, tests, configuration, and existing patterns while keeping discovery out of the parent context.',
     tools: [...EXPLORE_TOOLS],
-    prompt: EXPLORE_PROMPT,
+    prompt,
     infer: true,
     ...(model.id && model.id !== 'auto' ? { model: model.id } : {}),
     ...(reasoningEffort ? { reasoningEffort } : {}),
