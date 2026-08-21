@@ -228,17 +228,15 @@ function createRunCommandTool(defineTool, {
           displayCommand,
           cwd,
           shellLanguage,
-          // The agent receives the original managed result below. Human-facing
-          // Chat stays compact; bounded/redacted stdout and stderr are retained
-          // in the Convergent Output channel and exposed through a native button.
+          // The model receives the original managed result below. Human-facing
+          // Chat keeps only command/status metadata. Bounded/redacted stdout and
+          // stderr live in the single Convergent Output log instead of creating
+          // one extra "Show command output" button for every command.
           stdout: '',
           stderr: '',
-          stdoutTruncated: capturedTruncated,
+          stdoutTruncated: false,
           stderrTruncated: false,
         });
-        if (humanOutput && typeof ui?.stream?.button === 'function') {
-          ui.stream.button({ command: 'convergent.showOutput', title: 'Show command output' });
-        }
       } catch {}
       return result;
     },
