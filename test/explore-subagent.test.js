@@ -33,6 +33,14 @@ test('Explore is a Luna-first isolated read-only custom agent', () => {
   assert.match(EXPLORE_PROMPT, /compact evidence handoff/i);
 });
 
+test('Explore receives the explicit multi-root scope in its isolated prompt', () => {
+  const scope = 'MULTI-ROOT VS CODE WORKSPACE:\n- primary repo-a: C:/repo-a\n- repo-b: C:/repo-b\nUse repo-b::README.md.';
+  const agent = createExploreAgent({ available }, 'adaptive', scope);
+  assert.match(agent.prompt, /read-only Explore subagent/i);
+  assert.match(agent.prompt, /MULTI-ROOT VS CODE WORKSPACE/);
+  assert.match(agent.prompt, /repo-b::README\.md/);
+});
+
 test('parent delegation contract skips Explore when deterministic evidence already locates the task', () => {
   assert.match(EXPLORE_DELEGATION_PROMPT, /genuinely unknown/i);
   assert.match(EXPLORE_DELEGATION_PROMPT, /Do NOT delegate when task inspection hints/i);
@@ -46,6 +54,7 @@ test('subagent events are distinguishable from parent events', () => {
 
 test('task roles attach the Explore custom agent while recovery stays bounded without it', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'copilot', 'session-factory.js'), 'utf8');
+  assert.match(source, /createExploreAgent\([\s\S]*?workspaceScopePrompt\(this\.workspace, this\.workspaceFolders\)/);
   assert.match(source, /createCoordinator[\s\S]*?customAgents: \[this\.exploreAgent\(\)\]/);
   assert.match(source, /createWorker[\s\S]*?customAgents: \[this\.exploreAgent\(\)\]/);
   assert.match(source, /createReviewer[\s\S]*?customAgents: \[this\.exploreAgent\(\)\]/);
