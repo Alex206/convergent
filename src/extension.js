@@ -4,7 +4,12 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const vscode = require('vscode');
 const packageJson = require('../package.json');
-const { RecoveryConvergentEngine } = require('./orchestrator/recovery-engine');
+const {
+  StableChatRecoveryEngine,
+  createDeferredOperatorInputHandler,
+  isOperatorDialogueRequestedError,
+  boundedDialogueText,
+} = require('./orchestrator/stable-chat-recovery');
 const { resolveModel, isAdaptiveWorkerSelector } = require('./orchestrator/model-resolver');
 const { ensureConcreteUserRequest } = require('./orchestrator/request-preflight');
 const { normalizeResumeState, resumeSummary } = require('./orchestrator/resume');
@@ -14,7 +19,19 @@ const { TrajectoryAudit } = require('./orchestrator/audit');
 const { normalizeFlowMode, flowPolicy } = require('./orchestrator/flow');
 const { createPermissionHandler, createUserInputHandler } = require('./copilot/permissions');
 const { createClientOptions } = require('./copilot/runtime');
-const { VscodeWorkflowUi, compactUsage, detailedUsageMarkdown, diagnosticsMarkdown } = require('./ui/vscode-ui');
+const { compactUsage, detailedUsageMarkdown, diagnosticsMarkdown } = require('./ui/vscode-ui');
+const { StableVscodeWorkflowUi } = require('./ui/stable-vscode-ui');
+const {
+  MAX_OPERATOR_REPLIES,
+  pendingOperatorDialogue,
+  taskForResumeState,
+  createInitialOperatorDialogue,
+  stateWithOperatorDialogue,
+  stateWithOperatorAgreement,
+  stateWithDialoguePause,
+  stableChatHistory,
+  chatResultForDialogue,
+} = require('./ui/chat-dialogue-state');
 
 const RESUME_STATE_KEY = 'convergent.resumeState.v1';
 const FLOW_COMMANDS = new Set(['fast', 'auto', 'thorough']);
@@ -274,6 +291,50 @@ async function steerActiveAgent() {
   vscode.window.showInformationMessage(`Steering instruction sent to ${guard.agentName}.`);
 }
 
+function createWorkflowUi(stream, workspace, workspaceFolders, flowMode, eventSink = null) {
+  return new StableVscodeWorkflowUi(vscode, stream, output, {
+    workspace,
+    workspaceFolders,
+    version: EXTENSION_VERSION,
+    flowMode,
+    eventSink,
+  });
+}
+
+function configureUiTimeouts(ui, config) {
+  ui.agentInactivityTimeoutMs = config.agentInactivityTimeoutMs;
+  ui.toolStallTimeoutMs = config.toolStallTimeoutMs;
+  ui.stallGraceMs = config.stallGraceMs;
+  ui.heartbeatMs = config.heartbeatMs;
+}
+
+function createWorkflowEngine({ runtime, workspace, workspaceFolders, models, config, flow, ui, controller, onCheckpoint }) {
+  const choiceInputHandler = createUserInputHandler(vscode, {
+    chatChoice: (request) => ui.chatChoice(request),
+  });
+  return new StableChatRecoveryEngine({
+    client: runtime.client,
+    sdk: runtime.sdk,
+    workspace,
+    workspaceFolders,
+    models,
+    permissionHandler: createPermissionHandler(vscode, workspace, config.permissionMode, output, {
+      workspaceFolders,
+      chatChoice: (request) => ui.chatChoice(request),
+    }),
+    userInputHandler: createDeferredOperatorInputHandler(choiceInputHandler),
+    ui,
+    maxWorkerPasses: flow.maxWorkerPasses,
+    maxReviewerCycles: flow.maxReviewerCycles,
+    maxAiCredits: config.maxAiCredits,
+    taskCommitMode: config.taskCommitMode,
+    routingMode: config.routingMode,
+    reasoningMode: config.reasoningMode,
+    signal: controller.signal,
+    onCheckpoint,
+  });
+}
+
 async function executeWorkflow(prompt, stream, token, resumeState = null, flowOverride = null) {
   if (activeRun) throw new Error('A Convergent workflow is already running. Stop it before starting another one.');
   const workspaceContextValue = workspaceContext(resumeState?.workspace);
@@ -301,17 +362,8 @@ async function executeWorkflow(prompt, stream, token, resumeState = null, flowOv
     modelSelectors: config.selectors,
   });
 
-  const ui = new VscodeWorkflowUi(vscode, stream, output, {
-    workspace,
-    workspaceFolders,
-    version: EXTENSION_VERSION,
-    flowMode: flow.mode,
-    eventSink: (event) => audit.record(event),
-  });
-  ui.agentInactivityTimeoutMs = config.agentInactivityTimeoutMs;
-  ui.toolStallTimeoutMs = config.toolStallTimeoutMs;
-  ui.stallGraceMs = config.stallGraceMs;
-  ui.heartbeatMs = config.heartbeatMs;
+  const ui = createWorkflowUi(stream, workspace, workspaceFolders, flow.mode, (event) => audit.record(event));
+  configureUiTimeouts(ui, config);
   ui.runStarted({ version: EXTENSION_VERSION, flowMode: flow.mode, flowLabel: flow.label });
   stream.progress(`Flow: ${flow.label} — ${flow.description}`);
   output.appendLine(`[${new Date().toISOString()}] Convergent ${EXTENSION_VERSION}; flow=${flow.mode}; worker tranche=${flow.maxWorkerPasses}; reviewer tranche=${flow.maxReviewerCycles}; reviewer scope=${flow.reviewerScope}`);
@@ -319,28 +371,15 @@ async function executeWorkflow(prompt, stream, token, resumeState = null, flowOv
   let latestCheckpoint = resumeState;
   let runStatus = 'failed';
   let runError = null;
-  const engine = new RecoveryConvergentEngine({
-    client: runtime.client,
-    sdk: runtime.sdk,
+  const engine = createWorkflowEngine({
+    runtime,
     workspace,
     workspaceFolders,
     models,
-    permissionHandler: createPermissionHandler(vscode, workspace, config.permissionMode, output, {
-      workspaceFolders,
-      chatChoice: (request) => ui.chatChoice(request),
-    }),
-    userInputHandler: createUserInputHandler(vscode, {
-      chatChoice: (request) => ui.chatChoice(request),
-      announceFreeformQuestion: (question) => ui.announceFreeformQuestion(question),
-    }),
+    config,
+    flow,
     ui,
-    maxWorkerPasses: flow.maxWorkerPasses,
-    maxReviewerCycles: flow.maxReviewerCycles,
-    maxAiCredits: config.maxAiCredits,
-    taskCommitMode: config.taskCommitMode,
-    routingMode: config.routingMode,
-    reasoningMode: config.reasoningMode,
-    signal: controller.signal,
+    controller,
     onCheckpoint: async (state) => {
       const enriched = { ...state, flowMode: flow.mode };
       latestCheckpoint = enriched;
@@ -359,13 +398,10 @@ async function executeWorkflow(prompt, stream, token, resumeState = null, flowOv
     void engine.stop();
   });
 
+  // Stable Chat buttons are reserved for immediate run controls. Usage, diagnostics,
+  // Output, audit and Source Control remain commands instead of occupying every response.
   stream.button({ command: 'convergent.stop', title: 'Stop workflow' });
   stream.button({ command: 'convergent.steer', title: 'Steer active agent' });
-  stream.button({ command: 'convergent.showUsage', title: 'Show usage' });
-  stream.button({ command: 'convergent.showDiagnostics', title: 'Show diagnostics' });
-  stream.button({ command: 'convergent.showOutput', title: 'Show agent log' });
-  stream.button({ command: 'convergent.openLastAudit', title: 'Open audit' });
-  stream.button({ command: 'workbench.view.scm', title: 'Source Control' });
 
   try {
     const result = await engine.run(prompt, resumeState);
@@ -373,14 +409,37 @@ async function executeWorkflow(prompt, stream, token, resumeState = null, flowOv
     await clearResumeState();
     runStatus = 'complete';
     stream.markdown(`\n**Convergent ${EXTENSION_VERSION} finished successfully.**`);
+    return { metadata: { convergentKind: 'complete', convergentFollowups: [] } };
   } catch (error) {
+    if (isOperatorDialogueRequestedError(error)) {
+      const dialogue = createInitialOperatorDialogue(latestCheckpoint, error.question);
+      if (!dialogue || !latestCheckpoint) throw error;
+      latestCheckpoint = stateWithOperatorDialogue(latestCheckpoint, dialogue);
+      await persistResumeState(latestCheckpoint);
+      runStatus = 'awaiting_operator';
+      runError = null;
+      await audit.record({
+        type: 'operator_chat_dialogue_deferred',
+        taskId: dialogue.taskId,
+        kind: dialogue.kind,
+        question: dialogue.question,
+      });
+      ui.operatorDialogue(dialogue);
+      return chatResultForDialogue(dialogue);
+    }
+
     runError = error?.message ?? String(error);
     await audit.record({ type: 'run_error', error: runError, stack: error?.stack });
     await markResumeInterrupted(latestCheckpoint, runError);
     if (isWorkflowPausedError(error)) {
       runStatus = 'paused';
       ui.workflowPaused(error.message ?? 'Paused at a configured soft limit.');
-      return;
+      return {
+        metadata: {
+          convergentKind: 'paused',
+          convergentFollowups: [{ prompt: '/resume', label: 'Resume the saved workflow' }],
+        },
+      };
     }
     throw error;
   } finally {
@@ -394,6 +453,143 @@ async function executeWorkflow(prompt, stream, token, resumeState = null, flowOv
   }
 }
 
+async function continueOperatorDialogue(state, userMessage, chatContext, stream, token) {
+  const dialogue = pendingOperatorDialogue(state);
+  const task = taskForResumeState(state);
+  if (!dialogue || !task) return null;
+
+  if (!String(userMessage ?? '').trim()) {
+    const ui = createWorkflowUi(stream, state.workspace, workspaceContext(state.workspace).folders, state.flowMode ?? 'auto');
+    ui.operatorDialogue(dialogue);
+    return chatResultForDialogue(dialogue);
+  }
+
+  if (dialogue.replies >= MAX_OPERATOR_REPLIES) {
+    const paused = stateWithDialoguePause(state, dialogue, `Operator discussion did not reach explicit agreement within ${MAX_OPERATOR_REPLIES} replies.`);
+    await persistResumeState(paused);
+    stream.markdown(`\n⏸ **Convergent paused.** The recovery discussion reached its ${MAX_OPERATOR_REPLIES}-reply bound without explicit agreement. The saved checkpoint is preserved; Convergent will not guess.`);
+    return { metadata: { convergentKind: 'paused', convergentFollowups: [] } };
+  }
+
+  const workspaceContextValue = workspaceContext(state.workspace);
+  const workspace = workspaceContextValue.primary;
+  const workspaceFolders = workspaceContextValue.folders;
+  const config = readConfig();
+  const flow = flowPolicy(state.flowMode ?? config.flowMode, config);
+  const runtime = await getClient(config.runtimeTransport);
+  const models = await resolveConfiguredModels(runtime.client, config.selectors, flow.mode);
+  const controller = new AbortController();
+  const ui = createWorkflowUi(stream, workspace, workspaceFolders, flow.mode);
+  configureUiTimeouts(ui, config);
+  const engine = createWorkflowEngine({
+    runtime,
+    workspace,
+    workspaceFolders,
+    models,
+    config,
+    flow,
+    ui,
+    controller,
+    onCheckpoint: async () => {},
+  });
+  const cancellation = token.onCancellationRequested(() => controller.abort());
+
+  try {
+    const message = boundedDialogueText(userMessage, 3000);
+    const report = await engine.continueOperatorDialogue(task, dialogue, message, stableChatHistory(chatContext?.history));
+    const nextHistory = [
+      ...(dialogue.history ?? []),
+      { role: 'user', content: message },
+    ];
+    const nextReplies = dialogue.replies + 1;
+
+    if (report.action === 'pause') {
+      const paused = stateWithDialoguePause(state, dialogue, report.rationale);
+      await persistResumeState(paused);
+      stream.markdown(`\n⏸ **Recovery discussion paused.** ${report.rationale}`);
+      return { metadata: { convergentKind: 'paused', convergentFollowups: [] } };
+    }
+
+    if (report.action === 'ask_user') {
+      if (nextReplies >= MAX_OPERATOR_REPLIES) {
+        const paused = stateWithDialoguePause(state, dialogue, `Operator discussion did not reach explicit agreement within ${MAX_OPERATOR_REPLIES} replies.`);
+        await persistResumeState(paused);
+        stream.markdown(`\n⏸ **Convergent paused.** We still do not have a shared interpretation after ${MAX_OPERATOR_REPLIES} replies, so the workflow remains stopped rather than guessing.`);
+        return { metadata: { convergentKind: 'paused', convergentFollowups: [] } };
+      }
+      const assistantText = [report.rationale, report.question].filter(Boolean).join('\n\n');
+      const nextDialogue = {
+        ...dialogue,
+        phase: 'discuss',
+        question: report.question,
+        rationale: report.rationale,
+        proposal: null,
+        replies: nextReplies,
+        history: [...nextHistory, { role: 'assistant', content: assistantText }],
+        updatedAt: new Date().toISOString(),
+      };
+      const nextState = stateWithOperatorDialogue(state, nextDialogue);
+      await persistResumeState(nextState);
+      ui.operatorDialogue(nextDialogue);
+      return chatResultForDialogue(nextDialogue);
+    }
+
+    if (report.action === 'peer' && !dialogue.allowPeer) {
+      const nextDialogue = {
+        ...dialogue,
+        phase: 'discuss',
+        question: 'This recovery path has no peer worker. Should we retry the blocked agent with revised guidance, or keep the workflow paused?',
+        rationale: 'The proposed peer action is not available for this task route, so Convergent will not silently change the topology.',
+        proposal: null,
+        replies: nextReplies,
+        history: [...nextHistory, { role: 'assistant', content: 'Peer continuation is unavailable on this route; clarification is still required.' }],
+        updatedAt: new Date().toISOString(),
+      };
+      await persistResumeState(stateWithOperatorDialogue(state, nextDialogue));
+      ui.operatorDialogue(nextDialogue);
+      return chatResultForDialogue(nextDialogue);
+    }
+
+    if (report.action === 'retry' || report.action === 'peer') {
+      if (dialogue.phase === 'confirm') {
+        const agreedState = stateWithOperatorAgreement(state, dialogue, report);
+        await persistResumeState(agreedState);
+        ui.operatorAgreement(report);
+        return await executeWorkflow(agreedState.request, stream, token, agreedState, agreedState.flowMode);
+      }
+
+      const proposal = {
+        action: report.action,
+        rationale: report.rationale,
+        guidance: report.guidance,
+      };
+      const nextDialogue = {
+        ...dialogue,
+        phase: 'confirm',
+        question: '',
+        rationale: report.rationale,
+        proposal,
+        replies: nextReplies,
+        history: [...nextHistory, { role: 'assistant', content: `Proposed ${report.action}: ${report.rationale}\nGuidance: ${report.guidance}` }],
+        updatedAt: new Date().toISOString(),
+      };
+      await persistResumeState(stateWithOperatorDialogue(state, nextDialogue));
+      ui.operatorProposal(proposal);
+      return chatResultForDialogue(nextDialogue);
+    }
+
+    const paused = stateWithDialoguePause(state, dialogue, 'Recovery coordinator returned no safe conversational continuation.');
+    await persistResumeState(paused);
+    stream.markdown('\n⏸ **Convergent paused.** Recovery did not produce a safe conversational continuation, so no implementation action was taken.');
+    return { metadata: { convergentKind: 'paused', convergentFollowups: [] } };
+  } finally {
+    cancellation.dispose();
+    lastUsage = engine.getUsageSummary();
+    await persistDiagnostics(collectDiagnostics(engine));
+    await engine.stop();
+  }
+}
+
 async function activate(context) {
   extensionContext = context;
   lastDiagnostics = context.globalState.get('convergent.lastDiagnostics');
@@ -401,7 +597,7 @@ async function activate(context) {
   context.subscriptions.push(output);
   output.appendLine(`Convergent ${EXTENSION_VERSION} activated (VS Code ${vscode.version}; host ${process.execPath}).`);
 
-  const participant = vscode.chat.createChatParticipant('convergent.workflow', async (request, _chatContext, stream, token) => {
+  const participant = vscode.chat.createChatParticipant('convergent.workflow', async (request, chatContext, stream, token) => {
     let prompt = request.prompt?.trim();
     const command = String(request.command ?? '').toLowerCase();
     const flowOverride = FLOW_COMMANDS.has(command) ? command : null;
@@ -409,28 +605,40 @@ async function activate(context) {
     if (!flowOverride && prefix) prompt = prompt.slice(prefix[0].length).trim();
     const explicitFlow = flowOverride ?? (prefix ? prefix[1].toLowerCase() : null);
     const wantsResume = command === 'resume' || prompt === '/resume' || /^resume$/i.test(prompt ?? '');
+
     try {
+      const existingState = tryLoadResumeState();
+      const existingDialogue = pendingOperatorDialogue(existingState);
+      if (existingDialogue) {
+        if (wantsResume) {
+          const ui = createWorkflowUi(stream, existingState.workspace, workspaceContext(existingState.workspace).folders, existingState.flowMode ?? 'auto');
+          stream.markdown('**A recovery discussion is still waiting for agreement.** `/resume` will not bypass it.\n');
+          ui.operatorDialogue(existingDialogue);
+          return chatResultForDialogue(existingDialogue);
+        }
+        return await continueOperatorDialogue(existingState, prompt, chatContext, stream, token);
+      }
+
       if (wantsResume) {
         const workspace = workspacePath();
         const state = loadResumeState(workspace);
         if (!state) {
           stream.markdown(`**Convergent ${EXTENSION_VERSION}**\n\nThere is no resumable Convergent workflow for this workspace.`);
-          return;
+          return { metadata: { convergentKind: 'idle', convergentFollowups: [] } };
         }
         if (!(await confirmBoundaryResume(state, workspace))) {
           stream.markdown('Resume cancelled. The saved checkpoint was kept.');
-          return;
+          return { metadata: { convergentKind: 'paused', convergentFollowups: [{ prompt: '/resume', label: 'Resume the saved workflow' }] } };
         }
         stream.markdown(`**Resuming previous Convergent workflow.** ${resumeSummary(state)}\n`);
-        await executeWorkflow(state.request, stream, token, state, explicitFlow ?? state.flowMode);
-        return;
+        return await executeWorkflow(state.request, stream, token, state, explicitFlow ?? state.flowMode);
       }
 
       if (!prompt) {
         stream.markdown(`**Convergent ${EXTENSION_VERSION}**\n\nDescribe what you want Convergent to inspect or implement. Use \`/fast\`, \`/auto\`, or \`/thorough\` to choose the assurance/speed profile for this run.`);
         const state = tryLoadResumeState();
         if (state) stream.markdown(`\nA previous workflow can also be resumed with \`@convergent /resume\`. ${resumeSummary(state)}`);
-        return;
+        return { metadata: { convergentKind: 'idle', convergentFollowups: state ? [{ prompt: '/resume', label: 'Resume the saved workflow' }] : [] } };
       }
 
       const preflight = await ensureConcreteUserRequest(
@@ -441,22 +649,29 @@ async function activate(context) {
           stream.progress('The referenced request is missing; waiting for you to paste it.');
         },
       );
-      await executeWorkflow(preflight.request, stream, token, null, explicitFlow);
+      return await executeWorkflow(preflight.request, stream, token, null, explicitFlow);
     } catch (error) {
       output.error(error?.stack ?? String(error));
       if (error?.convergentDiagnostic) output.appendLine(`Control diagnostic: ${JSON.stringify(error.convergentDiagnostic)}`);
       stream.markdown(`\n**Convergent ${EXTENSION_VERSION} stopped:** ${error.message ?? String(error)}`);
       if (error?.code === 'CONVERGENT_TOOL_STALL' || error?.code === 'CONVERGENT_AGENT_INACTIVITY') {
-        stream.markdown('\nThe watchdog cancelled a stalled agent turn. Use **Show diagnostics** for the captured tool/runtime state.');
+        stream.markdown('\nThe watchdog cancelled a stalled agent turn. Use **Convergent: Show Diagnostics** for the captured tool/runtime state.');
       }
       const state = tryLoadResumeState();
       if (state) {
         stream.markdown(`\nA resume checkpoint was kept. ${resumeSummary(state)}`);
-        stream.button({ command: 'convergent.resume', title: 'Resume workflow' });
+        return { metadata: { convergentKind: 'error', convergentFollowups: [{ prompt: '/resume', label: 'Resume the saved workflow' }] } };
       }
+      return { metadata: { convergentKind: 'error', convergentFollowups: [] } };
     }
   });
   participant.iconPath = new vscode.ThemeIcon('git-merge');
+  participant.followupProvider = {
+    provideFollowups(result) {
+      const followups = result?.metadata?.convergentFollowups;
+      return Array.isArray(followups) ? followups : [];
+    },
+  };
   context.subscriptions.push(participant);
 
   context.subscriptions.push(
@@ -473,7 +688,10 @@ async function activate(context) {
         vscode.window.showInformationMessage('No resumable Convergent workflow is available for this workspace.');
         return;
       }
-      await vscode.commands.executeCommand('workbench.action.chat.open', { query: '@convergent /resume' });
+      const dialogue = pendingOperatorDialogue(state);
+      await vscode.commands.executeCommand('workbench.action.chat.open', {
+        query: dialogue ? '@convergent ' : '@convergent /resume',
+      });
     }),
     vscode.commands.registerCommand('convergent.respondDecision', (id, choice) => {
       return activeRun?.ui?.resolveChatDecision(id, choice) ?? false;
@@ -591,5 +809,7 @@ module.exports = {
   markResumeInterrupted,
   latestAuditDirectory,
   activeGuards,
+  executeWorkflow,
+  continueOperatorDialogue,
   EXTENSION_VERSION,
 };
