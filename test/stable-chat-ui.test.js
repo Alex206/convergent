@@ -176,16 +176,9 @@ test('strong-review recovery agreement queues the confirmed guidance before retr
     scopeKey: 'T1\0strong-reviewer',
     consumed: false,
   };
-  engine.activeTaskChangeContext = null;
-  engine.revisionProvider = async () => 'R1';
-  engine.finishTurn = async () => ({});
-  reviewer.sink = { value: { verdict: 'clean', summary: 'clean', findings: [], checks: [] } };
-  engine.operatorCredentialGuard = { authorizeFromOperatorGuidance: () => [], consumeViolations: () => [] };
-
-  await engine.runStrongReview(
-    { id: 'T1', title: 'T', description: 'D', acceptanceCriteria: ['ok'] },
-    {}, null, reviewer, [], { route: 'standard', risk: 'medium' }, { startReviewCycle: 1 },
-  );
+  const agreed = engine.applyStrongReviewAgreement({ id: 'T1' }, reviewer);
+  assert.equal(agreed.action, 'retry');
+  await reviewer.session.sendAndWait({ prompt: 'review again' });
   assert.match(prompts[0], /RECOVERY GUIDANCE FROM CONVERGENT\/OPERATOR/);
   assert.match(prompts[0], /opaque state, not a Git commit id/i);
 });
