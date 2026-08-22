@@ -3,6 +3,8 @@
 const {
   VscodeWorkflowUi,
   formatDuration,
+  formatTokenCount,
+  compactUsage,
 } = require('./vscode-ui');
 
 function compactOneLine(value, max = 220) {
@@ -36,6 +38,53 @@ function appendManagedOutput(output, agent, detail = {}) {
 }
 
 class StableVscodeWorkflowUi extends VscodeWorkflowUi {
+  agentTool(agent, tool, detail = '') {
+    const text = `${agent} tool: ${tool}${detail ? ` — ${compactOneLine(detail, 300)}` : ''}`;
+    this.log(text);
+    this.audit({ type: 'agent_tool', agent, tool, detail: compactOneLine(detail, 600) });
+  }
+
+  agentToolComplete(agent, tool, durationMs, success) {
+    const text = `${agent} tool complete: ${tool} · ${formatDuration(durationMs)} · ${success ? 'success' : 'failure'}`;
+    this.log(text);
+    if (!success) this.stream.progress(`${agent}: ${tool} failed · ${formatDuration(durationMs)}`);
+  }
+
+  agentMessage(agent, content) {
+    const text = compactOneLine(content, 600);
+    if (text) this.log(`${agent}: ${content}`);
+  }
+
+  agentUsageEvent(agent, summary) {
+    const now = Date.now();
+    if (now - this.lastUsageLogAt > 1500) {
+      this.log(`${agent} usage checkpoint: ${compactUsage(summary)}`);
+      this.lastUsageLogAt = now;
+    }
+  }
+
+  agentManagedCommandProgress(agent, detail = {}) {
+    const id = String(detail.commandId ?? 'managed-command');
+    if (detail.phase === 'started') {
+      this.managedCommandBytes.set(id, 0);
+      this.managedCommandProgressAt.set(id, Date.now());
+      const pid = Number.isInteger(detail.pid) ? ` · PID ${detail.pid}` : '';
+      const command = compactOneLine(detail.displayCommand, 180);
+      this.stream.progress(`${agent}: running command${command ? ` — ${command}` : ''}`);
+      this.log(`${agent} managed command ${id} started${pid}${command ? `; command=${command}` : ''}.`);
+      return;
+    }
+    if (detail.phase !== 'output') return;
+    const bytes = (this.managedCommandBytes.get(id) ?? 0) + Math.max(0, Number(detail.bytes) || 0);
+    this.managedCommandBytes.set(id, bytes);
+    const now = Date.now();
+    const last = this.managedCommandProgressAt.get(id) ?? 0;
+    if (now - last >= 15_000) {
+      this.managedCommandProgressAt.set(id, now);
+      this.log(`${agent} managed command ${id}: ${formatTokenCount(bytes)}B output observed; latest stream=${detail.stream ?? 'unknown'}.`);
+    }
+  }
+
   agentManagedCommandComplete(agent, detail = {}) {
     const id = String(detail.commandId ?? 'managed-command');
     this.managedCommandProgressAt.delete(id);
