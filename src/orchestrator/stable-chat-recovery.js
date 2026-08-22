@@ -64,6 +64,33 @@ function allowedActionsText(allowPeer) {
   return allowPeer ? 'retry, peer, ask_user, or pause' : 'retry, ask_user, or pause';
 }
 
+function bindConfirmationToProposal(report, proposal) {
+  if (!proposal || !['retry', 'peer'].includes(proposal.action)) {
+    return {
+      action: 'ask_user',
+      rationale: 'The saved confirmation proposal is missing or invalid, so Convergent will not infer authorization.',
+      question: 'The proposed continuation could not be verified. Please restate or clarify the next step you want Convergent to take.',
+      guidance: '',
+    };
+  }
+  if (!['retry', 'peer'].includes(report?.action)) return report;
+  if (report.action !== proposal.action) {
+    return {
+      action: 'ask_user',
+      rationale: `Your reply was interpreted as ${report.action}, but the proposal shown for confirmation was ${proposal.action}. Convergent will not silently change the proposed action during confirmation.`,
+      question: `Do you want to keep the previously proposed ${proposal.action} action, or change the proposal? Please clarify before Convergent continues.`,
+      guidance: '',
+    };
+  }
+  return {
+    action: proposal.action,
+    rationale: boundedDialogueText(proposal.rationale, 2400),
+    question: '',
+    guidance: boundedDialogueText(proposal.guidance, 5000),
+    confirmedProposal: true,
+  };
+}
+
 class StableChatRecoveryEngine extends RecoveryConvergentEngine {
   constructor(options) {
     super(options);
@@ -186,7 +213,7 @@ class StableChatRecoveryEngine extends RecoveryConvergentEngine {
     try {
       this.ui?.phase?.('Recovery discussion', `Strong coordinator is interpreting the operator's Chat reply for ${kind} on task ${task.id}; implementation remains paused.`);
       const startedAt = Date.now();
-      const report = await requireReport(
+      let report = await requireReport(
         coordinator.session,
         coordinator.sink,
         [
@@ -211,6 +238,7 @@ class StableChatRecoveryEngine extends RecoveryConvergentEngine {
         this.agentTurnTimeoutMs,
       );
       await this.finishTurn(coordinator, startedAt);
+      if (phase === 'confirm') report = bindConfirmationToProposal(report, proposal);
       return report;
     } finally {
       await coordinator.session.disconnect?.().catch(() => {});
@@ -227,5 +255,6 @@ module.exports = {
   boundedDialogueText,
   boundedDialogueHistory,
   formatDialogueHistory,
+  bindConfirmationToProposal,
   StableChatRecoveryEngine,
 };
