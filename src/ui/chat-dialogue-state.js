@@ -81,11 +81,20 @@ function stateWithOperatorDialogue(state, dialogue, reason = 'Awaiting operator 
   };
 }
 
-function stateWithOperatorAgreement(state, dialogue, report) {
+function stateWithOperatorAgreement(state, dialogue, confirmation = null) {
+  const proposal = dialogue?.proposal && typeof dialogue.proposal === 'object'
+    ? dialogue.proposal
+    : confirmation;
+  if (!proposal || !['retry', 'peer'].includes(proposal.action)) {
+    throw new Error('Cannot persist operator agreement without the exact displayed retry/peer proposal.');
+  }
+  if (confirmation?.action && confirmation.action !== proposal.action) {
+    throw new Error(`Cannot persist operator agreement: confirmed action ${confirmation.action} differs from displayed proposal ${proposal.action}.`);
+  }
   const agreement = {
-    action: report.action,
-    rationale: boundedDialogueText(report.rationale, 2400),
-    guidance: boundedDialogueText(report.guidance, 5000),
+    action: proposal.action,
+    rationale: boundedDialogueText(proposal.rationale, 2400),
+    guidance: boundedDialogueText(proposal.guidance, 5000),
     scopeKey: dialogue.scopeKey,
     consumed: false,
     agreedAt: new Date().toISOString(),
