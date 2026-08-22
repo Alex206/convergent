@@ -3,6 +3,7 @@
 const {
   RecoveryConvergentEngine,
   operatorRecoveryScopeKey,
+  queueRecoveryInstruction,
 } = require('./recovery-engine');
 const { requireReport, taskPrompt } = require('./engine');
 const { pauseWorkflow } = require('./control');
@@ -79,49 +80,74 @@ class StableChatRecoveryEngine extends RecoveryConvergentEngine {
     }
   }
 
-  async consultRecoveryCoordinator(task, kind, detail, options = {}) {
+  consumeOperatorAgreement(task, kind, { allowPeer = false } = {}) {
     const agreement = this.activeOperatorRecoveryAgreement;
-    if (agreement && agreement.consumed !== true) {
-      const scopeKey = operatorRecoveryScopeKey(task, kind);
-      if (!agreement.scopeKey || agreement.scopeKey === scopeKey) {
-        const action = String(agreement.action ?? 'pause');
-        const allowPeer = Boolean(options.allowPeer);
-        if (action === 'peer' && !allowPeer) {
-          pauseWorkflow(
-            `The saved operator agreement requested peer recovery for ${kind}, but this recovery path has no peer.`,
-            { kind: 'operator_agreement_invalid', task: task.id, recoveryKind: kind, agreement },
-          );
-        }
-        if (!['retry', 'peer'].includes(action)) {
-          pauseWorkflow(
-            `The saved operator agreement for ${kind} did not authorize a retry or peer continuation.`,
-            { kind: 'operator_agreement_invalid', task: task.id, recoveryKind: kind, agreement },
-          );
-        }
+    if (!agreement || agreement.consumed === true) return null;
+    const scopeKey = operatorRecoveryScopeKey(task, kind);
+    if (agreement.scopeKey && agreement.scopeKey !== scopeKey) return null;
 
-        agreement.consumed = true;
-        this.operatorRecoveryHistory.set(scopeKey, {
-          consumed: true,
-          action,
-          guidance: boundedDialogueText(agreement.guidance, 5000),
-        });
-        this.ui?.log?.(`Applying explicit operator Chat agreement for ${task.id}/${kind}: ${action}; no recovery-model re-interpretation before the agreed continuation.`);
-        this.ui?.audit?.({
-          type: 'operator_chat_agreement_applied',
-          taskId: task.id,
-          kind,
-          action,
-          rationale: boundedDialogueText(agreement.rationale),
-        });
-        return {
-          action,
-          rationale: boundedDialogueText(agreement.rationale) || 'Operator explicitly confirmed this recovery continuation in Chat.',
-          guidance: boundedDialogueText(agreement.guidance, 5000),
-          operatorAgreed: true,
-        };
-      }
+    const action = String(agreement.action ?? 'pause');
+    if (action === 'peer' && !allowPeer) {
+      pauseWorkflow(
+        `The saved operator agreement requested peer recovery for ${kind}, but this recovery path has no peer.`,
+        { kind: 'operator_agreement_invalid', task: task.id, recoveryKind: kind, agreement },
+      );
     }
+    if (!['retry', 'peer'].includes(action)) {
+      pauseWorkflow(
+        `The saved operator agreement for ${kind} did not authorize a retry or peer continuation.`,
+        { kind: 'operator_agreement_invalid', task: task.id, recoveryKind: kind, agreement },
+      );
+    }
+
+    const guidance = boundedDialogueText(agreement.guidance, 5000);
+    const authorizedCredentialNames = this.operatorCredentialGuard?.authorizeFromOperatorGuidance(guidance) ?? [];
+    agreement.consumed = true;
+    this.operatorRecoveryHistory.set(scopeKey, {
+      consumed: true,
+      action,
+      guidance,
+    });
+    this.ui?.log?.(`Applying explicit operator Chat agreement for ${task.id}/${kind}: ${action}; no recovery-model re-interpretation before the agreed continuation.`);
+    if (authorizedCredentialNames.length) {
+      this.ui?.log?.(`Operator Chat agreement authorized credential variable name(s): ${authorizedCredentialNames.join(', ')}.`);
+    }
+    this.ui?.audit?.({
+      type: 'operator_chat_agreement_applied',
+      taskId: task.id,
+      kind,
+      action,
+      rationale: boundedDialogueText(agreement.rationale),
+      authorizedCredentialNames,
+    });
+    return {
+      action,
+      rationale: boundedDialogueText(agreement.rationale) || 'Operator explicitly confirmed this recovery continuation in Chat.',
+      guidance,
+      operatorAgreed: true,
+      authorizedCredentialNames,
+    };
+  }
+
+  async consultRecoveryCoordinator(task, kind, detail, options = {}) {
+    const agreed = this.consumeOperatorAgreement(task, kind, options);
+    if (agreed) return agreed;
     return super.consultRecoveryCoordinator(task, kind, detail, options);
+  }
+
+  async runStrongReview(task, workerA, workerB, reviewer, ...rest) {
+    const agreed = this.consumeOperatorAgreement(task, 'strong-reviewer', { allowPeer: false });
+    if (agreed) {
+      if (agreed.action !== 'retry') {
+        pauseWorkflow(
+          `The saved operator agreement cannot apply action ${agreed.action} to the required strong-review gate.`,
+          { kind: 'operator_agreement_invalid', task: task.id, recoveryKind: 'strong-reviewer', agreement: agreed },
+        );
+      }
+      queueRecoveryInstruction(reviewer?.session, agreed.guidance || agreed.rationale);
+      this.ui?.phase?.('Applying agreed review recovery', 'The strong reviewer will retry from the saved review boundary with the operator-confirmed guidance.');
+    }
+    return super.runStrongReview(task, workerA, workerB, reviewer, ...rest);
   }
 
   async continueOperatorDialogue(task, dialogue, userMessage, chatHistory = []) {
@@ -145,7 +171,7 @@ class StableChatRecoveryEngine extends RecoveryConvergentEngine {
           `Proposed rationale: ${boundedDialogueText(proposal?.rationale)}`,
           `Proposed next-agent guidance: ${boundedDialogueText(proposal?.guidance, 4000)}`,
           'Return that same retry/peer action ONLY if the operator clearly confirms this exact interpretation and continuation.',
-          'If the operator corrects, questions, narrows, expands, or disagrees with any part of the proposal, use ask_user and continue the discussion instead of treating the reply as confirmation.',
+          'Do not alter the proposal while confirming it. Any requested change, qualification, question, disagreement, or ambiguity requires ask_user and a return to discussion.',
           'If the operator explicitly wants to stop or defer, use pause.',
         ]
       : [
