@@ -48,6 +48,9 @@ on:
         default: '45'
         type: string
 
+  pull_request:
+    types: [ready_for_review]
+
 jobs:
   benchmark:
     runs-on: ubuntu-latest
@@ -58,9 +61,9 @@ jobs:
       fail-fast: false
       max-parallel: 1
       matrix:
-        topology: ${{ fromJSON(inputs.topologies_json) }}
-        scenario: ${{ fromJSON(inputs.scenarios_json) }}
-        repeat: ${{ fromJSON(inputs.repeats_json) }}
+        topology: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.topologies_json || '["terra-solo","luna-terra"]') }}
+        scenario: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.scenarios_json || '["benchmarks/01-small-duration-parser.md"]') }}
+        repeat: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.repeats_json || '[1]') }}
     env:
       COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
       COPILOT_PLUGIN_DIR_ONLY: 'true'
@@ -147,13 +150,13 @@ jobs:
             --prompt-file "${GITHUB_WORKSPACE}/benchmark-target/${SCENARIO}" \
             --output-dir "${RUN_OUTPUT}" \
             --topology "${TOPOLOGY}" \
-            --flow "${{ inputs.flow }}" \
+            --flow "${{ inputs.flow || 'fast' }}" \
             --audit-level full \
             --limit-policy pause \
-            --max-model-calls "${{ inputs.max_model_calls }}" \
-            --max-model-calls-per-turn "${{ inputs.max_model_calls_per_turn }}" \
-            --max-chat-requests "${{ inputs.max_chat_requests }}" \
-            --max-ai-credits "${{ inputs.max_ai_credits }}" \
+            --max-model-calls "${{ inputs.max_model_calls || '24' }}" \
+            --max-model-calls-per-turn "${{ inputs.max_model_calls_per_turn || '10' }}" \
+            --max-chat-requests "${{ inputs.max_chat_requests || '8' }}" \
+            --max-ai-credits "${{ inputs.max_ai_credits || '25' }}" \
             2>&1 | tee "${RUN_OUTPUT}/runner.log"
 
       - name: Independently validate target tests
