@@ -162,18 +162,22 @@ class StableChatRecoveryEngine extends RecoveryConvergentEngine {
     return super.consultRecoveryCoordinator(task, kind, detail, options);
   }
 
-  async runStrongReview(task, workerA, workerB, reviewer, ...rest) {
+  applyStrongReviewAgreement(task, reviewer) {
     const agreed = this.consumeOperatorAgreement(task, 'strong-reviewer', { allowPeer: false });
-    if (agreed) {
-      if (agreed.action !== 'retry') {
-        pauseWorkflow(
-          `The saved operator agreement cannot apply action ${agreed.action} to the required strong-review gate.`,
-          { kind: 'operator_agreement_invalid', task: task.id, recoveryKind: 'strong-reviewer', agreement: agreed },
-        );
-      }
-      queueRecoveryInstruction(reviewer?.session, agreed.guidance || agreed.rationale);
-      this.ui?.phase?.('Applying agreed review recovery', 'The strong reviewer will retry from the saved review boundary with the operator-confirmed guidance.');
+    if (!agreed) return null;
+    if (agreed.action !== 'retry') {
+      pauseWorkflow(
+        `The saved operator agreement cannot apply action ${agreed.action} to the required strong-review gate.`,
+        { kind: 'operator_agreement_invalid', task: task.id, recoveryKind: 'strong-reviewer', agreement: agreed },
+      );
     }
+    queueRecoveryInstruction(reviewer?.session, agreed.guidance || agreed.rationale);
+    this.ui?.phase?.('Applying agreed review recovery', 'The strong reviewer will retry from the saved review boundary with the operator-confirmed guidance.');
+    return agreed;
+  }
+
+  async runStrongReview(task, workerA, workerB, reviewer, ...rest) {
+    this.applyStrongReviewAgreement(task, reviewer);
     return super.runStrongReview(task, workerA, workerB, reviewer, ...rest);
   }
 
