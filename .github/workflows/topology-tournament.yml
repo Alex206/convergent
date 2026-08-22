@@ -193,6 +193,11 @@ jobs:
           SCENARIO: ${{ matrix.scenario }}
         run: |
           case "${SCENARIO}" in
+            *01-small-duration-parser.md)
+              node src/headless/scenario01-acceptance.js \
+                "${GITHUB_WORKSPACE}/benchmark-target" \
+                "${RUN_OUTPUT}/scenario-acceptance.json"
+              ;;
             *03-dependency-ordering.md)
               node src/headless/scenario03-acceptance.js \
                 "${GITHUB_WORKSPACE}/benchmark-target" \
