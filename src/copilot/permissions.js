@@ -1,6 +1,7 @@
 'use strict';
 
 const path = require('node:path');
+const { normalizeWorkspaceFolders, rootForPath } = require('../orchestrator/workspace-scope');
 
 const SENSITIVE_ENV_NAMES = [
   'COPILOT_GITHUB_TOKEN',
@@ -40,17 +41,28 @@ function riskyCommand(command) {
     || /\bgit\s+push\b|\bgit\s+reset\s+--hard\b|\bgit\s+clean\s+-[^\n]*f|\brm\s+-[^\n]*r[^\n]*f|\bRemove-Item\b[^\n]*-Recurse[^\n]*-Force|\bformat\b|\bshutdown\b/i.test(text);
 }
 
-function createPermissionHandler(vscode, workspace, mode, output) {
+function createPermissionHandler(vscode, workspace, mode, output, options = {}) {
+  const roots = normalizeWorkspaceFolders(workspace, options.workspaceFolders);
   return async (request) => {
     const approve = () => ({ kind: 'approve-once' });
     const deny = () => ({ kind: 'deny' });
 
-    if (request.kind === 'read') return approve();
+    if (request.kind === 'read') {
+      const target = request.fileName ?? request.path;
+      if (!target) return approve();
+      const candidate = path.isAbsolute(target) ? target : path.resolve(workspace, target);
+      if (!rootForPath(workspace, roots, candidate)) {
+        output.appendLine(`Denied read outside opened workspace folders: ${target}`);
+        return deny();
+      }
+      return approve();
+    }
 
     if (request.kind === 'write') {
       const target = request.fileName ?? request.path;
-      if (target && !isWithin(workspace, target)) {
-        output.appendLine(`Denied write outside workspace: ${target}`);
+      const candidate = target && (path.isAbsolute(target) ? target : path.resolve(workspace, target));
+      if (candidate && !rootForPath(workspace, roots, candidate)) {
+        output.appendLine(`Denied write outside opened workspace folders: ${target}`);
         return deny();
       }
       if (mode === 'workspace') return approve();
@@ -58,7 +70,8 @@ function createPermissionHandler(vscode, workspace, mode, output) {
 
     if (request.kind === 'shell') {
       const command = request.fullCommandText ?? '';
-      if (mode === 'workspace' && !riskyCommand(command)) return approve();
+      const cwd = request.cwd ? path.resolve(String(request.cwd)) : workspace;
+      if (mode === 'workspace' && rootForPath(workspace, roots, cwd) && !riskyCommand(command)) return approve();
     }
 
     const description = request.kind === 'shell'
@@ -67,27 +80,33 @@ function createPermissionHandler(vscode, workspace, mode, output) {
         ? `Write ${request.fileName ?? request.path ?? ''}`
         : `${request.kind} permission`;
 
-    const choice = await vscode.window.showWarningMessage(
-      `Convergent agent requests permission: ${description}`,
-      { modal: true },
-      'Allow once',
-      'Deny',
-    );
+    const message = `Convergent agent requests permission: ${description}`;
+    let choice = typeof options.chatChoice === 'function'
+      ? await options.chatChoice({ kind: 'permission', title: 'Permission needed', message, choices: ['Allow once', 'Deny'] })
+      : null;
+    if (choice === null) choice = await vscode.window.showWarningMessage(message, { modal: true }, 'Allow once', 'Deny');
     return choice === 'Allow once' ? approve() : deny();
   };
 }
 
-function createUserInputHandler(vscode) {
+function createUserInputHandler(vscode, options = {}) {
   return async (request) => {
     if (request.choices?.length) {
-      const picked = await vscode.window.showQuickPick(request.choices, {
-        title: 'Convergent needs clarification',
-        placeHolder: request.question,
-        ignoreFocusOut: true,
-      });
+      let picked = typeof options.chatChoice === 'function'
+        ? await options.chatChoice({ kind: 'clarification', title: 'Clarification needed', message: request.question, choices: request.choices })
+        : null;
+      if (picked === null) {
+        picked = await vscode.window.showQuickPick(request.choices, {
+          title: 'Convergent needs clarification',
+          placeHolder: request.question,
+          ignoreFocusOut: true,
+        });
+      }
       if (picked !== undefined) return { answer: picked, wasFreeform: false };
+      return { answer: 'User cancelled the clarification request.', wasFreeform: true };
     }
 
+    options.announceFreeformQuestion?.(request.question);
     const answer = await vscode.window.showInputBox({
       title: 'Convergent needs clarification',
       prompt: request.question,

@@ -14,7 +14,7 @@ const task = {
   id: 'integrity-runtime',
   title: 'Validate integrity wiring',
   description: 'Exercise deterministic integrity boundaries.',
-  acceptanceCriteria: ['Blocked validation remains blocked.'],
+  acceptanceCriteria: ['Structured verdicts remain authoritative unless Convergent has deterministic contrary evidence.'],
 };
 
 test('SessionFactory pre-tool boundary combines role policy with credential provenance for JSON-string hook args', () => {
@@ -42,7 +42,7 @@ test('SessionFactory pre-tool boundary combines role policy with credential prov
   assert.match(readonlyMutation.permissionDecisionReason, /read-only/i);
 });
 
-test('worker pass cannot report CLEAN when required external validation is structurally blocked', async () => {
+test('worker pass keeps CLEAN when only free-form validation prose sounds blocked', async () => {
   const sink = { value: null };
   const worker = {
     name: 'A',
@@ -67,11 +67,11 @@ test('worker pass cannot report CLEAN when required external validation is struc
   });
 
   const result = await engine.runWorkerPass(worker, task, 'IMPLEMENT', null);
-  assert.equal(result.report.verdict, 'blocked');
-  assert.match(result.verdictCorrection, /CLEAN -> BLOCKED/);
+  assert.equal(result.report.verdict, 'clean');
+  assert.equal(result.verdictCorrection, null);
 });
 
-test('strong reviewer uses the same required-validation integrity boundary before approval', async () => {
+test('strong reviewer CLEAN is not semantically reinterpreted from check wording', async () => {
   const sink = { value: null };
   const reviewer = {
     name: 'Strong reviewer',
@@ -95,10 +95,7 @@ test('strong reviewer uses the same required-validation integrity boundary befor
     revisionProvider: async () => 'R1',
   });
 
-  await assert.rejects(
-    () => engine.runStrongReview(task, {}, {}, reviewer, [], { route: 'standard', risk: 'medium' }),
-    /Strong reviewer is blocked/i,
-  );
+  await engine.runStrongReview(task, {}, {}, reviewer, [], { route: 'standard', risk: 'medium' });
 });
 
 test('worker report is forced BLOCKED after a denied synthetic credential assignment', async () => {

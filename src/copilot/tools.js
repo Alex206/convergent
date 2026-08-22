@@ -37,6 +37,7 @@ function normalizePlanTask(value = {}) {
     architectureSignificance: toText(task.architectureSignificance).trim(),
     routingReason: toText(task.routingReason).trim(),
     inspectionHints: normalizeStringList(task.inspectionHints).slice(0, 12),
+    workingRef: toText(task.workingRef).trim(),
     result: toText(task.result).trim(),
   };
 }
@@ -293,6 +294,10 @@ function createPlanTool(defineTool, sink) {
                 maxItems: 12,
                 items: { type: 'string' },
                 description: 'Optional bounded non-authoritative repository-relative EXISTING files, paths, symbols, or tests actually observed during planning. Do not put proposed/new files here; those belong in description or acceptance criteria. These are Worker A starting locators, not transcript/tool output.',
+              },
+              workingRef: {
+                type: 'string',
+                description: 'Optional exact existing Git branch/ref/PR head proven during planning to contain the task implementation surface when it differs from the current checkout. Never invent a ref.',
               },
               result: {
                 type: 'string',

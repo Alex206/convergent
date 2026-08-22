@@ -3,24 +3,20 @@
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const crypto = require('node:crypto');
+const { normalizeWorkspaceFolders, qualifiedWorkspacePath } = require('./workspace-scope');
 
 const execFileAsync = promisify(execFile);
 const MAX_PROMPT_ENTRIES = 50;
 
-async function captureWorkspaceBaseline(workspace) {
-  const { stdout } = await execFileAsync(
-    'git',
-    ['-C', workspace, 'status', '--porcelain=v1', '--untracked-files=all'],
-    { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 },
-  );
-  const statusText = String(stdout ?? '').replace(/\r\n/g, '\n').trimEnd();
-  const entries = statusText ? statusText.split('\n').filter(Boolean) : [];
-  return {
-    clean: entries.length === 0,
-    count: entries.length,
-    entries,
-    sha256: crypto.createHash('sha256').update(statusText).digest('hex'),
-  };
+async function captureWorkspaceBaseline(workspace, workspaceFolders = null) {
+  const roots = normalizeWorkspaceFolders(workspace, workspaceFolders); const entries = [];
+  for (const root of roots) {
+    const { stdout } = await execFileAsync('git', ['-C', root.path, 'status', '--porcelain=v1', '--untracked-files=all'], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
+    const lines = String(stdout ?? '').replace(/\r\n/g, '\n').trimEnd().split('\n').filter(Boolean);
+    for (const line of lines) entries.push(`${line.slice(0, 3)}${qualifiedWorkspacePath(workspace, roots, root, line.slice(3))}`);
+  }
+  const statusText = entries.join('\n');
+  return { clean: entries.length === 0, count: entries.length, entries, roots: roots.map((root) => ({ name: root.name, path: root.path })), sha256: crypto.createHash('sha256').update(statusText).digest('hex') };
 }
 
 function formatWorkspaceBaseline(baseline) {

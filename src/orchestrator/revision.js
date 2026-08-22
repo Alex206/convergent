@@ -7,6 +7,7 @@ const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 
 const execFileAsync = promisify(execFile);
+const { normalizeWorkspaceFolders } = require('./workspace-scope');
 
 async function git(workspace, args, options = {}) {
   const result = await execFileAsync('git', ['-C', workspace, ...args], {
@@ -16,12 +17,14 @@ async function git(workspace, args, options = {}) {
   return result.stdout;
 }
 
-async function assertGitRepository(workspace) {
-  try {
-    const inside = (await git(workspace, ['rev-parse', '--is-inside-work-tree'])).trim();
-    if (inside !== 'true') throw new Error('not a work tree');
-  } catch (error) {
-    throw new Error(`Convergent currently requires the workspace to be a Git repository: ${error.message}`);
+async function assertGitRepository(workspace, workspaceFolders = null) {
+  for (const root of normalizeWorkspaceFolders(workspace, workspaceFolders)) {
+    try {
+      const inside = (await git(root.path, ['rev-parse', '--is-inside-work-tree'])).trim();
+      if (inside !== 'true') throw new Error('not a work tree');
+    } catch (error) {
+      throw new Error(`Convergent requires every opened workspace folder in scope to be a Git repository; ${root.name} (${root.path}) is unavailable: ${error.message}`);
+    }
   }
 }
 
@@ -44,7 +47,7 @@ async function readUntracked(workspace) {
   return chunks;
 }
 
-async function workspaceRevision(workspace) {
+async function singleWorkspaceRevision(workspace) {
   await assertGitRepository(workspace);
   let head = 'NO_HEAD';
   try {
@@ -70,4 +73,13 @@ async function workspaceRevision(workspace) {
   return hash.digest('hex');
 }
 
-module.exports = { workspaceRevision, assertGitRepository };
+async function workspaceRevision(workspace, workspaceFolders = null) {
+  const roots = normalizeWorkspaceFolders(workspace, workspaceFolders);
+  if (roots.length === 1) return singleWorkspaceRevision(roots[0].path);
+  await assertGitRepository(workspace, roots);
+  const hash = crypto.createHash('sha256');
+  for (const root of roots) { hash.update(root.name); hash.update('\0'); hash.update(root.path); hash.update('\0'); hash.update(await singleWorkspaceRevision(root.path)); hash.update('\0ROOT\0'); }
+  return hash.digest('hex');
+}
+
+module.exports = { workspaceRevision, singleWorkspaceRevision, assertGitRepository };

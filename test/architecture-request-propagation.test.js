@@ -35,7 +35,7 @@ test('single modifying coordinator task preserves architecture-high semantics fr
   assert.equal(routing.peerConvergence, false);
 });
 
-test('existing explicit architecture-high task remains authoritative', () => {
+test('request-proven architecture-high task remains authoritative with deterministic evidence', () => {
   const plan = {
     summary: 'two tasks',
     tasks: [task('local'), task('boundary', { architectureSignificance: 'high' })],
@@ -44,9 +44,11 @@ test('existing explicit architecture-high task remains authoritative', () => {
     plan,
     'Refactor the ownership boundary and update its caller.',
   );
-  assert.equal(result.changed, false);
+  assert.equal(result.changed, true);
   assert.equal(result.requiresCoordinatorCorrection, false);
-  assert.equal(result.plan, plan);
+  assert.notEqual(result.plan, plan);
+  assert.match(result.plan.tasks[1].requestArchitectureEvidence, /ownership boundary/i);
+  assert.equal(normalizeTaskRoute(result.plan.tasks[1]).architecture, 'high');
 });
 
 test('multi-task plan without a preserved architecture owner requires coordinator correction', () => {

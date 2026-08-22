@@ -26,29 +26,22 @@ function blockedValidatorReport() {
   };
 }
 
-test('identifies the same validator independent of credential assignment prefix', () => {
-  assert.equal(
-    validationIdentity(successfulEvidence[0].check),
-    'tools/validate_release_signature.py',
-  );
-  assert.equal(
-    validationIdentity(blockedValidatorReport().checks[1]),
-    'tools/validate_release_signature.py',
-  );
+test('validator identity and successful-evidence helpers remain diagnostic', () => {
+  assert.equal(validationIdentity(successfulEvidence[0].check), 'tools/validate_release_signature.py');
+  assert.equal(validationIdentity(blockedValidatorReport().checks[1]), 'tools/validate_release_signature.py');
   assert.equal(successfulValidationEvidence(successfulEvidence[0].check)?.identity, 'tools/validate_release_signature.py');
 });
 
-test('same-revision successful validator evidence supersedes a later credential-less rerun blocker', () => {
+test('same-revision successful validator prose does not rewrite a later structured BLOCKED verdict', () => {
   const result = reconcileSupersededValidationBlocker(blockedValidatorReport(), successfulEvidence, {
     changed: false,
     role: 'Worker B',
   });
-  assert.equal(result.report.verdict, 'clean');
-  assert.match(result.correction, /exact workspace revision/i);
-  assert.match(result.report.checks.join('\n'), /already succeeded/i);
+  assert.equal(result.report.verdict, 'blocked');
+  assert.equal(result.correction, null);
 });
 
-test('different validator evidence cannot supersede the blocker', () => {
+test('different validator evidence likewise leaves structured BLOCKED unchanged', () => {
   const result = reconcileSupersededValidationBlocker(blockedValidatorReport(), [{
     agent: 'Worker A',
     check: 'python tools/validate_other_release.py: passed',
@@ -56,17 +49,7 @@ test('different validator evidence cannot supersede the blocker', () => {
   assert.equal(result.report.verdict, 'blocked');
 });
 
-test('credential-integrity denial cannot be superseded by prior validator success', () => {
-  const report = blockedValidatorReport();
-  report.checks.push('Convergent denied synthetic assignment to operator-controlled credential variable(s): TASKFLOW_RELEASE_TOKEN.');
-  const result = reconcileSupersededValidationBlocker(report, successfulEvidence, {
-    changed: false,
-    role: 'Worker B',
-  });
-  assert.equal(result.report.verdict, 'blocked');
-});
-
-test('deterministic pipeline carries matching validation evidence after required-blocker reconciliation', () => {
+test('deterministic integrity does not reinterpret validation prose in either direction', () => {
   const result = reconcileDeterministicIntegrity({
     verdict: 'clean',
     summary: blockedValidatorReport().summary,
@@ -78,11 +61,10 @@ test('deterministic pipeline carries matching validation evidence after required
     validationEvidence: successfulEvidence,
   });
   assert.equal(result.report.verdict, 'clean');
-  assert.match(result.correction, /CLEAN -> BLOCKED/);
-  assert.match(result.correction, /BLOCKED -> CLEAN/);
+  assert.equal(result.correction, null);
 });
 
-test('worker runtime accepts same-revision peer validator evidence after an unnecessary missing-credential rerun', async () => {
+test('worker runtime keeps the submitted structured verdict when peer validation prose disagrees', async () => {
   const sink = { value: null };
   const worker = {
     name: 'B',
@@ -117,5 +99,5 @@ test('worker runtime accepts same-revision peer validator evidence after an unne
 
   const result = await engine.runWorkerPass(worker, task, 'REVIEW_AND_FIX', null, peerPass);
   assert.equal(result.report.verdict, 'clean');
-  assert.match(result.verdictCorrection, /BLOCKED -> CLEAN/);
+  assert.equal(result.verdictCorrection, null);
 });

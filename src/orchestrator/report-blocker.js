@@ -24,9 +24,13 @@ function namedCredentialPrerequisite(value) {
   if (!candidate) return false;
   const name = /\b[A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSCODE|CREDENTIAL|API_KEY|ACCESS_KEY|PRIVATE_KEY)\b/;
   const missing = /\b(?:missing|unavailable|not configured|unset|required|not set|not present)\b/i;
-  return (name.test(candidate) && missing.test(candidate));
+  return name.test(candidate) && missing.test(candidate);
 }
 
+// These prose helpers remain available for diagnostics/tests, but semantic text
+// is not deterministic evidence. Workflow control must follow the model's
+// structured verdict plus Convergent-owned facts (workspace fingerprints,
+// credential-integrity violations, managed-command state, termination proof).
 function validationBlockerEvidence(value) {
   const candidate = text(value);
   if (!candidate || deniesBlockerLanguage(candidate)) return false;
@@ -78,45 +82,12 @@ function matchingSuccessfulValidationEvidence(blockerEvidence, priorEvidence = [
   return null;
 }
 
-function reconcileSupersededValidationBlocker(report = {}, priorEvidence = [], { changed = false, role = 'Agent' } = {}) {
-  if (report.verdict !== 'blocked') return { report, correction: null };
-  if ((report.findings ?? []).length) return { report, correction: null };
-  if ((report.checks ?? []).some((check) => /Convergent denied (?:an attempt to )?synth/i.test(String(check)))) {
-    return { report, correction: null };
-  }
-  const blockerCandidates = [report.summary, ...(report.checks ?? [])]
-    .map(text)
-    .filter(Boolean)
-    .filter(validationBlockerEvidence);
-  let blocker = null;
-  let prior = null;
-  for (const candidate of blockerCandidates) {
-    const matching = matchingSuccessfulValidationEvidence(candidate, priorEvidence);
-    if (!matching) continue;
-    blocker = candidate;
-    prior = matching;
-    break;
-  }
-  if (!blocker || !prior) return { report, correction: null };
-
-  const verdict = changed ? 'changed' : 'clean';
-  const source = prior.agent ? ` by ${prior.agent}` : '';
-  const correction = `Convergent changed ${role} BLOCKED -> ${verdict.toUpperCase()} because the same required validator already succeeded${source} on this exact workspace revision; rerunning it without the operator-authorized prerequisite does not invalidate that evidence.`;
-  return {
-    report: {
-      ...report,
-      verdict,
-      checks: [
-        ...(report.checks ?? []),
-        `Convergent exact-revision validation evidence: ${prior.identity} already succeeded${source}; the later missing-prerequisite rerun is non-authoritative.`,
-      ],
-      summary: [
-        report.summary,
-        `Required validation ${prior.identity} already has successful evidence on this exact revision${source}.`,
-      ].filter(Boolean).join(' '),
-    },
-    correction,
-  };
+// Structured BLOCKED is authoritative. Do not infer a different verdict from
+// summary/check prose, even when that prose appears inconsistent with the
+// verdict. The reporting schema and recovery coordinator own that semantic
+// judgement; deterministic code only enforces deterministic invariants.
+function reconcileSupersededValidationBlocker(report = {}, _priorEvidence = [], _options = {}) {
+  return { report, correction: null };
 }
 
 function explicitBlockerEvidence(report = {}) {
@@ -125,25 +96,20 @@ function explicitBlockerEvidence(report = {}) {
   return candidates.find(validationBlockerEvidence) ?? null;
 }
 
-function operatorPrerequisiteEvidence(detail = {}) {
-  const candidates = [detail.summary, ...(detail.checks ?? [])]
-    .map(text)
-    .filter(Boolean);
-  const genericPrerequisite = /(?:\b(?:missing|unavailable|not configured|unset|required|not set|not present)\b.{0,120}\b(?:token|credential|secret|password|environment variable|environment prerequisite|env(?:ironment)? prerequisite)\b|\b(?:token|credential|secret|password|environment variable|environment prerequisite|env(?:ironment)? prerequisite)\b.{0,120}\b(?:missing|unavailable|not configured|unset|required|not set|not present)\b)/i;
-  return candidates.find((candidate) => genericPrerequisite.test(candidate) || namedCredentialPrerequisite(candidate)) ?? null;
+// Kept as a compatibility/diagnostic hook. Recovery must not force ask_user by
+// regex-parsing arbitrary model prose; the recovery coordinator already receives
+// the structured blocker and is explicitly instructed to ask for genuine
+// operator-controlled prerequisites.
+function operatorPrerequisiteEvidence(_detail = {}) {
+  return null;
 }
 
+// Non-BLOCKED structured verdicts are equally authoritative. In particular,
+// FINDINGS must stay FINDINGS so remediation proceeds instead of being diverted
+// through the blocker recovery path merely because a check description contains
+// words such as "failed", "blocked", or "prerequisite".
 function reconcileExplicitValidationBlocker(report = {}) {
-  const evidence = explicitBlockerEvidence(report);
-  if (!evidence) return { report, correction: null };
-  return {
-    report: {
-      ...report,
-      verdict: 'blocked',
-      summary: report.summary || `Required validation is blocked: ${evidence}`,
-    },
-    correction: `Convergent changed ${String(report.verdict ?? '').toUpperCase()} -> BLOCKED because the agent's own structured validation evidence reports an unresolved required-validation blocker.`,
-  };
+  return { report, correction: null };
 }
 
 module.exports = {

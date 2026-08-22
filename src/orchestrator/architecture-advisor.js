@@ -27,7 +27,7 @@ Your job is to protect long-term structural quality while actively resisting ove
 - call out duplicated responsibilities, leaky provider/topology conditionals, circular ownership, premature generic frameworks, or structural drift when evidence supports it;
 - it is valid and often preferable to conclude that no architectural intervention is required beyond following existing local patterns.
 
-Inspect only enough repository context to understand the affected boundaries. Keep the result compact. The USER'S REQUEST and acceptance criteria remain authoritative; your assessment is guidance for satisfying them cleanly, not permission to expand scope.
+Inspect only enough repository context to understand the affected boundaries. A read-only Explore subagent may be available for isolated broad repository location work, but use it only when the planning handoff does not already identify the relevant surfaces. Do not delegate routine verification or repeat Explore's discovery in your own context. Keep the result compact. The USER'S REQUEST and acceptance criteria remain authoritative; your assessment is guidance for satisfying them cleanly, not permission to expand scope.
 
 Call report_architecture exactly once when you have enough evidence.
 `;
@@ -99,15 +99,30 @@ function formatArchitectureAssessment(assessment) {
   ].join('\n');
 }
 
+function architectureInspectionHints(task) {
+  const hints = Array.isArray(task?.inspectionHints)
+    ? task.inspectionHints.map(text).filter(Boolean).slice(0, 12)
+    : [];
+  if (!hints.length) return '';
+  return [
+    'PLANNING INSPECTION HANDOFF (bounded, non-authoritative):',
+    ...hints.map((hint) => `- ${hint}`),
+    'The planning coordinator already spent repository-inspection budget identifying these likely relevant surfaces. Start here. Do not repeat broad glob/rg/repository discovery merely to rediscover the same locations; expand only when a specific unresolved architectural question requires it.',
+  ].join('\n');
+}
+
 function architectureTaskPrompt(task) {
+  const inspectionHints = architectureInspectionHints(task);
   return [
     `Task ${task.id}: ${task.title}`,
     '',
     task.description,
+    inspectionHints ? '' : null,
+    inspectionHints || null,
     '',
     'Acceptance criteria:',
     ...(Array.isArray(task.acceptanceCriteria) ? task.acceptanceCriteria : []).map((criterion) => `- ${criterion}`),
-  ].join('\n');
+  ].filter((line) => line !== null).join('\n');
 }
 
 async function createArchitectureAdvisor(factory, taskId, route, risk) {
@@ -120,6 +135,8 @@ async function createArchitectureAdvisor(factory, taskId, route, risk) {
   const effort = chooseReasoningEffort(model, desiredEffort, factory.reasoningMode);
   const sessionId = `${factory.runId}-${safeTaskId}-architect`;
   const name = 'Software architect';
+  const exploreAgent = typeof factory.exploreAgent === 'function' ? factory.exploreAgent() : null;
+  const explorationPrompt = typeof factory.explorationPrompt === 'function' ? factory.explorationPrompt() : '';
   const session = await factory.client.createSession(withReasoning({
     sessionId,
     clientName: 'convergent-vscode',
@@ -128,7 +145,8 @@ async function createArchitectureAdvisor(factory, taskId, route, risk) {
     streaming: true,
     tools: [batchView, reportTool],
     availableTools: ARCHITECT_TOOLS,
-    systemMessage: { mode: 'append', content: ARCHITECT_PROMPT },
+    ...(exploreAgent ? { customAgents: [exploreAgent] } : {}),
+    systemMessage: { mode: 'append', content: [ARCHITECT_PROMPT, explorationPrompt].filter(Boolean).join('\n\n') },
     hooks: { onPreToolUse: (input) => factory.preToolUse(readonlyHook, name, input) },
     onPermissionRequest: factory.permissionHandler,
     onUserInputRequest: factory.userInputHandler,
@@ -138,7 +156,7 @@ async function createArchitectureAdvisor(factory, taskId, route, risk) {
   attachEventLogging(session, name, factory.ui, factory.usage, model, usageName);
   factory.ui.agentTools?.(name, ARCHITECT_TOOLS);
   factory.sessionCreated(name, session, model, effort, ARCHITECT_PROMPT, ARCHITECT_TOOLS, {
-    role: 'software-architect', taskId: safeTaskId, route, risk,
+    role: 'software-architect', taskId: safeTaskId, route, risk, ...(exploreAgent ? { exploreAgent } : {}),
   });
   return { session, guard, sink, name, usageName, model, reasoningEffort: effort };
 }
@@ -158,7 +176,7 @@ async function runArchitectureAssessment(engine, factory, task, routing) {
         architectureTaskPrompt(task),
         '',
         `Task workflow: ${routing.route}; task risk: ${routing.risk}; architecture significance: ${routing.architecture}.`,
-        'Inspect the existing architecture only as far as needed to give implementation constraints and the simplest suitable structural approach. Do not implement the task.',
+        'Inspect the existing architecture only as far as needed to give implementation constraints and the simplest suitable structural approach. Start from the planning handoff when present. If a broad repository location question remains and Explore is available, delegate only that question to Explore and continue from its compact result; do not redo its search yourself. Do not implement the task.',
       ].join('\n'),
       'report_architecture',
       engine.agentTurnTimeoutMs,
@@ -181,6 +199,7 @@ module.exports = {
   normalizeArchitectureAssessment,
   createArchitectureTool,
   formatArchitectureAssessment,
+  architectureInspectionHints,
   createArchitectureAdvisor,
   runArchitectureAssessment,
 };

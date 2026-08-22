@@ -18,10 +18,13 @@ function normalizedStats(value, taskCount) {
   return base;
 }
 
-function normalizeResumeState(value, workspace) {
+function normalizeResumeState(value, workspace, workspaceFolders = null) {
   if (!value || typeof value !== 'object') return null;
   if (value.version !== RESUME_STATE_VERSION) return null;
   if (typeof value.workspace !== 'string' || value.workspace !== workspace) return null;
+  const currentRoots = Array.isArray(workspaceFolders) && workspaceFolders.length ? workspaceFolders.map((root) => String(root?.path ?? root)) : [workspace];
+  const savedRoots = Array.isArray(value.workspaceRoots) && value.workspaceRoots.length ? value.workspaceRoots.map(String) : [value.workspace];
+  if (savedRoots.length !== currentRoots.length || savedRoots.some((root, index) => root !== currentRoots[index])) return null;
   if (typeof value.request !== 'string' || !value.request.trim()) return null;
   if (!RESUMABLE_STATUSES.has(value.status)) return null;
 

@@ -7,8 +7,8 @@ const EFFORT_ORDER = ['low', 'medium', 'high', 'xhigh'];
 
 const DOC_ONLY_HINTS = /\b(readme|documentation|docs?|markdown|comment|comments|spelling|typo|wording|text[- ]only|changelog|license)\b/i;
 const EXECUTABLE_CHANGE_HINTS = /\b(source code|executable|implementation|implement|script|unit tests?|integration tests?|test file|function|class|module|api|endpoint|runtime|behavior|logic|python|javascript|typescript|java|rust|go code|c\+\+|cmake|workflow|github actions|pipeline|dockerfile|build config|build configuration)\b|\.(py|js|ts|tsx|jsx|java|rs|go|c|cc|cpp|h|hpp|cs|sh|ps1|bat)\b/i;
-const HIGH_RISK_HINTS = /\b(authentication|authorization|authn|authz|security|credential|secret|token handling|encryption|migration|schema migration|database migration|data deletion|destructive|concurrency|race condition|locking|payment|billing|production deployment)\b/i;
-const HIGH_ARCHITECTURE_HINTS = /\b(architectural(?:ly)?|architecture refactor|architectural refactor|cross[- ]cutting|new subsystem|new service|service boundary|runtime abstraction|runtime backend|backend provider|provider abstraction|plugin system|plugin architecture|extension point|public api redesign|internal api redesign|interface redesign|protocol redesign|persistence layer|storage layer|message queue|event bus|ipc|inter[- ]process communication|dependency injection container|orchestration engine|ownership boundary)\b/i;
+const HIGH_RISK_HINTS = /\b(authentication|authorization|authn|authz|security boundary|security-critical|credential|secret|token handling|encryption|cryptograph(?:y|ic)|schema migration|database migration|persistent data migration|data deletion|destructive|irreversible|concurrency semantics|race condition|deadlock|synchronization|atomicity|payment|billing|production deployment|production release|release infrastructure|release pipeline|public api compatibility|breaking change|privilege boundary|permission boundary)\b/i;
+const HIGH_ARCHITECTURE_HINTS = /\b(architecture refactor|architectural refactor|cross[- ]cutting ownership|new subsystem|reworked subsystem|new service|service boundary|runtime abstraction|runtime backend|backend provider|provider abstraction|plugin system|plugin architecture|extension point|public api redesign|internal api redesign|interface redesign|protocol redesign|persistence layer|storage layer|message queue|event bus|ipc|inter[- ]process communication|dependency injection container|orchestration engine|ownership boundary)\b/i;
 const MEDIUM_ARCHITECTURE_HINTS = /\b(refactor|new runtime|new backend|new provider|new plugin|new cache|caching layer|new persistence|new storage|new protocol|new interface|compatibility layer|migration strategy)\b/i;
 
 function normalizeRisk(value) {
@@ -27,6 +27,21 @@ function taskText(task) {
     task?.description,
     ...(Array.isArray(task?.acceptanceCriteria) ? task.acceptanceCriteria : []),
     task?.routingReason,
+    task?.requestArchitectureEvidence,
+  ].filter(Boolean).join('\n');
+}
+
+// Deterministic semantic escalation must be based on the task objective, not on
+// the coordinator's free-form explanation of why it chose a route. Otherwise a
+// sentence such as "does not introduce an irreversible data migration" becomes
+// positive evidence for the word "irreversible" and can self-escalate a normal
+// task to high-risk. requestArchitectureEvidence is intentionally excluded too:
+// it is an architecture-preservation hint, not task-local failure-impact input.
+function taskObjectiveText(task) {
+  return [
+    task?.title,
+    task?.description,
+    ...(Array.isArray(task?.acceptanceCriteria) ? task.acceptanceCriteria : []),
   ].filter(Boolean).join('\n');
 }
 
@@ -36,29 +51,44 @@ function isClearlyTrivialChange(task) {
 }
 
 function hasHighRiskSemantics(task) {
-  return HIGH_RISK_HINTS.test(taskText(task));
+  return task?.deterministicHighRisk === true || HIGH_RISK_HINTS.test(taskObjectiveText(task));
 }
 
 function architectureSignificance(task) {
   if (task?.route === 'read_only') return 'low';
   const explicit = normalizeArchitectureSignificance(task?.architectureSignificance);
-  if (explicit === 'high' || explicit === 'medium') return explicit;
-  const text = taskText(task);
-  if (HIGH_ARCHITECTURE_HINTS.test(text)) return 'high';
-  if (MEDIUM_ARCHITECTURE_HINTS.test(text)) return 'medium';
+  // Architecture preservation may deliberately carry bounded evidence from the
+  // original request, but routingReason itself must never become classifier
+  // input: it is an explanation of a classification, not evidence for one.
+  const text = [taskObjectiveText(task), task?.requestArchitectureEvidence].filter(Boolean).join('\n');
+  const highEvidence = HIGH_ARCHITECTURE_HINTS.test(text);
+  if (highEvidence) return 'high';
+  if (explicit === 'high') return 'medium';
+  if (explicit === 'medium' || MEDIUM_ARCHITECTURE_HINTS.test(text)) return 'medium';
   return 'low';
 }
 
 function normalizeTaskRoute(task, routingMode = 'adaptive') {
   const requested = ROUTES.has(task?.route) ? task.route : 'standard';
-  let risk = normalizeRisk(task?.risk);
+  const requestedRisk = normalizeRisk(task?.risk);
+  const requestedArchitecture = normalizeArchitectureSignificance(task?.architectureSignificance);
+  const semanticHighRisk = hasHighRiskSemantics(task);
+  let risk = requestedRisk;
   let route = requested;
   const architecture = architectureSignificance(task);
   const reasons = [];
 
-  if (hasHighRiskSemantics(task) && route !== 'read_only') {
-    if (risk !== 'high') reasons.push('task semantics require high-risk treatment');
+  if (semanticHighRisk && route !== 'read_only') {
+    if (risk !== 'high') reasons.push('concrete task semantics require high-risk treatment');
     risk = 'high';
+  } else if (routingMode === 'adaptive' && route !== 'read_only' && (risk === 'high' || route === 'high_risk')) {
+    risk = 'medium';
+    route = 'standard';
+    reasons.push('adaptive routing reduced an unsupported high-risk classification to standard/medium because no concrete high-impact boundary was identified');
+  }
+
+  if (requestedArchitecture === 'high' && architecture !== 'high') {
+    reasons.push('architecture-high classification was reduced because no subsystem/interface/ownership boundary change was identified');
   }
 
   if (routingMode === 'full' && route !== 'read_only') {
@@ -92,7 +122,7 @@ function normalizeTaskRoute(task, routingMode = 'adaptive') {
     peerConvergence,
     requestedRoute: requested,
     reason: [task?.routingReason, ...reasons].filter(Boolean).join('; '),
-    overridden: route !== requested,
+    overridden: route !== requested || risk !== requestedRisk || architecture !== requestedArchitecture,
   };
 }
 
@@ -148,4 +178,5 @@ module.exports = {
   hasHighRiskSemantics,
   architectureSignificance,
   normalizeArchitectureSignificance,
+  taskObjectiveText,
 };

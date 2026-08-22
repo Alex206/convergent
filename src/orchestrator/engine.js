@@ -1,6 +1,7 @@
 'use strict';
 
 const { workspaceRevision, assertGitRepository } = require('./revision');
+const { normalizeWorkspaceFolders } = require('./workspace-scope');
 const { normalizeTaskRoute, routePolicy, usesPeerConvergence, architectureSignificance } = require('./routing');
 const { UsageTracker } = require('./usage');
 const { SessionFactory } = require('../copilot/session-factory');
@@ -32,6 +33,25 @@ function preserveRequestArchitectureSignificance(plan, userRequest, routingMode 
   }
 
   const tasks = Array.isArray(plan?.tasks) ? plan.tasks : [];
+  const requestArchitectureEvidence = String(userRequest ?? '').slice(0, 2000);
+  const explicitArchitectureHigh = tasks
+    .map((task, index) => ({ task, index }))
+    .filter(({ task }) => String(task?.architectureSignificance ?? '').toLowerCase() === 'high' && task?.route !== 'read_only');
+  if (explicitArchitectureHigh.length) {
+    const indexes = new Set(explicitArchitectureHigh.map(({ index }) => index));
+    return {
+      plan: {
+        ...plan,
+        tasks: tasks.map((task, index) => indexes.has(index)
+          ? { ...task, requestArchitectureEvidence }
+          : task),
+      },
+      requestArchitecture,
+      changed: true,
+      requiresCoordinatorCorrection: false,
+    };
+  }
+
   const routings = tasks.map((task) => normalizeTaskRoute(task, routingMode));
   if (routings.some((routing) => routing.route !== 'read_only' && routing.architecture === 'high')) {
     return { plan, requestArchitecture, changed: false, requiresCoordinatorCorrection: false };
@@ -54,6 +74,7 @@ function preserveRequestArchitectureSignificance(plan, userRequest, routingMode 
   const nextTask = {
     ...task,
     architectureSignificance: 'high',
+    requestArchitectureEvidence,
     routingReason: [task?.routingReason, preservationReason].filter(Boolean).join('; '),
   };
   return {
@@ -65,14 +86,18 @@ function preserveRequestArchitectureSignificance(plan, userRequest, routingMode 
 }
 
 function taskPrompt(task) {
+  const workingRef = String(task?.workingRef ?? '').trim();
   return [
     `Task ${task.id}: ${task.title}`,
     '',
     task.description,
+    workingRef ? '' : null,
+    workingRef ? `Authoritative working ref discovered during planning: ${workingRef}` : null,
+    workingRef ? 'Before declaring task files absent, verify this ref. If the current checkout differs, move to/use this ref only when it can be done without discarding protected user workspace state; otherwise report the concrete workspace conflict.' : null,
     '',
     'Acceptance criteria:',
     ...task.acceptanceCriteria.map((criterion) => `- ${criterion}`),
-  ].join('\n');
+  ].filter((line) => line !== null).join('\n');
 }
 
 function formatInspectionHints(task) {
@@ -272,6 +297,7 @@ class ConvergentEngine {
     client,
     sdk,
     workspace,
+    workspaceFolders = null,
     models,
     permissionHandler,
     userInputHandler,
@@ -289,6 +315,7 @@ class ConvergentEngine {
     this.client = client;
     this.sdk = sdk;
     this.workspace = workspace;
+    this.workspaceFolders = normalizeWorkspaceFolders(workspace, workspaceFolders);
     this.models = models;
     this.permissionHandler = permissionHandler;
     this.userInputHandler = userInputHandler;
@@ -327,7 +354,7 @@ class ConvergentEngine {
     try {
       return {
         flowMode: factory?.flowMode ?? 'auto',
-        baselineChangeState: await this.changeStateProvider(this.workspace),
+        baselineChangeState: await this.changeStateProvider(this.workspace, null, this.workspaceFolders),
       };
     } catch (error) {
       this.ui?.log?.(`Task change manifest baseline unavailable: ${error?.message ?? String(error)}`);
@@ -341,6 +368,8 @@ class ConvergentEngine {
       const currentState = await this.changeStateProvider(
         this.workspace,
         taskContext.baselineChangeState.head ?? null,
+        this.workspaceFolders,
+        taskContext.baselineChangeState.heads ?? null,
       );
       return buildTaskChangeManifest(taskContext.baselineChangeState, currentState);
     } catch (error) {
@@ -354,6 +383,7 @@ class ConvergentEngine {
       client: this.client,
       sdk: this.sdk,
       workspace: this.workspace,
+      workspaceFolders: this.workspaceFolders,
       models: this.models,
       permissionHandler: this.permissionHandler,
       userInputHandler: this.userInputHandler,
@@ -399,7 +429,7 @@ class ConvergentEngine {
       { role: 'Coordinator', model: coordinator.model.name ?? coordinator.model.id, effort: coordinator.reasoningEffort },
     ]);
 
-    const beforePlan = await this.revisionProvider(this.workspace);
+    const beforePlan = await this.revisionProvider(this.workspace, this.workspaceFolders);
     const planStartedAt = Date.now();
     let plan = await requireReport(
       coordinator.session,
@@ -449,7 +479,7 @@ ${userRequest}`,
       });
     }
 
-    const afterPlan = await this.revisionProvider(this.workspace);
+    const afterPlan = await this.revisionProvider(this.workspace, this.workspaceFolders);
     const planningUsage = await this.finishTurn(coordinator, planStartedAt);
     if (beforePlan !== afterPlan) throw new Error('Coordinator changed the workspace despite the read-only contract.');
     return { plan, coordinator, planningUsage, planningMode: 'coordinator' };
@@ -597,7 +627,7 @@ ${userRequest}`,
     const peerConvergence = usesPeerConvergence(routing);
     for (let reviewCycle = 1; reviewCycle <= this.maxReviewerCycles; reviewCycle += 1) {
       this.checkCancelled();
-      const beforeReview = await this.revisionProvider(this.workspace);
+      const beforeReview = await this.revisionProvider(this.workspace, this.workspaceFolders);
       const changeManifest = await this.currentTaskChangeManifest(taskContext);
       const startedAt = Date.now();
       let review = await requireReport(
@@ -631,7 +661,7 @@ ${userRequest}`,
       if (reviewIntegrity.correction) {
         this.ui?.log?.(`Strong reviewer verdict reconciled by Convergent: ${reviewIntegrity.correction}`);
       }
-      const afterReview = await this.revisionProvider(this.workspace);
+      const afterReview = await this.revisionProvider(this.workspace, this.workspaceFolders);
       const usage = await this.finishTurn(reviewer, startedAt);
       const durationMs = Date.now() - startedAt;
       if (beforeReview !== afterReview) throw new Error('Strong reviewer changed the workspace despite the read-only contract.');
@@ -703,7 +733,7 @@ ${userRequest}`,
   }
 
   async runWorkerPass(worker, task, mode, findings, peerPass = null, taskContext = null) {
-    const before = await this.revisionProvider(this.workspace);
+    const before = await this.revisionProvider(this.workspace, this.workspaceFolders);
     const beforeGuard = guardSnapshot(worker.session);
     const peerContext = peerPass ? formatPeerPass(peerPass) : '';
     const inspectionHints = mode === 'IMPLEMENT' ? formatInspectionHints(task) : '';
@@ -729,7 +759,7 @@ ${userRequest}`,
 
     const startedAt = Date.now();
     const submittedReport = await requireReport(worker.session, worker.sink, prompt, 'report_pass', this.agentTurnTimeoutMs);
-    const after = await this.revisionProvider(this.workspace);
+    const after = await this.revisionProvider(this.workspace, this.workspaceFolders);
     const afterGuard = guardSnapshot(worker.session);
     const usage = await this.finishTurn(worker, startedAt);
     const durationMs = Date.now() - startedAt;

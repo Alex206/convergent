@@ -9,10 +9,22 @@ const {
   isClearlyTrivialChange,
 } = require('../src/orchestrator/routing');
 
-test('high-risk modifying tasks cannot use a lighter route', () => {
-  const routing = normalizeTaskRoute({ route: 'trivial', risk: 'high', routingReason: 'small diff' });
-  assert.equal(routing.route, 'high_risk');
+test('adaptive routing clamps unsupported coordinator high-risk classifications', () => {
+  const routing = normalizeTaskRoute({
+    route: 'high_risk',
+    risk: 'high',
+    architectureSignificance: 'high',
+    title: 'Harden ctypes target-control backend',
+    description: 'Fix ABI declarations, cleanup invariants, payload progress handling, and focused tests inside the existing backend boundary.',
+    routingReason: 'Low-level target control is technically important.',
+  });
+  assert.equal(routing.route, 'standard');
+  assert.equal(routing.risk, 'medium');
+  assert.notEqual(routing.architecture, 'high');
+  assert.equal(routing.needsArchitect, false);
+  assert.equal(routing.peerConvergence, false);
   assert.equal(routing.overridden, true);
+  assert.match(routing.reason, /unsupported high-risk classification/i);
 });
 
 test('medium-risk trivial tasks are upgraded to standard', () => {
@@ -88,4 +100,17 @@ test('reasoning effort is selected only from model-supported values', () => {
   assert.equal(chooseReasoningEffort(model, 'high'), 'high');
   assert.equal(chooseReasoningEffort({}, 'high'), undefined);
   assert.equal(chooseReasoningEffort(model, 'high', 'model-default'), undefined);
+});
+
+test('concrete compatibility boundary stays high risk in adaptive mode', () => {
+  const routing = normalizeTaskRoute({
+    route: 'standard',
+    risk: 'medium',
+    title: 'Change public API compatibility contract',
+    description: 'Introduce a breaking change to a public API used by external consumers.',
+    acceptanceCriteria: ['Compatibility impact is handled'],
+  });
+  assert.equal(routing.route, 'high_risk');
+  assert.equal(routing.risk, 'high');
+  assert.equal(routing.peerConvergence, true);
 });

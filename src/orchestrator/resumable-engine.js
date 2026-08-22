@@ -14,7 +14,8 @@ const { assertGitRepository } = require('./revision');
 const { normalizeTaskRoute, routePolicy, usesPeerConvergence } = require('./routing');
 const { RESUME_STATE_VERSION, defaultStats } = require('./resume');
 const { pauseWorkflow } = require('./control');
-const { isWorkingTreeClean, createTaskCommit } = require('./task-commit');
+const { isWorkingTreeClean, createTaskCommits } = require('./task-commit');
+const { runtimeStallResumeDisposition } = require('./runtime-stall');
 
 function checkpointPass(pass) {
   if (!pass) return null;
@@ -48,13 +49,14 @@ class ResumableConvergentEngine extends ConvergentEngine {
   }) {
     let revision;
     try {
-      revision = await this.revisionProvider(this.workspace);
+      revision = await this.revisionProvider(this.workspace, this.workspaceFolders);
     } catch {
       revision = undefined;
     }
     const state = {
       version: RESUME_STATE_VERSION,
       workspace: this.workspace,
+      workspaceRoots: this.workspaceFolders.map((root) => root.path),
       request,
       plan,
       status,
@@ -330,6 +332,29 @@ class ResumableConvergentEngine extends ConvergentEngine {
   }
 
   async runFullTask(factory, task, taskSessionKey, routing, taskResumeState = null) {
+    const runtimeResume = runtimeStallResumeDisposition(taskResumeState);
+    if (runtimeResume && !runtimeResume.safe) {
+      pauseWorkflow(
+        `Cannot safely /resume task ${task.id}: the saved runtime-stall checkpoint does not prove that the managed command/process tree terminated. No new agent or command was started. Manually verify/terminate the old process outside Convergent, then start a new workflow rather than resuming this checkpoint.`,
+        { kind: 'runtime_stall_resume_unproven', task: task.id, stage: runtimeResume.stage, termination: runtimeResume.termination },
+      );
+    }
+    if (runtimeResume?.safe) {
+      this.ui.phase(
+        'Resuming after managed-command stall',
+        `The saved checkpoint proves the managed command/process tree terminated. Restarting only task ${task.id} from the preserved workspace with fresh agent sessions.`,
+      );
+      taskResumeState = null;
+    }
+
+    if (['worker_blocked', 'strong_review_blocked'].includes(taskResumeState?.stage) && taskResumeState?.recoveryDecision?.action === 'pause') {
+      const rationale = taskResumeState.recoveryDecision.rationale || 'The saved blocker still requires an external change before work can continue.';
+      pauseWorkflow(
+        `Task ${task.id} remains paused on the unchanged saved blocker. ${rationale} No new agent or recovery-model call was started. Change the workspace/environment prerequisite, then start/resume from a changed state.`,
+        { kind: 'unchanged_saved_blocker', task: task.id, stage: taskResumeState.stage, recovery: taskResumeState.recoveryDecision },
+      );
+    }
+
     let workerA;
     let workerB;
     let reviewer;
@@ -561,7 +586,7 @@ class ResumableConvergentEngine extends ConvergentEngine {
   }
 
   async run(userRequest, resumeState = null) {
-    await assertGitRepository(this.workspace);
+    await assertGitRepository(this.workspace, this.workspaceFolders);
     this.checkCancelled();
 
     const factory = this.sessionFactory();
@@ -659,7 +684,7 @@ class ResumableConvergentEngine extends ConvergentEngine {
       let taskStartedClean = false;
       if (this.taskCommitMode === 'safe' && routing.route !== 'read_only') {
         try {
-          taskStartedClean = await isWorkingTreeClean(this.workspace);
+          taskStartedClean = await isWorkingTreeClean(this.workspace, this.workspaceFolders);
           if (!taskStartedClean) {
             this.ui.taskCommitSkipped(task, 'safe mode requires a clean worktree at task start; existing changes will not be swept into an automatic commit');
           }
@@ -686,8 +711,8 @@ class ResumableConvergentEngine extends ConvergentEngine {
 
       if (routing.route !== 'read_only' && this.taskCommitMode === 'safe' && taskStartedClean) {
         try {
-          const sha = await createTaskCommit(this.workspace, task);
-          if (sha) this.ui.taskCommitted(task, sha);
+          const commits = await createTaskCommits(this.workspace, task, this.workspaceFolders);
+          if (commits.length) this.ui.taskCommitted(task, commits);
         } catch (error) {
           this.ui.taskCommitSkipped(task, `git commit failed; accepted task changes remain in the worktree: ${error.message ?? String(error)}`);
         }

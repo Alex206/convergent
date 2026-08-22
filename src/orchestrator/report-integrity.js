@@ -44,27 +44,13 @@ function hasUnresolvedBlockerEvidence(report = {}) {
   });
 }
 
-function reconcileUnsupportedBlockedReport(report = {}, { changed = false, role = 'Agent' } = {}) {
-  if (report.verdict !== 'blocked') return { report, correction: null };
-  if ((report.findings ?? []).length > 0) return { report, correction: null };
-  if (!hasCompletionEvidence(report)) return { report, correction: null };
-  if (!hasExplicitNoIssueEvidence(report)) return { report, correction: null };
-  if (!hasSuccessfulCheck(report)) return { report, correction: null };
-  if (hasUnresolvedBlockerEvidence(report)) return { report, correction: null };
-
-  const verdict = changed ? 'changed' : 'clean';
-  const correction = `Convergent changed ${role} BLOCKED -> ${verdict.toUpperCase()} because the structured report contains explicit completion/no-issue evidence, successful validation, no findings, and no unresolved blocker evidence.`;
-  return {
-    report: {
-      ...report,
-      verdict,
-      checks: [
-        ...(report.checks ?? []),
-        'Convergent report-integrity check: unsupported BLOCKED verdict reconciled from the agent\'s own explicit no-issue and successful-validation evidence.',
-      ],
-    },
-    correction,
-  };
+// These helpers remain useful for diagnostics and tests, but semantic report
+// prose must not override the structured verdict. A BLOCKED report remains
+// BLOCKED until a model submits a different structured verdict on a later pass.
+// Deterministic overrides belong to deterministic facts such as workspace
+// fingerprints, credential-integrity violations, or managed-command state.
+function reconcileUnsupportedBlockedReport(report = {}, _options = {}) {
+  return { report, correction: null };
 }
 
 module.exports = {

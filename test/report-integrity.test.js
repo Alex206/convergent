@@ -20,7 +20,7 @@ function blocked(overrides = {}) {
   };
 }
 
-test('recognizes explicit completion, no-issue, and successful validation evidence', () => {
+test('report-prose helpers remain available for diagnostics', () => {
   const report = blocked();
   assert.equal(hasCompletionEvidence(report), true);
   assert.equal(hasExplicitNoIssueEvidence(report), true);
@@ -28,41 +28,23 @@ test('recognizes explicit completion, no-issue, and successful validation eviden
   assert.equal(hasUnresolvedBlockerEvidence(report), false);
 });
 
-test('reconciles unsupported BLOCKED to CHANGED when the worker changed the workspace', () => {
-  const result = reconcileUnsupportedBlockedReport(blocked(), { changed: true, role: 'Worker A' });
-  assert.equal(result.report.verdict, 'changed');
-  assert.match(result.correction, /BLOCKED -> CHANGED/);
+test('structured BLOCKED is not rewritten from completion/no-issue prose', () => {
+  for (const changed of [false, true]) {
+    const result = reconcileUnsupportedBlockedReport(blocked(), { changed, role: changed ? 'Worker A' : 'Strong reviewer' });
+    assert.equal(result.report.verdict, 'blocked');
+    assert.equal(result.correction, null);
+  }
 });
 
-test('reconciles unsupported BLOCKED to CLEAN for a read-only reviewer', () => {
-  const result = reconcileUnsupportedBlockedReport(blocked({
+test('structured BLOCKED remains authoritative even when prose appears inconsistent', () => {
+  const report = blocked({
     summary: 'Current implementation satisfies all requirements. No actionable issues.',
     checks: ['Focused tests passed', 'git diff --check passed'],
-  }), { changed: false, role: 'Strong reviewer' });
-  assert.equal(result.report.verdict, 'clean');
-});
-
-test('completion alone is insufficient to override an explicit BLOCKED verdict', () => {
-  const report = blocked({
-    summary: 'Implementation is complete.',
-    checks: ['Focused tests passed'],
   });
-  assert.equal(hasCompletionEvidence(report), true);
-  assert.equal(hasExplicitNoIssueEvidence(report), false);
   assert.equal(reconcileUnsupportedBlockedReport(report, { changed: true }).report.verdict, 'blocked');
 });
 
-test('preserves genuine missing credential prerequisite BLOCKED', () => {
-  const report = blocked({
-    summary: 'Implementation is complete, but external validation is unavailable because TASKFLOW_RELEASE_TOKEN is not configured.',
-    checks: ['Unit tests passed', 'External validator exited 2: missing TASKFLOW_RELEASE_TOKEN'],
-  });
-  const result = reconcileUnsupportedBlockedReport(report, { changed: true });
-  assert.equal(hasUnresolvedBlockerEvidence(report), true);
-  assert.equal(result.report.verdict, 'blocked');
-});
-
-test('preserves environmental and execution blocker language even when local checks passed', () => {
+test('diagnostic blocker helper still recognizes environmental failure language', () => {
   for (const summary of [
     'Implementation is complete, but the required integration service is offline.',
     'Implementation is complete, but the integration check could not run.',
@@ -79,13 +61,13 @@ test('preserves environmental and execution blocker language even when local che
   }
 });
 
-test('preserves BLOCKED when validation failed, findings exist, or completion evidence is absent', () => {
+test('findings/check content never changes a structured BLOCKED verdict', () => {
   assert.equal(reconcileUnsupportedBlockedReport(blocked({ checks: ['Unit tests passed', 'Integration validation failed'] }), { changed: true }).report.verdict, 'blocked');
   assert.equal(reconcileUnsupportedBlockedReport(blocked({ findings: ['Fix parser edge case'] }), { changed: true }).report.verdict, 'blocked');
   assert.equal(reconcileUnsupportedBlockedReport(blocked({ summary: 'Work progressed.' }), { changed: true }).report.verdict, 'blocked');
 });
 
-test('credential-integrity denial evidence can never be unblocked by report consistency', () => {
+test('credential-integrity prose also remains diagnostic; hard credential guard owns deterministic enforcement', () => {
   const report = blocked({
     checks: [
       'Unit tests passed',

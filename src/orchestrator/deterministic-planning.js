@@ -71,6 +71,9 @@ function deterministicPlanningDecision(userRequest, routingMode = 'adaptive') {
   if (EXPLICIT_CREDENTIAL_NAME.test(request)) {
     candidate.route = 'high_risk';
     candidate.risk = 'high';
+    // This is structured deterministic evidence, not prose that the routing
+    // classifier must rediscover from routingReason.
+    candidate.deterministicHighRisk = true;
     candidate.routingReason += ' An explicit operator-controlled credential variable requires high-risk assurance.';
   }
 

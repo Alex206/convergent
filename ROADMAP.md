@@ -25,7 +25,7 @@ The architecture benchmark work after release intentionally treated that pipelin
 
 ## 0.3.0 — adaptive orchestration
 
-Current integration candidate: PR #16.
+Released 2026-08-15 as `v0.3.0` through PR #16.
 
 Primary theme: **activate expensive specialists only when their measured value or deterministic risk requires them, while moving correctness invariants into application/tool boundaries.**
 
@@ -52,7 +52,7 @@ REAL DETERMINISTIC BLOCKED
   on-demand strong recovery coordinator
 ```
 
-### Candidate contents
+### Released contents
 
 - deterministic single-task formation for explicit cohesive modifying requests;
 - conditional strong planning coordinator for ambiguity, read-only investigation, decomposition, choices/tradeoffs, architecture-high work, sensitive boundaries outside deterministic confidence, and oversized requests;
@@ -87,7 +87,7 @@ Representative live candidate validation:
 
 ### 0.3 release gates
 
-Before release:
+Completed for the release:
 
 - consolidated Linux and Windows tests/checks/package verification on exact candidate head;
 - README/CHANGELOG/ROADMAP/configuration descriptions aligned with the adaptive architecture;
@@ -98,23 +98,30 @@ Before release:
 
 ## 0.4.0 — controlled command execution/runtime
 
+Current development candidate: draft PR #17.
+
 Primary theme: Convergent owns a stable command-execution lifecycle well enough to recover safely from command-level stalls.
 
-Planned work:
+Implemented in the current candidate:
 
-- complete issue #5;
-- stable Convergent-owned `run_command` contract;
-- command/process identity;
-- streamed stdout/stderr progress and bounded capture;
-- exact final exit state/code;
-- PID/process-tree termination evidence, especially Windows descendants;
-- command-level timeout/cancellation;
-- native command confirmation/progress reporting;
-- safe recovery after stalled command/tool execution;
-- evaluate Copilot SDK RPC shell primitives as backend pieces where they provide enough evidence;
-- use a Convergent-owned child-process backend where the SDK/runtime cannot prove the required lifecycle.
+- Convergent-owned `run_command` contract for tests/builds/long-running validation;
+- stable command id and managed root PID/process identity;
+- streamed output progress plus bounded stdout/stderr capture;
+- exact final state and exit code;
+- workspace-contained cwd and existing shell permission-policy enforcement;
+- command timeout/cancellation;
+- POSIX process-group TERM→KILL termination evidence;
+- Windows `taskkill /T /F` descendant-tree termination with no-leak regression coverage;
+- managed command progress/termination UX in VS Code;
+- watchdog/session abort ordering that terminates managed commands before aborting the Copilot turn;
+- fail-closed runtime-stall classification requiring active + proven termination;
+- on-demand strong recovery followed by fresh bounded Worker/Reviewer sessions;
+- safe `/resume` semantics for proven vs unproven runtime-stall checkpoints;
+- Linux/Windows deterministic coverage and real-Copilot managed-command + stall/recovery acceptance.
 
-The current Copilot SDK/CLI shell primitives may be useful implementation details, but they do not by themselves define the public Convergent command contract.
+The Copilot SDK shell RPC surface was evaluated as an optional implementation primitive, not the public contract. Its process id/output/exit/kill primitives do not independently prove the descendant-tree semantics Convergent requires, especially on Windows, so the local Convergent backend remains the reference implementation.
+
+Remaining 0.4 work is release-candidate review/hygiene and any narrow lifecycle defect found by exact-head Linux/Windows CI or final focused acceptance; persistent headless/multi-frontend work remains intentionally deferred to 0.5.
 
 ## 0.5.0 — headless / multi-frontend
 

@@ -1,6 +1,7 @@
 'use strict';
 
 const path = require('node:path');
+const { normalizeWorkspaceFolders, parseQualifiedWorkspacePath } = require('../orchestrator/workspace-scope');
 
 function formatDuration(ms) {
   const seconds = Math.max(0, Number(ms) || 0) / 1000;
@@ -32,6 +33,44 @@ function compactActivity(value, max = 420) {
   const text = String(value ?? '').replace(/\s+/g, ' ').trim();
   if (!text) return '';
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+function boundedTail(value, maxChars = 3500, maxLines = 30) {
+  const normalized = String(value ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trimEnd();
+  if (!normalized) return { text: '', truncated: false };
+  const lines = normalized.split('\n');
+  let text = lines.slice(-maxLines).join('\n');
+  let truncated = lines.length > maxLines;
+  if (text.length > maxChars) {
+    text = text.slice(-maxChars);
+    truncated = true;
+  }
+  return { text, truncated };
+}
+
+function fencedCode(value, language = 'text') {
+  const text = String(value ?? '');
+  const longest = Math.max(0, ...(text.match(/`+/g) ?? []).map((run) => run.length));
+  const fence = '`'.repeat(Math.max(3, longest + 1));
+  return `${fence}${language}\n${text}\n${fence}`;
+}
+
+function managedCommandOutput(detail = {}, failed = false) {
+  const maxChars = failed ? 7000 : 3500;
+  const maxLines = failed ? 60 : 30;
+  const stdout = boundedTail(detail.stdout, maxChars, maxLines);
+  const stderr = boundedTail(detail.stderr, maxChars, maxLines);
+  const parts = [];
+  if (stdout.text) parts.push(stderr.text ? `[stdout]\n${stdout.text}` : stdout.text);
+  if (stderr.text) parts.push(stdout.text ? `[stderr]\n${stderr.text}` : stderr.text);
+  return {
+    text: parts.join('\n\n'),
+    truncated: stdout.truncated || stderr.truncated || Boolean(detail.stdoutTruncated) || Boolean(detail.stderrTruncated),
+  };
+}
+
+function isManagedCommandTool(tool) {
+  return /(^|:)run[_-]?command$/i.test(String(tool ?? ''));
 }
 
 function aggregateAgentUsage(summary) {
@@ -116,12 +155,19 @@ class VscodeWorkflowUi {
     this.stream = stream;
     this.output = output;
     this.workspace = options.workspace;
+    this.workspaceFolders = normalizeWorkspaceFolders(options.workspace, options.workspaceFolders);
     this.version = options.version;
     this.flowMode = options.flowMode;
     this.eventSink = options.eventSink;
     this.lastUsageLogAt = 0;
     this.lastUsageChatAt = 0;
     this.lastLongToolChatStatusAt = new Map();
+    this.agentActivity = new Map();
+    this.agentActivityChatAt = new Map();
+    this.managedCommandProgressAt = new Map();
+    this.managedCommandBytes = new Map();
+    this.pendingChatDecisions = new Map();
+    this.chatDecisionSequence = 0;
     this.agentInactivityTimeoutMs = undefined;
     this.toolStallTimeoutMs = undefined;
     this.stallGraceMs = undefined;
@@ -141,6 +187,63 @@ class VscodeWorkflowUi {
     this.emit(event);
   }
 
+  async chatChoice({ kind = 'decision', title = 'Decision needed', message = '', choices = [] } = {}) {
+    if (typeof this.stream?.button !== 'function' || !Array.isArray(choices) || choices.length === 0) return null;
+    const id = `convergent-chat-decision-${Date.now()}-${++this.chatDecisionSequence}`;
+    const normalizedChoices = choices.map((choice) => String(choice));
+    const rendered = String(message ?? '').replace(/\n/g, '\n> ');
+    this.stream.markdown(`
+> **${title}**
+>
+> ${rendered}
+
+`);
+    const answer = new Promise((resolve) => {
+      this.pendingChatDecisions.set(id, { resolve, kind, choices: normalizedChoices });
+    });
+    for (const choice of normalizedChoices) {
+      this.stream.button({ command: 'convergent.respondDecision', title: choice, arguments: [id, choice] });
+    }
+    this.log(`Chat decision requested: kind=${kind}; choices=${normalizedChoices.join(' | ')}`);
+    this.audit({ type: 'chat_decision_requested', id, kind, title, choices: normalizedChoices });
+    return answer;
+  }
+
+  resolveChatDecision(id, choice) {
+    const pending = this.pendingChatDecisions.get(String(id));
+    if (!pending) return false;
+    const normalized = String(choice);
+    if (!pending.choices.includes(normalized)) return false;
+    this.pendingChatDecisions.delete(String(id));
+    pending.resolve(normalized);
+    this.stream.markdown(`
+✓ **Selected:** ${normalized}
+`);
+    this.log(`Chat decision resolved: kind=${pending.kind}; choice=${normalized}`);
+    this.audit({ type: 'chat_decision_resolved', id: String(id), kind: pending.kind, choice: normalized });
+    return true;
+  }
+
+  cancelPendingChatDecisions() {
+    for (const [id, pending] of this.pendingChatDecisions) {
+      this.pendingChatDecisions.delete(id);
+      pending.resolve(undefined);
+    }
+  }
+
+  announceFreeformQuestion(question) {
+    const text = String(question ?? '').trim();
+    if (!text) return;
+    this.stream.markdown(`
+> **Clarification needed**
+>
+> ${text.replace(/\n/g, '\n> ')}
+
+_Enter the answer in the input box; VS Code's stable Chat API does not currently expose blocking free-form text input inside an active participant response._
+`);
+    this.log(`Free-form clarification requested: ${compactActivity(text, 300)}`);
+  }
+
   log(message) {
     this.output.appendLine(`[${new Date().toISOString()}] ${message}`);
   }
@@ -158,7 +261,9 @@ class VscodeWorkflowUi {
     if (!value) return null;
     if (path.isAbsolute(value) || /^[A-Za-z]:[\\/]/.test(value)) return this.vscode.Uri.file(value);
     if (!this.workspace) return null;
-    return this.vscode.Uri.file(path.join(this.workspace, value));
+    const parsed = parseQualifiedWorkspacePath(this.workspace, this.workspaceFolders, value);
+    if (!parsed.root) return null;
+    return this.vscode.Uri.file(path.join(parsed.root.path, parsed.relative));
   }
 
   fileReference(file) {
@@ -226,16 +331,18 @@ class VscodeWorkflowUi {
       ? 'completed by coordinator inspection'
       : route === 'trivial'
         ? 'passed lightweight implementer + peer review'
-        : 'passed A/B convergence and strong review';
+        : route === 'high_risk'
+          ? 'passed A/B convergence and strong review'
+          : 'passed implementer + strong review';
     this.stream.markdown(`✓ **${task.title}** ${detail}.\n`);
     this.log(`Task ${task.id} completed via ${route}.`);
     this.audit({ type: 'task_complete', taskId: task.id, title: task.title, route });
   }
 
-  taskCommitted(task, sha) {
-    this.stream.markdown(`  ↳ checkpoint commit \`${String(sha).slice(0, 12)}\` for **${task.id}**\n`);
-    this.log(`Task ${task.id} checkpoint committed at ${sha}.`);
-    this.audit({ type: 'task_commit', taskId: task.id, sha });
+  taskCommitted(task, value) {
+    const commits = Array.isArray(value) ? value : [{ sha: value }];
+    for (const commit of commits) { const folder = commit.workspaceFolder ? ` in **${commit.workspaceFolder}**` : ''; this.stream.markdown(`  ↳ checkpoint commit \`${String(commit.sha).slice(0, 12)}\`${folder} for **${task.id}**\n`); this.log(`Task ${task.id} checkpoint committed${commit.workspaceFolder ? ` in ${commit.workspaceFolder}` : ''} at ${commit.sha}.`); }
+    this.audit({ type: 'task_commit', taskId: task.id, commits });
   }
 
   taskCommitSkipped(task, reason) {
@@ -287,8 +394,12 @@ class VscodeWorkflowUi {
   }
 
   usageProgress(summary) {
-    this.stream.progress(`Usage: ${compactUsage(summary)}`);
-    this.log(`Usage: ${compactUsage(summary)}`);
+    const text = `Usage: ${compactUsage(summary)}`;
+    this.log(text);
+    const now = Date.now();
+    if (now - this.lastUsageChatAt < 30_000) return;
+    this.lastUsageChatAt = now;
+    this.stream.progress(text);
   }
 
   runSummary(summary, stats = {}) {
@@ -314,15 +425,83 @@ class VscodeWorkflowUi {
   }
 
   agentTool(agent, tool, detail = '') {
+    if (isManagedCommandTool(tool)) {
+      this.log(`${agent} tool: ${tool} — managed lifecycle rendered separately`);
+      this.audit({ type: 'agent_tool', agent, tool, detail: 'managed command; lifecycle rendered separately' });
+      return;
+    }
     const text = `${agent} tool: ${tool}${detail ? ` — ${compactActivity(detail, 300)}` : ''}`;
-    this.stream.progress(text);
     this.log(text);
+    this.audit({ type: 'agent_tool', agent, tool, detail: compactActivity(detail, 600) });
+
+    const state = this.agentActivity.get(agent) ?? { calls: 0, latest: '' };
+    state.calls += 1;
+    state.latest = tool;
+    this.agentActivity.set(agent, state);
+    const now = Date.now();
+    const last = this.agentActivityChatAt.get(agent) ?? 0;
+    if (state.calls === 1 || now - last >= 15_000) {
+      this.agentActivityChatAt.set(agent, now);
+      this.stream.progress(`${agent}: ${state.calls} tool ${state.calls === 1 ? 'activity' : 'activities'} · latest ${tool}`);
+    }
   }
 
   agentToolComplete(agent, tool, durationMs, success) {
     const text = `${agent} tool complete: ${tool} · ${formatDuration(durationMs)} · ${success ? 'success' : 'failure'}`;
-    if (!success || durationMs >= 10_000) this.stream.progress(text);
+    if (!isManagedCommandTool(tool) && (!success || durationMs >= 10_000)) this.stream.progress(text);
     this.log(text);
+  }
+
+  agentManagedCommandProgress(agent, detail = {}) {
+    const id = String(detail.commandId ?? 'managed-command');
+    if (detail.phase === 'started') {
+      this.managedCommandBytes.set(id, 0);
+      this.managedCommandProgressAt.set(id, Date.now());
+      const pid = Number.isInteger(detail.pid) ? ` · PID ${detail.pid}` : '';
+      const command = compactActivity(detail.displayCommand, 180);
+      this.stream.progress(`${agent}: running command${command ? ` — ${command}` : ''}${pid}`);
+      this.log(`${agent} managed command ${id} started${pid}${command ? `; command=${command}` : ''}.`);
+      return;
+    }
+    if (detail.phase !== 'output') return;
+    const bytes = (this.managedCommandBytes.get(id) ?? 0) + Math.max(0, Number(detail.bytes) || 0);
+    this.managedCommandBytes.set(id, bytes);
+    const now = Date.now();
+    const last = this.managedCommandProgressAt.get(id) ?? 0;
+    if (now - last < 5_000) return;
+    this.managedCommandProgressAt.set(id, now);
+    this.stream.progress(`${agent}: managed command still running · ${formatTokenCount(bytes)}B output observed`);
+    this.log(`${agent} managed command ${id}: ${bytes} output byte(s) observed; latest stream=${detail.stream ?? 'unknown'}.`);
+  }
+
+  agentManagedCommandComplete(agent, detail = {}) {
+    const id = String(detail.commandId ?? 'managed-command');
+    this.managedCommandProgressAt.delete(id);
+    this.managedCommandBytes.delete(id);
+    const elapsed = formatDuration(detail.elapsedMs ?? 0);
+    let outcome;
+    if (detail.state === 'completed') {
+      outcome = Number.isInteger(detail.exitCode) ? `exit ${detail.exitCode}` : 'completed';
+    } else if (detail.state === 'timed_out') {
+      outcome = detail.terminationProven === false ? 'timed out · termination unproven' : 'timed out';
+    } else if (detail.state === 'cancelled') {
+      outcome = detail.terminationProven === false ? 'cancelled · termination unproven' : 'cancelled';
+    } else {
+      outcome = String(detail.state ?? 'finished').replace(/_/g, ' ');
+    }
+    const pid = Number.isInteger(detail.pid) ? ` · PID ${detail.pid}` : '';
+    const failed = detail.state !== 'completed' || (Number.isInteger(detail.exitCode) && detail.exitCode !== 0);
+    const mark = detail.state === 'completed' ? (failed ? '✗' : '✓') : '⚠';
+    const command = String(detail.displayCommand ?? '').trim();
+    const cwd = String(detail.cwd ?? '.');
+    const output = managedCommandOutput(detail, failed);
+    const heading = `${mark} **${agent} ran command** · ${outcome} · ${elapsed}${cwd && cwd !== '.' ? ` · cwd \`${cwd}\`` : ''}`;
+    const lines = ['', heading];
+    if (command) lines.push('', fencedCode(command, detail.shellLanguage || (process.platform === 'win32' ? 'powershell' : 'sh')));
+    if (output.text) lines.push('', fencedCode(output.text, 'text'));
+    if (output.truncated) lines.push('', '_Output preview truncated; the managed tool result retained bounded output for agent validation._');
+    this.stream.markdown(`${lines.join('\n')}\n`);
+    this.log(`${agent}: managed command ${outcome} · ${elapsed}${pid}; id=${id}`);
   }
 
   agentHeartbeat(agent, snapshot) {
@@ -352,15 +531,27 @@ class VscodeWorkflowUi {
   async agentToolStallDecision(agent, snapshot) {
     const tool = snapshot?.currentTool;
     if (!tool) return { action: 'continue', waitMs: 5 * 60_000 };
-    const command = tool.detail ? `\n\n${tool.detail}` : '';
-    const choice = await this.vscode.window.showWarningMessage(
-      `${agent}: ${tool.name} has produced no progress for ${formatDuration(tool.quietMs)} after ${formatDuration(tool.elapsedMs)} total.${command}\n\nThe built-in Copilot tool cannot currently be killed independently; aborting stops this agent turn.`,
-      { modal: true },
-      'Continue 5 min',
-      'Continue 15 min',
-      'Abort agent turn',
-    );
-    if (choice === 'Abort agent turn') return { action: 'abort' };
+    const command = tool.detail ? `
+
+${tool.detail}` : '';
+    const managed = tool.name === 'run_command';
+    const abortChoice = managed ? 'Terminate command & recover' : 'Abort agent turn';
+    const consequence = managed
+      ? 'Convergent owns this managed process. Choosing termination kills the managed process tree first; automatic recovery is allowed only if termination is proven.'
+      : 'This built-in Copilot tool cannot currently be killed independently; aborting stops this agent turn.';
+    const message = `${agent}: ${tool.name} has produced no progress for ${formatDuration(tool.quietMs)} after ${formatDuration(tool.elapsedMs)} total.${command}
+
+${consequence}`;
+    let choice = await this.chatChoice({
+      kind: 'tool_stall',
+      title: `${agent}: stalled tool`,
+      message,
+      choices: ['Continue 5 min', 'Continue 15 min', abortChoice],
+    });
+    if (choice === null) {
+      choice = await this.vscode.window.showWarningMessage(message, { modal: true }, 'Continue 5 min', 'Continue 15 min', abortChoice);
+    }
+    if (choice === abortChoice || choice === undefined) return { action: 'abort' };
     if (choice === 'Continue 15 min') return { action: 'continue', waitMs: 15 * 60_000 };
     return { action: 'continue', waitMs: 5 * 60_000 };
   }
@@ -372,7 +563,11 @@ class VscodeWorkflowUi {
   }
 
   agentToolStalled(agent, tool, elapsedMs, diagnostic) {
-    const detail = `${tool} was aborted by user/watchdog decision after ${formatDuration(elapsedMs)} total; cancelling this agent turn.`;
+    const termination = diagnostic?.managedCommandTermination;
+    const managed = tool === 'run_command' && termination?.active;
+    const detail = managed
+      ? `${tool} was stopped after ${formatDuration(elapsedMs)}; process-tree termination ${termination.proven ? 'was proven, so Convergent may recover with a fresh agent session' : 'could not be proven, so Convergent will not auto-retry'}.`
+      : `${tool} was aborted by user/watchdog decision after ${formatDuration(elapsedMs)} total; cancelling this agent turn.`;
     this.stream.markdown(`\n⚠ **${agent} stalled:** ${detail}\n`);
     this.log(`${agent} STALLED: ${detail}`);
     this.log(`${agent} stall diagnostic: ${JSON.stringify(diagnostic)}`);
@@ -385,13 +580,17 @@ class VscodeWorkflowUi {
   }
 
   async agentInactivityDecision(agent, snapshot) {
-    const choice = await this.vscode.window.showWarningMessage(
-      `${agent} has produced no agent or tool activity for ${formatDuration(snapshot?.lastActivityAgoMs ?? 0)}. Continue waiting or abort this agent turn?`,
-      { modal: true },
-      'Continue 5 min',
-      'Abort agent turn',
-    );
-    if (choice === 'Abort agent turn') return { action: 'abort' };
+    const message = `${agent} has produced no agent or tool activity for ${formatDuration(snapshot?.lastActivityAgoMs ?? 0)}. Continue waiting or abort this agent turn?`;
+    let choice = await this.chatChoice({
+      kind: 'agent_inactivity',
+      title: `${agent}: no activity`,
+      message,
+      choices: ['Continue 5 min', 'Abort agent turn'],
+    });
+    if (choice === null) {
+      choice = await this.vscode.window.showWarningMessage(message, { modal: true }, 'Continue 5 min', 'Abort agent turn');
+    }
+    if (choice === 'Abort agent turn' || choice === undefined) return { action: 'abort' };
     return { action: 'continue', waitMs: 5 * 60_000 };
   }
 
@@ -418,7 +617,8 @@ class VscodeWorkflowUi {
       const increment = Math.max(1, Number(details.increment) || limit || 100);
       message = `Convergent has reached the configured soft AI-credit budget (${limit.toFixed(3)}); reported usage is ≈${current.toFixed(3)} AI credits. The current agent turn has finished at a safe boundary.`;
       choices = [`Continue +${increment} credits`, 'Continue without budget', 'Pause & resume later'];
-      const choice = await this.vscode.window.showWarningMessage(message, { modal: true }, ...choices);
+      let choice = await this.chatChoice({ kind: 'ai_credits', title: 'AI-credit budget reached', message, choices });
+      if (choice === null) choice = await this.vscode.window.showWarningMessage(message, { modal: true }, ...choices);
       this.log(`AI-credit limit decision: ${choice ?? 'dismissed'}; usage=${current}; ceiling=${limit}`);
       this.audit({ type: 'limit_decision', kind, current, limit, choice });
       if (choice === 'Continue without budget') return { action: 'unlimited' };
@@ -429,7 +629,8 @@ class VscodeWorkflowUi {
     const noun = kind === 'worker_passes' ? 'A/B review/fix passes' : 'strong-review cycles';
     message = `Convergent reached the configured soft limit of ${limit} ${noun}. The workflow is at a safe decision boundary rather than failed.`;
     choices = ['Continue 1 more', 'Continue 3 more', 'Pause & resume later'];
-    const choice = await this.vscode.window.showWarningMessage(message, { modal: true }, ...choices);
+    let choice = await this.chatChoice({ kind, title: 'Convergent limit reached', message, choices });
+    if (choice === null) choice = await this.vscode.window.showWarningMessage(message, { modal: true }, ...choices);
     this.log(`${kind} limit decision: ${choice ?? 'dismissed'}; current=${current}; limit=${limit}`);
     this.audit({ type: 'limit_decision', kind, current, limit, choice });
     if (choice === choices[0]) return { action: 'continue', additional: 1 };

@@ -2,6 +2,32 @@
 
 All notable Convergent changes are documented here. Released versions are dated; development candidates remain marked `Unreleased` until an explicit merge/tag/release decision is made.
 
+## [0.4.0] - Unreleased
+
+### Controlled command execution
+
+- Added Convergent-owned `run_command` for Worker A/B and strong reviewer validation/build commands.
+- Added stable command ids and root PID/process identity, bounded stdout/stderr capture, output-progress callbacks, exact completion/exit state, command timeout, and explicit cancellation state.
+- Added workspace-contained cwd enforcement and reuse of Convergent's existing shell permission policy before any managed process starts.
+- Added POSIX process-group termination with TERM→KILL confirmation and Windows `taskkill /T /F` process-tree termination with root-disappearance confirmation.
+- Managed output refreshes the existing tool/inactivity watchdog without copying raw output chunks into progress audit events.
+- VS Code now reports managed command start/output progress and distinguishes managed tree termination from built-in Copilot tool abort semantics.
+
+### Safe runtime-stall recovery
+
+- Session abort/disconnect/watchdog control first cancels any active managed command and records termination evidence before aborting the Copilot turn.
+- A runtime stall is auto-recoverable only when an active managed command existed and process-tree termination is proven.
+- Proven stalls invoke the existing strong recovery coordinator on demand, discard the stalled SDK session, and retry only through a fresh Worker/Reviewer session with a unique bounded runtime-retry attempt id.
+- Unproven termination and ordinary inactivity without an active managed command remain fail-closed and do not create a replacement agent.
+- `/resume` now enforces the same boundary: proven runtime-stall checkpoints may restart the current task with fresh sessions; unproven checkpoints cannot start a new agent or command.
+- Managed-command lifecycle audit uses the frontend-neutral UI audit contract so VS Code and headless runs record the same structured evidence.
+
+### Validation evidence
+
+- Cross-platform PR CI validated the managed runtime on Linux and Windows, including a Windows test that records a spawned descendant PID and proves it does not leak after timeout/tree termination.
+- Real Copilot run `31962857242` completed with GPT-5.6 Luna Worker A and GPT-5.6 Terra reviewer both independently invoking `run_command`; 16/16 target tests plus an external one-shot-generator oracle passed (9 model calls / 4.458243 AI credits).
+- Real runtime-stall run `31963673008` exercised repeated actual managed stalls, proven process termination, on-demand Terra recovery, fresh Luna Worker sessions, fresh Terra reviewer recovery, and final completion. A no-inference reassertion (`31963852830`) verified 3 observed stalls = 3 proven cancellations = 3 runtime recoveries, with independent 16/16 target tests and oracle green.
+
 ## [0.3.0] - 2026-08-15
 
 ### Adaptive orchestration
