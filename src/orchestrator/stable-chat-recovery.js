@@ -27,12 +27,18 @@ function isOperatorDialogueRequestedError(error) {
 }
 
 function createDeferredOperatorInputHandler(choiceHandler = null) {
-  return async (request = {}) => {
+  const handler = async (request = {}) => {
     if (Array.isArray(request.choices) && request.choices.length && typeof choiceHandler === 'function') {
       return choiceHandler(request);
     }
     throw new OperatorDialogueRequestedError(request.question, request);
   };
+  // The engine itself uses the deferred handler only at recovery boundaries.
+  // Normal Copilot sessions (notably the planning coordinator's builtin ask_user)
+  // retain the ordinary VS Code input handler so a pre-plan clarification does
+  // not masquerade as a resumable recovery dialogue with no task checkpoint.
+  handler.fallback = typeof choiceHandler === 'function' ? choiceHandler : null;
+  return handler;
 }
 
 function boundedDialogueText(value, maxChars = MAX_DIALOGUE_TEXT_CHARS) {
@@ -95,6 +101,18 @@ class StableChatRecoveryEngine extends RecoveryConvergentEngine {
   constructor(options) {
     super(options);
     this.activeOperatorRecoveryAgreement = null;
+  }
+
+  sessionFactory() {
+    const deferred = this.userInputHandler;
+    const ordinary = deferred?.fallback;
+    if (!ordinary) return super.sessionFactory();
+    this.userInputHandler = ordinary;
+    try {
+      return super.sessionFactory();
+    } finally {
+      this.userInputHandler = deferred;
+    }
   }
 
   async runTask(factory, task, taskSessionKey, routing, taskResumeState = null) {
