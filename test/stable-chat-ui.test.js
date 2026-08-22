@@ -69,6 +69,19 @@ test('deferred operator input turns free-form recovery into a stable Chat bounda
   );
 });
 
+test('ordinary agent sessions retain the normal input handler while engine recovery remains deferred', () => {
+  const ordinary = async (request) => ({ answer: `normal:${request.question}`, wasFreeform: true });
+  const deferred = createDeferredOperatorInputHandler(ordinary);
+  const engine = new StableChatRecoveryEngine({
+    client: {}, sdk: {}, workspace: '/repo', workspaceFolders: [{ name: 'repo', path: '/repo' }], models: {},
+    ui: new Proxy({}, { get: () => () => {} }),
+    userInputHandler: deferred,
+  });
+  const factory = engine.sessionFactory();
+  assert.equal(factory.userInputHandler, ordinary);
+  assert.equal(engine.userInputHandler, deferred);
+});
+
 test('operator dialogue is checkpointed and exposes follow-up prompts', () => {
   const state = fakeResumeState();
   const dialogue = createInitialOperatorDialogue(state, 'Should the existing policy boundary be authoritative?');
