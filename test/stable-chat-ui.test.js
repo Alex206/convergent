@@ -6,6 +6,7 @@ const {
   OperatorDialogueRequestedError,
   isOperatorDialogueRequestedError,
   createDeferredOperatorInputHandler,
+  bindConfirmationToProposal,
   StableChatRecoveryEngine,
 } = require('../src/orchestrator/stable-chat-recovery');
 const {
@@ -81,17 +82,35 @@ test('operator dialogue is checkpointed and exposes follow-up prompts', () => {
   assert.ok(dialogueFollowups(dialogue).some((item) => /Explain why/i.test(item.prompt)));
 });
 
-test('explicit agreement removes dialogue and becomes one resumable recovery authorization', () => {
+test('explicit agreement persists exactly the proposal shown to the operator', () => {
   const state = fakeResumeState();
   const dialogue = createInitialOperatorDialogue(state, 'Clarify scope.');
   dialogue.phase = 'confirm';
   dialogue.proposal = { action: 'peer', rationale: 'Independent check', guidance: 'Inspect the existing policy boundary only.' };
-  const saved = stateWithOperatorAgreement(stateWithOperatorDialogue(state, dialogue), dialogue, dialogue.proposal);
+  const confirmation = { action: 'peer', rationale: 'model tried to restate this', guidance: 'different wording must not replace proposal' };
+  const saved = stateWithOperatorAgreement(stateWithOperatorDialogue(state, dialogue), dialogue, confirmation);
 
   assert.equal(pendingOperatorDialogue(saved), null);
   assert.equal(saved.taskState.operatorRecoveryAgreement.action, 'peer');
-  assert.match(saved.taskState.operatorRecoveryAgreement.guidance, /policy boundary/i);
+  assert.equal(saved.taskState.operatorRecoveryAgreement.rationale, 'Independent check');
+  assert.equal(saved.taskState.operatorRecoveryAgreement.guidance, 'Inspect the existing policy boundary only.');
   assert.equal(saved.taskState.operatorRecoveryAgreement.consumed, false);
+});
+
+test('confirmation cannot silently switch the displayed proposal action', () => {
+  const proposal = { action: 'retry', rationale: 'Retry with agreed boundary.', guidance: 'Use the existing boundary.' };
+  const report = bindConfirmationToProposal({ action: 'peer', rationale: 'peer instead', guidance: 'changed' }, proposal);
+  assert.equal(report.action, 'ask_user');
+  assert.match(report.rationale, /will not silently change/i);
+});
+
+test('confirmation binds rationale and guidance to the exact displayed proposal', () => {
+  const proposal = { action: 'retry', rationale: 'Retry with agreed boundary.', guidance: 'Use the existing boundary; do not create a new API.' };
+  const report = bindConfirmationToProposal({ action: 'retry', rationale: 'new model rationale', guidance: 'new model guidance' }, proposal);
+  assert.equal(report.action, 'retry');
+  assert.equal(report.rationale, proposal.rationale);
+  assert.equal(report.guidance, proposal.guidance);
+  assert.equal(report.confirmedProposal, true);
 });
 
 test('stable Chat history extracts current-participant user and markdown response text only', () => {
@@ -105,16 +124,23 @@ test('stable Chat history extracts current-participant user and markdown respons
   ]);
 });
 
-test('confirmed recovery agreement bypasses another recovery-model call exactly once', async () => {
+test('confirmed recovery agreement bypasses another recovery-model call exactly once and preserves credential provenance', async () => {
   let recoveryCalls = 0;
+  const authorized = [];
   const engine = new StableChatRecoveryEngine({
     client: {}, sdk: {}, workspace: '/repo', workspaceFolders: [{ name: 'repo', path: '/repo' }], models: {},
     ui: new Proxy({}, { get: () => () => {} }),
+    operatorCredentialGuard: {
+      authorizeFromOperatorGuidance(guidance) {
+        authorized.push(guidance);
+        return ['DOWNSTREAM_TOKEN'];
+      },
+    },
   });
   engine.activeOperatorRecoveryAgreement = {
     action: 'retry',
     rationale: 'Operator confirmed existing boundary.',
-    guidance: 'Use the existing boundary; do not create a new API.',
+    guidance: 'Use DOWNSTREAM_TOKEN from the operator-provided environment; do not invent its value.',
     scopeKey: 'T1\0worker',
     consumed: false,
   };
@@ -126,8 +152,42 @@ test('confirmed recovery agreement bypasses another recovery-model call exactly 
   const decision = await engine.consultRecoveryCoordinator(task, 'worker-A', {}, { allowPeer: true });
   assert.equal(decision.action, 'retry');
   assert.equal(decision.operatorAgreed, true);
+  assert.deepEqual(decision.authorizedCredentialNames, ['DOWNSTREAM_TOKEN']);
   assert.equal(recoveryCalls, 0);
+  assert.equal(authorized.length, 1);
   assert.equal(engine.activeOperatorRecoveryAgreement.consumed, true);
+});
+
+test('strong-review recovery agreement queues the confirmed guidance before retrying review', async () => {
+  const prompts = [];
+  const reviewer = {
+    session: {
+      async sendAndWait(options) { prompts.push(options.prompt); },
+    },
+  };
+  const engine = new StableChatRecoveryEngine({
+    client: {}, sdk: {}, workspace: '/repo', workspaceFolders: [{ name: 'repo', path: '/repo' }], models: {},
+    ui: new Proxy({}, { get: () => () => {} }),
+  });
+  engine.activeOperatorRecoveryAgreement = {
+    action: 'retry',
+    rationale: 'Reviewer can retry with clarified environment semantics.',
+    guidance: 'Treat the saved workspace fingerprint as opaque state, not a Git commit id.',
+    scopeKey: 'T1\0strong-reviewer',
+    consumed: false,
+  };
+  engine.activeTaskChangeContext = null;
+  engine.revisionProvider = async () => 'R1';
+  engine.finishTurn = async () => ({});
+  reviewer.sink = { value: { verdict: 'clean', summary: 'clean', findings: [], checks: [] } };
+  engine.operatorCredentialGuard = { authorizeFromOperatorGuidance: () => [], consumeViolations: () => [] };
+
+  await engine.runStrongReview(
+    { id: 'T1', title: 'T', description: 'D', acceptanceCriteria: ['ok'] },
+    {}, null, reviewer, [], { route: 'standard', risk: 'medium' }, { startReviewCycle: 1 },
+  );
+  assert.match(prompts[0], /RECOVERY GUIDANCE FROM CONVERGENT\/OPERATOR/);
+  assert.match(prompts[0], /opaque state, not a Git commit id/i);
 });
 
 test('compact command Chat summary never renders stdout/stderr while Output retains it', () => {
