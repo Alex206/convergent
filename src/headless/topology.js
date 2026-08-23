@@ -5,6 +5,7 @@ const TOPOLOGIES = Object.freeze({
     label: 'Terra solo',
     kind: 'single_agent',
     peerMode: 'none',
+    promptProfile: 'baseline',
     selectors: {
       coordinator: 'gpt-5.6-terra',
       workerA: 'gpt-5.6-terra',
@@ -16,6 +17,19 @@ const TOPOLOGIES = Object.freeze({
     label: 'Luna + Terra review',
     kind: 'convergent',
     peerMode: 'none',
+    promptProfile: 'production',
+    selectors: {
+      coordinator: 'gpt-5.6-terra',
+      workerA: 'gpt-5.6-luna',
+      workerB: 'adaptive-diverse',
+      reviewer: 'gpt-5.6-terra',
+    },
+  }),
+  'luna-terra-compact': Object.freeze({
+    label: 'Luna + Terra review (compact standard prompts)',
+    kind: 'convergent',
+    peerMode: 'none',
+    promptProfile: 'compact-standard',
     selectors: {
       coordinator: 'gpt-5.6-terra',
       workerA: 'gpt-5.6-luna',
@@ -27,6 +41,7 @@ const TOPOLOGIES = Object.freeze({
     label: 'Luna + read-only peer critic + Terra review',
     kind: 'convergent',
     peerMode: 'critic',
+    promptProfile: 'production',
     selectors: {
       coordinator: 'gpt-5.6-terra',
       workerA: 'gpt-5.6-luna',
@@ -38,6 +53,7 @@ const TOPOLOGIES = Object.freeze({
     label: 'Luna + modifying A/B convergence + Terra review',
     kind: 'convergent',
     peerMode: 'converge',
+    promptProfile: 'production',
     selectors: {
       coordinator: 'gpt-5.6-terra',
       workerA: 'gpt-5.6-luna',
@@ -49,6 +65,7 @@ const TOPOLOGIES = Object.freeze({
     label: 'Terra implementer + Terra review',
     kind: 'convergent',
     peerMode: 'none',
+    promptProfile: 'production',
     selectors: {
       coordinator: 'gpt-5.6-terra',
       workerA: 'gpt-5.6-terra',
