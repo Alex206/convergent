@@ -42,6 +42,8 @@ with tempfile.TemporaryDirectory() as td:
     valid = resolve_artifact_path(root, "reports/../result.json")
     checks["normalized_in_root"] = valid == (root / "result.json").resolve()
     checks["canonical_return"] = valid == valid.resolve()
+    lexical_reentry = resolve_artifact_path(root, f"../{root.name}/reentered.txt")
+    checks["normalized_reentry_in_root"] = lexical_reentry == (root / "reentered.txt").resolve()
     checks["sibling_prefix_traversal"] = rejects("../work-shadow/leak.txt")
     checks["absolute_inside_root"] = rejects(str((root / "result.json").resolve()))
     checks["root_self_dot"] = rejects(".")
