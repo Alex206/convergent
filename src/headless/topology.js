@@ -42,6 +42,20 @@ const TOPOLOGIES = Object.freeze({
     kind: 'convergent',
     peerMode: 'none',
     promptProfile: 'lean-standard',
+    toolProfile: 'lean',
+    selectors: {
+      coordinator: 'gpt-5.6-terra',
+      workerA: 'gpt-5.6-luna',
+      workerB: 'adaptive-diverse',
+      reviewer: 'gpt-5.6-terra',
+    },
+  }),
+  'luna-terra-capable': Object.freeze({
+    label: 'Luna + Terra review (evidence-first, full capabilities)',
+    kind: 'convergent',
+    peerMode: 'none',
+    promptProfile: 'lean-standard',
+    toolProfile: 'full',
     selectors: {
       coordinator: 'gpt-5.6-terra',
       workerA: 'gpt-5.6-luna',
