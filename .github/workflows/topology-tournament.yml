@@ -6,7 +6,7 @@ on:
       topologies_json:
         description: JSON array of benchmark topologies, executed with max-parallel=1
         required: true
-        default: '["terra-solo","luna-terra","luna-peer-terra","luna-ab-terra"]'
+        default: '["terra-solo","luna-terra","luna-terra-compact","luna-peer-terra","luna-ab-terra"]'
         type: string
       scenarios_json:
         description: JSON array of benchmark markdown paths
@@ -61,9 +61,9 @@ jobs:
       fail-fast: false
       max-parallel: 1
       matrix:
-        topology: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.topologies_json || '["luna-peer-terra","luna-ab-terra"]') }}
+        topology: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.topologies_json || '["luna-terra-compact"]') }}
         scenario: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.scenarios_json || '["benchmarks/01-small-duration-parser.md"]') }}
-        repeat: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.repeats_json || '[2,3]') }}
+        repeat: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.repeats_json || '[1,2,3]') }}
     env:
       COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
       COPILOT_PLUGIN_DIR_ONLY: 'true'
