@@ -16,6 +16,10 @@ const {
   SINGLE_AGENT_TOOLS,
 } = require('../src/headless/single-agent-baseline');
 const {
+  COMPACT_WORKER_A_PROMPT,
+  COMPACT_REVIEWER_PROMPT,
+} = require('../src/headless/topology-engine');
+const {
   loadRun,
   aggregateTopology,
   paretoFrontier,
@@ -26,11 +30,13 @@ test('benchmark topology set contains the intended architecture experiment arms'
   assert.deepEqual(topologyNames(), [
     'terra-solo',
     'luna-terra',
+    'luna-terra-compact',
     'luna-peer-terra',
     'luna-ab-terra',
     'terra-terra',
   ]);
   assert.equal(topologyConfig('terra-solo').kind, 'single_agent');
+  assert.equal(topologyConfig('luna-terra-compact').promptProfile, 'compact-standard');
   assert.equal(topologyConfig('luna-peer-terra').peerMode, 'critic');
   assert.equal(topologyConfig('luna-ab-terra').peerMode, 'converge');
   assert.throws(() => normalizeTopology('mystery'), /Unsupported benchmark topology/);
@@ -49,6 +55,17 @@ test('topology selectors pin Terra/Luna explicitly instead of silently using str
   const peer = applyTopologySelectors({ topology: 'luna-peer-terra' });
   assert.equal(peer.workerA, 'gpt-5.6-luna');
   assert.equal(peer.workerB, 'adaptive-diverse');
+});
+
+test('compact standard prompts retain core safety/report semantics without production prompt bulk', () => {
+  assert.ok(COMPACT_WORKER_A_PROMPT.length < 2200);
+  assert.ok(COMPACT_REVIEWER_PROMPT.length < 2200);
+  assert.match(COMPACT_WORKER_A_PROMPT, /pre-existing/);
+  assert.match(COMPACT_WORKER_A_PROMPT, /workspace fingerprint is an opaque state hash/);
+  assert.match(COMPACT_WORKER_A_PROMPT, /report_pass exactly once/);
+  assert.match(COMPACT_REVIEWER_PROMPT, /read-only strong quality gate/);
+  assert.match(COMPACT_REVIEWER_PROMPT, /report_review exactly once/);
+  assert.match(COMPACT_REVIEWER_PROMPT, /CLEAN requires findings=\[\]/);
 });
 
 test('single Terra baseline has editing/validation tools but no Convergent report tool', () => {
