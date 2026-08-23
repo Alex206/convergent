@@ -61,6 +61,20 @@ test('base reviewer collects findings before reporting and later uses remediatio
   assert.match(reviewerFlowInstructions('auto'), /task diff/i);
 });
 
+test('reviewer flow requires criterion evidence and fresh semantic falsification', () => {
+  for (const mode of ['fast', 'auto', 'thorough']) {
+    const instructions = reviewerFlowInstructions(mode);
+    assert.match(instructions, /acceptance matrix/i);
+    assert.match(instructions, /implementation evidence from validation\/test evidence/i);
+    assert.match(instructions, /passing test is not proof/i);
+    assert.match(instructions, /property-oriented check/i);
+    assert.match(instructions, /structurally distinct witnesses/i);
+    assert.match(instructions, /global semantic invariant/i);
+    assert.match(instructions, /fresh witness or property check/i);
+    assert.match(instructions, /Do not invent hidden requirements/i);
+  }
+});
+
 test('agents protect pre-existing dirty or untracked user workspace state', () => {
   assert.match(WORKER_A_PROMPT, /pre-existing user workspace state as protected/i);
   assert.match(WORKER_B_PROMPT, /never revert\/remove unrelated pre-existing dirty or untracked user state/i);

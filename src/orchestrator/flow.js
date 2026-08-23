@@ -2,6 +2,14 @@
 
 const FLOW_MODES = new Set(['fast', 'auto', 'thorough']);
 
+const REVIEW_QUALITY_CONTRACT = [
+  'REVIEW QUALITY CONTRACT: before CLEAN, derive a compact acceptance matrix from the explicit task requirements and directly affected repository contracts. For each criterion, distinguish implementation evidence from validation/test evidence; an existing or passing test is not proof that it actually exercises the requirement.',
+  'For type, shape, default, error, and boundary contracts, challenge materially distinct states implied by the task instead of checking only representative happy paths.',
+  'For algorithmic behavior or a global semantic invariant that is central to correctness, attempt to falsify the implementation with one bounded property-oriented check or multiple structurally distinct witnesses when the supplied evidence does not already discriminate the invariant from plausible near-miss implementations. Prefer one decisive probe over broad retesting.',
+  'On remediation cycles, re-check previous findings and every acceptance criterion materially affected by the remediation. If algorithmic or semantic behavior changed, use a fresh witness or property check before CLEAN; do not rely only on replaying the original failing example.',
+  'Collect all independently discoverable actionable findings within the selected bounded scope. Do not invent hidden requirements, and do not broaden beyond the task and directly affected contracts merely to satisfy this contract.',
+].join(' ');
+
 function normalizeFlowMode(value) {
   const normalized = String(value ?? '').trim().toLowerCase();
   return FLOW_MODES.has(normalized) ? normalized : 'auto';
@@ -84,18 +92,20 @@ function workerFlowInstructions(mode) {
 
 function reviewerFlowInstructions(mode) {
   const flow = normalizeFlowMode(mode);
+  let scope;
   if (flow === 'fast') {
-    return [
+    scope = [
       'FAST FLOW REVIEW SCOPE: on the first cycle focus on the task diff/current changed files, acceptance criteria, and directly affected interfaces/tests. Do not perform a whole-repository audit.',
       'When several exact changed/relevant files need inspection, use custom batch_view once rather than serial builtin:view calls; if locations are uncertain, combine the queries/globs and readMatches=true in that same call.',
-      'Use worker validation evidence on the exact current workspace fingerprint instead of mechanically rerunning the same successful check. Run independent validation only when you first identify a concrete correctness concern that the existing evidence does not answer.',
+      'Use worker validation evidence on the exact current workspace fingerprint instead of mechanically rerunning the same successful check. Run independent validation when a concrete correctness concern or a central semantic invariant lacks discriminating evidence; otherwise avoid reassurance-only reruns.',
       'Do not spend tool calls discovering unrelated dirty/untracked workspace state. A path is an out-of-scope task finding only when there is evidence this task introduced or modified it.',
     ].join(' ');
+  } else if (flow === 'thorough') {
+    scope = 'THOROUGH FLOW REVIEW SCOPE: on the first cycle perform a comprehensive task-level review including architecture, affected contracts, regressions, and critical validation appropriate to the risk.';
+  } else {
+    scope = 'AUTO FLOW REVIEW SCOPE: on the first cycle review the task diff plus directly affected architecture/contracts/test surfaces; broaden only when risk or concrete evidence warrants it.';
   }
-  if (flow === 'thorough') {
-    return 'THOROUGH FLOW REVIEW SCOPE: on the first cycle perform a comprehensive task-level review including architecture, affected contracts, regressions, and critical validation appropriate to the risk.';
-  }
-  return 'AUTO FLOW REVIEW SCOPE: on the first cycle review the task diff plus directly affected architecture/contracts/test surfaces; broaden only when risk or concrete evidence warrants it.';
+  return `${scope} ${REVIEW_QUALITY_CONTRACT}`;
 }
 
 module.exports = {
