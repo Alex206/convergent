@@ -65,6 +65,7 @@ function createModelCallBudget({ maxTotalCalls, maxCallsPerTurn, maxChatRequests
   const turnCalls = new Map();
   const pendingTurnLimits = new Map();
   const gracefulTurnStops = new Map();
+  const acceptedReports = new Map();
   const activeTools = new Map();
   const turnLimitStops = [];
   let totalCalls = 0;
@@ -107,6 +108,19 @@ function createModelCallBudget({ maxTotalCalls, maxCallsPerTurn, maxChatRequests
     return true;
   };
 
+  const stopTurnGracefully = (agent, pending, event, toolName, boundary) => {
+    pendingTurnLimits.delete(agent);
+    const stop = {
+      ...pending,
+      boundary,
+      sessionId: event.sessionId ?? pending.sessionId,
+      toolName,
+    };
+    gracefulTurnStops.set(agent, stop);
+    turnLimitStops.push(stop);
+    onTurnLimit?.(stop);
+  };
+
   return {
     handle(event = {}) {
       const agent = String(event.agent ?? 'unknown');
@@ -114,6 +128,7 @@ function createModelCallBudget({ maxTotalCalls, maxCallsPerTurn, maxChatRequests
         turnCalls.set(agent, 0);
         pendingTurnLimits.delete(agent);
         gracefulTurnStops.delete(agent);
+        acceptedReports.delete(agent);
         return;
       }
       if (breach) return;
@@ -131,19 +146,15 @@ function createModelCallBudget({ maxTotalCalls, maxCallsPerTurn, maxChatRequests
 
         if (hardBoundary(event, 'tool_complete')) return;
 
+        const acceptedReport = STRUCTURED_REPORT_TOOLS.has(toolName) && acceptedStructuredToolResult(event);
+        if (acceptedReport) {
+          acceptedReports.set(agent, { sessionId: event.sessionId, toolName });
+        }
+
         const pending = pendingTurnLimits.get(agent);
         if (!pending) return;
-        if (STRUCTURED_REPORT_TOOLS.has(toolName) && acceptedStructuredToolResult(event)) {
-          pendingTurnLimits.delete(agent);
-          const stop = {
-            ...pending,
-            boundary: 'accepted_report',
-            sessionId: event.sessionId ?? pending.sessionId,
-            toolName,
-          };
-          gracefulTurnStops.set(agent, stop);
-          turnLimitStops.push(stop);
-          onTurnLimit?.(stop);
+        if (acceptedReport) {
+          stopTurnGracefully(agent, pending, event, toolName, 'accepted_report');
           return;
         }
         turnBoundary(event, 'tool_complete', toolName);
@@ -242,7 +253,7 @@ function createModelCallBudget({ maxTotalCalls, maxCallsPerTurn, maxChatRequests
         };
       }
       if (currentTurnCalls === turnLimit) {
-        pendingTurnLimits.set(agent, {
+        const pending = {
           kind: 'turn',
           agent,
           calls: currentTurnCalls,
@@ -250,7 +261,15 @@ function createModelCallBudget({ maxTotalCalls, maxCallsPerTurn, maxChatRequests
           totalCalls,
           chatRequestsUsed,
           sessionId: event.sessionId,
-        });
+        };
+        const acceptedReport = acceptedReports.get(agent);
+        const sameSession = acceptedReport
+          && (!acceptedReport.sessionId || !event.sessionId || acceptedReport.sessionId === event.sessionId);
+        if (sameSession) {
+          stopTurnGracefully(agent, pending, event, acceptedReport.toolName, 'accepted_report_usage');
+        } else {
+          pendingTurnLimits.set(agent, pending);
+        }
       }
     },
     snapshot() {
