@@ -16,6 +16,7 @@ const {
   SINGLE_AGENT_TOOLS,
 } = require('../src/headless/single-agent-baseline');
 const {
+  loadRun,
   aggregateTopology,
   paretoFrontier,
   buildTournamentReport,
@@ -63,11 +64,15 @@ test('cost per success includes inference spent on failed runs', () => {
       accepted: true,
       scenario: 's1',
       usage: { aiCredits: 10, inputTokens: 1000, calls: 5, elapsedMs: 1000, maxContextTokens: 100 },
+      agents: [],
+      reviewSignal: {},
     },
     {
       accepted: false,
       scenario: 's2',
       usage: { aiCredits: 8, inputTokens: 800, calls: 4, elapsedMs: 800, maxContextTokens: 80 },
+      agents: [],
+      reviewSignal: {},
     },
   ];
   const summary = aggregateTopology('candidate', runs);
@@ -110,4 +115,67 @@ test('tournament report requires complete topology run plus tests plus oracle', 
   const accepted = buildTournamentReport(root);
   assert.equal(accepted.runs[0].accepted, true);
   assert.equal(accepted.topologies[0].acceptanceRate, 1);
+});
+
+test('tournament report extracts per-agent cost, tools, and review signal from full audit', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'convergent-topology-audit-'));
+  const run = path.join(root, 'one');
+  const audit = path.join(run, 'audit', 'run-1');
+  fs.mkdirSync(audit, { recursive: true });
+  fs.writeFileSync(path.join(run, 'benchmark-meta.json'), JSON.stringify({
+    topology: 'luna-peer-terra',
+    scenario: 'benchmarks/01-small-duration-parser.md',
+    repeat: 2,
+  }));
+  fs.writeFileSync(path.join(run, 'result.json'), JSON.stringify({
+    status: 'complete',
+    topology: 'luna-peer-terra',
+    usage: {
+      aiCredits: 5,
+      inputTokens: 500,
+      calls: 8,
+      elapsedMs: 1000,
+      maxContextTokens: 120,
+      agents: [
+        { label: 'Worker A', model: 'GPT-5.6 Luna', calls: 4, inputTokens: 300, aiCredits: 0.5, durationMs: 500, maxContextTokens: 100 },
+        { label: 'Peer critic', model: 'GPT-5.4 mini', calls: 2, inputTokens: 100, aiCredits: 1, durationMs: 200, maxContextTokens: 80 },
+        { label: 'Strong reviewer', model: 'GPT-5.6 Terra', calls: 2, inputTokens: 100, aiCredits: 3.5, durationMs: 300, maxContextTokens: 90 },
+      ],
+    },
+  }));
+  fs.writeFileSync(path.join(run, 'target-validation.json'), JSON.stringify({ ok: true }));
+  fs.writeFileSync(path.join(run, 'scenario-acceptance.json'), JSON.stringify({ ok: true }));
+  fs.writeFileSync(path.join(audit, 'summary.json'), JSON.stringify({
+    trajectory: {
+      repeatedToolSignatureCount: 1,
+      agents: {
+        'Worker A': { systemPromptChars: 9000, promptChars: 1200, toolCalls: 4, tools: { batch_view: 1, apply_patch: 1, run_command: 1, report_pass: 1 } },
+        'Peer critic': { systemPromptChars: 1700, promptChars: 4500, toolCalls: 2, tools: { batch_view: 1, report_review: 1 } },
+        'Strong reviewer': { systemPromptChars: 6400, promptChars: 4700, toolCalls: 2, tools: { batch_view: 1, report_review: 1 } },
+      },
+    },
+  }));
+  fs.writeFileSync(path.join(audit, 'events.jsonl'), [
+    JSON.stringify({ type: 'worker_pass_result', worker: 'A', changed: true, report: { findings: [] } }),
+    JSON.stringify({ type: 'benchmark_peer_critic_result', verdict: 'findings', findings: [{ severity: 'medium' }] }),
+    JSON.stringify({ type: 'worker_pass_result', worker: 'A', changed: true, report: { findings: [] } }),
+    JSON.stringify({ type: 'strong_review_result', review: { verdict: 'findings', findings: [{ severity: 'low' }] } }),
+  ].join('\n'));
+
+  const loaded = loadRun(path.join(run, 'result.json'));
+  assert.equal(loaded.agents.length, 3);
+  assert.equal(loaded.agents[0].label, 'Worker A');
+  assert.equal(loaded.agents[0].systemPromptChars, 9000);
+  assert.equal(loaded.agents[1].label, 'Peer critic');
+  assert.equal(loaded.agents[1].toolCalls, 2);
+  assert.equal(loaded.reviewSignal.peerCriticFindings, 1);
+  assert.equal(loaded.reviewSignal.strongReviewFindings, 1);
+  assert.equal(loaded.reviewSignal.remediationPasses, 1);
+  assert.equal(loaded.reviewSignal.repeatedToolSignatureCount, 1);
+
+  const report = buildTournamentReport(root);
+  const topology = report.topologies[0];
+  assert.equal(topology.agentRoles.find((role) => role.label === 'Peer critic').medianCredits, 1);
+  assert.equal(topology.reviewSignal.peerCriticFindings, 1);
+  assert.equal(topology.reviewSignal.strongReviewFindings, 1);
 });
