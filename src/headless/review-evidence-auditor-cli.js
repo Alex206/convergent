@@ -8,7 +8,19 @@ const { runWithStartupRetry } = require('./topology-cli');
 const topologyEngineModule = require('./topology-engine');
 const { ReviewEvidenceAuditorBenchmarkEngine } = require('./review-evidence-auditor');
 
-topologyEngineModule.BenchmarkTopologyEngine = ReviewEvidenceAuditorBenchmarkEngine;
+class EnvironmentConfiguredReviewAuditorEngine extends ReviewEvidenceAuditorBenchmarkEngine {
+  constructor(options = {}) {
+    const auditorSelector = String(process.env.CONVERGENT_REVIEW_EVIDENCE_AUDITOR_MODEL ?? 'gpt-5.6-luna').trim();
+    const experimentTopology = String(process.env.CONVERGENT_REVIEW_EVIDENCE_AUDITOR_TOPOLOGY ?? `review-audit-${auditorSelector}`).trim();
+    super({
+      ...options,
+      reviewAuditorSelector: auditorSelector,
+      experimentTopology,
+    });
+  }
+}
+
+topologyEngineModule.BenchmarkTopologyEngine = EnvironmentConfiguredReviewAuditorEngine;
 const { runTopologyHeadless } = require('./topology-runner');
 
 async function rewriteExperimentIdentity(outputDir, experimentTopology, auditorSelector) {
@@ -50,6 +62,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  EnvironmentConfiguredReviewAuditorEngine,
   rewriteExperimentIdentity,
   main,
 };
