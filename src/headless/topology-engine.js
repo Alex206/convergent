@@ -4,21 +4,22 @@ const { RecoveryConvergentEngine } = require('../orchestrator/recovery-engine');
 const {
   requireReport,
   taskPrompt,
-  evidenceFromPass,
   formatValidationEvidence,
 } = require('../orchestrator/engine');
 const { formatTaskChangeManifest } = require('../orchestrator/task-change-manifest');
-const { chooseReasoningEffort } = require('../orchestrator/routing');
+const { routePolicy, chooseReasoningEffort } = require('../orchestrator/routing');
 const { reviewerFlowInstructions } = require('../orchestrator/flow');
 const { workspaceScopePrompt } = require('../orchestrator/workspace-scope');
-const { createReviewTool } = require('../copilot/tools');
+const { createPassTool, createReviewTool } = require('../copilot/tools');
 const {
   SessionFactory,
   attachEventLogging,
   readonlyHook,
+  workerHook,
   safeSessionPart,
   withReasoning,
   REVIEWER_TOOLS,
+  WORKER_TOOLS,
 } = require('../copilot/session-factory');
 const { topologyConfig, normalizeTopology } = require('./topology');
 
@@ -35,6 +36,35 @@ You are READ-ONLY. Do not edit files. Your purpose is narrower than the final st
 - report CLEAN when you found no actionable defect.
 
 Call report_review exactly once with CLEAN, FINDINGS, or BLOCKED. Never modify the workspace.
+`.trim();
+
+const COMPACT_WORKER_A_PROMPT = `
+You are Worker A for one standard implementation task.
+
+Implement the smallest complete change that satisfies the task and acceptance criteria while following existing repository patterns.
+- Inspect only what is needed. Reuse supplied evidence; do not reread unchanged files or rerun successful checks without a concrete reason.
+- Keep scope strict. Do not add unrelated cleanup, features, dependencies, compatibility layers, or documentation.
+- Protect pre-existing dirty/staged/untracked user state. Never delete or revert a path merely to make the worktree clean.
+- Use file-edit tools for content changes, not shell redirection. Use run_command for tests/builds whose completion matters, and keep validation non-polluting.
+- A Convergent workspace fingerprint is an opaque state hash, not a Git object; never resolve it with Git commands.
+- Use Explore only when relevant locations are genuinely unknown; continue from its compact findings without repeating discovery.
+- If a material fact or user decision is required, report BLOCKED rather than guessing.
+
+Call report_pass exactly once when finished. findings contains only unresolved actionable issues. CLEAN means no edits and no unresolved issue; CHANGED means substantive task edits are complete and approved; BLOCKED means correctness cannot safely be established. Keep summary/checks concise and evidence-based.
+`.trim();
+
+const COMPACT_REVIEWER_PROMPT = `
+You are the read-only strong quality gate for one standard implementation task.
+
+Review the exact task changes against the task and acceptance criteria. Inspect the changed files plus only directly affected contracts/tests needed to judge correctness.
+- Find concrete correctness, regression, error-handling, compatibility, security, concurrency, scope, or test gaps that matter to this task; do not broaden into a repository audit.
+- Collect independently discoverable actionable findings in one bounded sweep instead of stopping at the first issue.
+- Treat worker validation on the exact current state as useful evidence. Rerun validation only when a concrete concern requires it, and keep validation non-polluting.
+- Protect pre-existing user workspace state; unrelated dirty/untracked paths are not findings without evidence this task changed them.
+- A Convergent workspace fingerprint is an opaque state hash, not a Git object.
+- Use Explore only when a directly relevant location is genuinely unknown.
+
+Call report_review exactly once. CLEAN requires findings=[]; FINDINGS contains only unresolved actionable findings; BLOCKED is only for a substantive inability to establish correctness. Be terse and make the structured report authoritative.
 `.trim();
 
 class BenchmarkSessionFactory extends SessionFactory {
@@ -97,6 +127,110 @@ class BenchmarkSessionFactory extends SessionFactory {
   }
 }
 
+class CompactStandardSessionFactory extends BenchmarkSessionFactory {
+  async createWorker(taskId, worker, route = 'standard', risk = 'medium', sessionAttempt = '') {
+    if (worker !== 'A') return super.createWorker(taskId, worker, route, risk, sessionAttempt);
+    const safeTaskId = safeSessionPart(taskId);
+    const attemptSuffix = sessionAttempt ? `-${safeSessionPart(sessionAttempt)}` : '';
+    const sink = { value: null };
+    const tool = createPassTool(this.sdk.defineTool, sink);
+    const batchView = this.batchViewTool();
+    const name = 'Worker A';
+    let guard = null;
+    const runCommand = this.runCommandTool(name, () => guard);
+    const workspaceEdit = this.workspaceEditTool(name);
+    const model = this.workerModel(taskId, 'A', route, risk);
+    const effort = chooseReasoningEffort(model, routePolicy(route, risk).efforts.workerA, this.reasoningMode);
+    const baselinePrompt = await this.taskBaselinePrompt(taskId);
+    const systemPrompt = [
+      COMPACT_WORKER_A_PROMPT,
+      workspaceScopePrompt(this.workspace, this.workspaceFolders),
+      baselinePrompt,
+    ].filter(Boolean).join('\n\n');
+    const exploreAgent = this.exploreAgent();
+
+    const session = await this.client.createSession(withReasoning({
+      sessionId: `${this.runId}-${safeTaskId}-worker-a${attemptSuffix}`,
+      clientName: 'convergent-headless-topology',
+      model: model.id,
+      workingDirectory: this.workspace,
+      streaming: true,
+      tools: [batchView, runCommand, workspaceEdit, tool],
+      availableTools: WORKER_TOOLS,
+      customAgents: [exploreAgent],
+      systemMessage: { mode: 'append', content: systemPrompt },
+      hooks: { onPreToolUse: (input) => this.preToolUse(workerHook, name, input) },
+      onPermissionRequest: this.permissionHandler,
+      onUserInputRequest: this.userInputHandler,
+    }, effort));
+
+    guard = this.guard(session, name);
+    const usageKey = `${safeTaskId}:worker-a${attemptSuffix}`;
+    attachEventLogging(session, name, this.ui, this.usage, model, usageKey, { sink, toolName: 'report_pass' });
+    this.ui.agentTools?.(name, WORKER_TOOLS);
+    this.sessionCreated(name, session, model, effort, systemPrompt, WORKER_TOOLS, {
+      role: 'workerA',
+      taskId: safeTaskId,
+      route,
+      risk,
+      sessionAttempt: sessionAttempt || null,
+      exploreAgent,
+      benchmarkPromptProfile: 'compact-standard',
+    });
+    return { session, guard, sink, name: 'A', usageName: usageKey, model, reasoningEffort: effort };
+  }
+
+  async createReviewer(taskId, route = 'standard', risk = 'medium', sessionAttempt = '') {
+    const safeTaskId = safeSessionPart(taskId);
+    const attemptSuffix = sessionAttempt ? `-${safeSessionPart(sessionAttempt)}` : '';
+    const sink = { value: null };
+    const tool = createReviewTool(this.sdk.defineTool, sink);
+    const batchView = this.batchViewTool();
+    const name = 'Strong reviewer';
+    let guard = null;
+    const runCommand = this.runCommandTool(name, () => guard);
+    const model = this.models.reviewer;
+    const effort = chooseReasoningEffort(model, routePolicy(route, risk).efforts.reviewer, this.reasoningMode);
+    const baselinePrompt = await this.taskBaselinePrompt(taskId);
+    const systemPrompt = [
+      COMPACT_REVIEWER_PROMPT,
+      workspaceScopePrompt(this.workspace, this.workspaceFolders),
+      baselinePrompt,
+    ].filter(Boolean).join('\n\n');
+    const exploreAgent = this.exploreAgent();
+
+    const session = await this.client.createSession(withReasoning({
+      sessionId: `${this.runId}-${safeTaskId}-reviewer${attemptSuffix}`,
+      clientName: 'convergent-headless-topology',
+      model: model.id,
+      workingDirectory: this.workspace,
+      streaming: true,
+      tools: [batchView, runCommand, tool],
+      availableTools: REVIEWER_TOOLS,
+      customAgents: [exploreAgent],
+      systemMessage: { mode: 'append', content: systemPrompt },
+      hooks: { onPreToolUse: (input) => this.preToolUse(readonlyHook, name, input) },
+      onPermissionRequest: this.permissionHandler,
+      onUserInputRequest: this.userInputHandler,
+    }, effort));
+
+    guard = this.guard(session, name);
+    const usageKey = `${safeTaskId}:reviewer${attemptSuffix}`;
+    attachEventLogging(session, name, this.ui, this.usage, model, usageKey, { sink, toolName: 'report_review' });
+    this.ui.agentTools?.(name, REVIEWER_TOOLS);
+    this.sessionCreated(name, session, model, effort, systemPrompt, REVIEWER_TOOLS, {
+      role: 'reviewer',
+      taskId: safeTaskId,
+      route,
+      risk,
+      sessionAttempt: sessionAttempt || null,
+      exploreAgent,
+      benchmarkPromptProfile: 'compact-standard',
+    });
+    return { session, guard, sink, name, usageName: usageKey, model, reasoningEffort: effort };
+  }
+}
+
 class BenchmarkTopologyEngine extends RecoveryConvergentEngine {
   constructor(options = {}) {
     super(options);
@@ -109,7 +243,10 @@ class BenchmarkTopologyEngine extends RecoveryConvergentEngine {
   }
 
   sessionFactory() {
-    return new BenchmarkSessionFactory({
+    const Factory = this.topologyConfig.promptProfile === 'compact-standard'
+      ? CompactStandardSessionFactory
+      : BenchmarkSessionFactory;
+    return new Factory({
       client: this.client,
       sdk: this.sdk,
       workspace: this.workspace,
@@ -306,7 +443,10 @@ class BenchmarkTopologyEngine extends RecoveryConvergentEngine {
 
 module.exports = {
   PEER_CRITIC_PROMPT,
+  COMPACT_WORKER_A_PROMPT,
+  COMPACT_REVIEWER_PROMPT,
   DEFAULT_MAX_PEER_CRITIC_CYCLES,
   BenchmarkSessionFactory,
+  CompactStandardSessionFactory,
   BenchmarkTopologyEngine,
 };
