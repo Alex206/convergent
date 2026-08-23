@@ -1,0 +1,142 @@
+name: Structured Capability Stress
+
+on:
+  push:
+    branches:
+      - agent/topology-benchmark-tournament
+    paths:
+      - .github/workflows/topology-structured-stress.yml
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        scenario:
+          - benchmarks/03-dependency-ordering.md
+          - benchmarks/08-artifact-path-containment.md
+        repeat: [1, 2, 3]
+    env:
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+      COPILOT_PLUGIN_DIR_ONLY: 'true'
+      RUN_OUTPUT: ${{ runner.temp }}/topology-run
+      TOPOLOGY: luna-terra-structured
+      SCENARIO: ${{ matrix.scenario }}
+    steps:
+      - name: Require benchmark credentials
+        shell: bash
+        env:
+          BENCHMARK_REPO_TOKEN: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+        run: |
+          test -n "${COPILOT_GITHUB_TOKEN}" || { echo "COPILOT_GITHUB_TOKEN is required." >&2; exit 2; }
+          test -n "${BENCHMARK_REPO_TOKEN}" || { echo "BENCHMARK_REPO_TOKEN is required." >&2; exit 2; }
+
+      - name: Checkout Convergent
+        uses: actions/checkout@v6
+
+      - name: Checkout benchmark fixture
+        uses: actions/checkout@v6
+        with:
+          repository: Alex206/convergent-test-repo
+          ref: ${{ endsWith(matrix.scenario, '08-artifact-path-containment.md') && 'benchmark/scenario08-path-containment' || 'main' }}
+          path: benchmark-target
+          token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Install Convergent dependencies
+        run: npm ci
+
+      - name: Prepare benchmark metadata
+        shell: bash
+        env:
+          REPEAT: ${{ matrix.repeat }}
+        run: |
+          rm -rf "${RUN_OUTPUT}"
+          mkdir -p "${RUN_OUTPUT}"
+          fixture_sha="$(git -C benchmark-target rev-parse HEAD)"
+          FIXTURE_SHA="${fixture_sha}" REPEAT="${REPEAT}" node - <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          fs.writeFileSync(path.join(process.env.RUN_OUTPUT, 'benchmark-meta.json'), `${JSON.stringify({
+            topology: process.env.TOPOLOGY,
+            scenario: process.env.SCENARIO,
+            repeat: Number(process.env.REPEAT),
+            fixtureSha: process.env.FIXTURE_SHA,
+          }, null, 2)}\n`);
+          NODE
+
+      - name: Run topology benchmark
+        continue-on-error: true
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          export CONVERGENT_HEADLESS_ANSWERS_JSON='[]'
+          set -o pipefail
+          node src/headless/topology-cli.js \
+            --workspace "${GITHUB_WORKSPACE}/benchmark-target" \
+            --prompt-file "${GITHUB_WORKSPACE}/benchmark-target/${SCENARIO}" \
+            --output-dir "${RUN_OUTPUT}" \
+            --topology "${TOPOLOGY}" \
+            --flow fast \
+            --audit-level full \
+            --limit-policy pause \
+            --max-model-calls 24 \
+            --max-model-calls-per-turn 10 \
+            --max-chat-requests 8 \
+            --max-ai-credits 25 \
+            2>&1 | tee "${RUN_OUTPUT}/runner.log"
+
+      - name: Independently validate target tests
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          (cd benchmark-target && python3 -B -m unittest discover -s tests -v) > "${RUN_OUTPUT}/target-validation.log" 2>&1
+          rc=$?
+          RC="${rc}" node - <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const rc = Number(process.env.RC);
+          fs.writeFileSync(path.join(process.env.RUN_OUTPUT, 'target-validation.json'), `${JSON.stringify({ ok: rc === 0, exitCode: rc }, null, 2)}\n`);
+          NODE
+          cat "${RUN_OUTPUT}/target-validation.log"
+
+      - name: Run deterministic scenario oracle
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          case "${SCENARIO}" in
+            *03-dependency-ordering.md)
+              node src/headless/scenario03-acceptance.js "${GITHUB_WORKSPACE}/benchmark-target" "${RUN_OUTPUT}/scenario-acceptance.json"
+              ;;
+            *08-artifact-path-containment.md)
+              node src/headless/scenario08-acceptance.js "${GITHUB_WORKSPACE}/benchmark-target" "${RUN_OUTPUT}/scenario-acceptance.json"
+              ;;
+          esac
+
+      - name: Capture final workspace
+        if: always()
+        shell: bash
+        run: |
+          git -C benchmark-target status --porcelain=v1 --untracked-files=all > "${RUN_OUTPUT}/final-status.txt" || true
+          git -C benchmark-target diff --binary --no-ext-diff > "${RUN_OUTPUT}/final-diff.patch" || true
+
+      - name: Upload run evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: structured-stress-${{ strategy.job-index }}-r${{ matrix.repeat }}
+          path: ${{ runner.temp }}/topology-run
+          if-no-files-found: error
+          retention-days: 14
