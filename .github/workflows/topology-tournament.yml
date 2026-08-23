@@ -49,7 +49,7 @@ on:
         type: string
 
   pull_request:
-    types: [ready_for_review]
+    types: [ready_for_review, synchronize]
 
 jobs:
   benchmark:
@@ -61,12 +61,13 @@ jobs:
       fail-fast: false
       max-parallel: 1
       matrix:
-        topology: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.topologies_json || '["luna-terra","luna-terra-capable"]') }}
+        topology: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.topologies_json || '["luna-terra-structured"]') }}
         scenario: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.scenarios_json || '["benchmarks/03-dependency-ordering.md"]') }}
         repeat: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.repeats_json || '[1,2,3]') }}
     env:
       COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
       COPILOT_PLUGIN_DIR_ONLY: 'true'
+      CONVERGENT_BENCHMARK_REVIEW_CONTRACT: acceptance-matrix-v1
     steps:
       - name: Require benchmark credentials
         shell: bash
@@ -83,7 +84,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: Alex206/convergent-test-repo
-          ref: ${{ endsWith(matrix.scenario, '07-one-shot-label-filter-bug.md') && 'benchmark/scenario07-one-shot-label-iterable' || endsWith(matrix.scenario, '08-artifact-path-containment.md') && 'benchmark/scenario08-path-containment' || 'main' }}
+          ref: ${{ endsWith(matrix.scenario, '03-dependency-ordering.md') && 'benchmark/scenario03-review-contract' || endsWith(matrix.scenario, '07-one-shot-label-filter-bug.md') && 'benchmark/scenario07-one-shot-label-iterable' || endsWith(matrix.scenario, '08-artifact-path-containment.md') && 'benchmark/scenario08-path-containment' || 'main' }}
           path: benchmark-target
           token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
 
@@ -102,7 +103,7 @@ jobs:
           SCENARIO: ${{ matrix.scenario }}
           REPEAT: ${{ matrix.repeat }}
           RUN_OUTPUT: ${{ runner.temp }}/topology-run
-          FIXTURE_REF: ${{ endsWith(matrix.scenario, '07-one-shot-label-filter-bug.md') && 'benchmark/scenario07-one-shot-label-iterable' || endsWith(matrix.scenario, '08-artifact-path-containment.md') && 'benchmark/scenario08-path-containment' || 'main' }}
+          FIXTURE_REF: ${{ endsWith(matrix.scenario, '03-dependency-ordering.md') && 'benchmark/scenario03-review-contract' || endsWith(matrix.scenario, '07-one-shot-label-filter-bug.md') && 'benchmark/scenario07-one-shot-label-iterable' || endsWith(matrix.scenario, '08-artifact-path-containment.md') && 'benchmark/scenario08-path-containment' || 'main' }}
         run: |
           rm -rf "${RUN_OUTPUT}"
           mkdir -p "${RUN_OUTPUT}"
@@ -153,10 +154,10 @@ jobs:
             --flow "${{ inputs.flow || 'fast' }}" \
             --audit-level full \
             --limit-policy pause \
-            --max-model-calls "${{ inputs.max_model_calls || '24' }}" \
+            --max-model-calls "${{ inputs.max_model_calls || '40' }}" \
             --max-model-calls-per-turn "${{ inputs.max_model_calls_per_turn || '14' }}" \
-            --max-chat-requests "${{ inputs.max_chat_requests || '8' }}" \
-            --max-ai-credits "${{ inputs.max_ai_credits || '25' }}" \
+            --max-chat-requests "${{ inputs.max_chat_requests || '14' }}" \
+            --max-ai-credits "${{ inputs.max_ai_credits || '45' }}" \
             2>&1 | tee "${RUN_OUTPUT}/runner.log"
 
       - name: Independently validate target tests
