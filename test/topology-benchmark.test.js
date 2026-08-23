@@ -18,6 +18,10 @@ const {
 const {
   COMPACT_WORKER_A_PROMPT,
   COMPACT_REVIEWER_PROMPT,
+  LEAN_WORKER_A_PROMPT,
+  LEAN_REVIEWER_PROMPT,
+  LEAN_WORKER_TOOLS,
+  LEAN_REVIEWER_TOOLS,
 } = require('../src/headless/topology-engine');
 const {
   loadRun,
@@ -31,12 +35,14 @@ test('benchmark topology set contains the intended architecture experiment arms'
     'terra-solo',
     'luna-terra',
     'luna-terra-compact',
+    'luna-terra-lean',
     'luna-peer-terra',
     'luna-ab-terra',
     'terra-terra',
   ]);
   assert.equal(topologyConfig('terra-solo').kind, 'single_agent');
   assert.equal(topologyConfig('luna-terra-compact').promptProfile, 'compact-standard');
+  assert.equal(topologyConfig('luna-terra-lean').promptProfile, 'lean-standard');
   assert.equal(topologyConfig('luna-peer-terra').peerMode, 'critic');
   assert.equal(topologyConfig('luna-ab-terra').peerMode, 'converge');
   assert.throws(() => normalizeTopology('mystery'), /Unsupported benchmark topology/);
@@ -52,6 +58,10 @@ test('topology selectors pin Terra/Luna explicitly instead of silently using str
   assert.equal(economical.workerA, 'gpt-5.6-luna');
   assert.equal(economical.reviewer, 'gpt-5.6-terra');
 
+  const lean = applyTopologySelectors({ topology: 'luna-terra-lean' });
+  assert.equal(lean.workerA, 'gpt-5.6-luna');
+  assert.equal(lean.reviewer, 'gpt-5.6-terra');
+
   const peer = applyTopologySelectors({ topology: 'luna-peer-terra' });
   assert.equal(peer.workerA, 'gpt-5.6-luna');
   assert.equal(peer.workerB, 'adaptive-diverse');
@@ -66,6 +76,33 @@ test('compact standard prompts retain core safety/report semantics without produ
   assert.match(COMPACT_REVIEWER_PROMPT, /read-only strong quality gate/);
   assert.match(COMPACT_REVIEWER_PROMPT, /report_review exactly once/);
   assert.match(COMPACT_REVIEWER_PROMPT, /CLEAN requires findings=\[\]/);
+});
+
+test('lean standard profile preserves safety while removing unused exploration and redundant tool surface', () => {
+  assert.ok(LEAN_WORKER_A_PROMPT.length < 1800);
+  assert.ok(LEAN_REVIEWER_PROMPT.length < 1800);
+  assert.match(LEAN_WORKER_A_PROMPT, /pre-existing/);
+  assert.match(LEAN_WORKER_A_PROMPT, /workspace fingerprint is an opaque state hash/);
+  assert.match(LEAN_WORKER_A_PROMPT, /report_pass exactly once/);
+  assert.doesNotMatch(LEAN_WORKER_A_PROMPT, /Explore/);
+  assert.match(LEAN_REVIEWER_PROMPT, /deterministic task-change manifest and bounded current diff/);
+  assert.match(LEAN_REVIEWER_PROMPT, /report_review exactly once/);
+  assert.doesNotMatch(LEAN_REVIEWER_PROMPT, /Explore/);
+  assert.deepEqual(LEAN_WORKER_TOOLS, [
+    'builtin:view',
+    'custom:batch_view',
+    'custom:run_command',
+    'builtin:apply_patch',
+    'builtin:edit',
+    'builtin:create',
+    'custom:report_pass',
+  ]);
+  assert.deepEqual(LEAN_REVIEWER_TOOLS, [
+    'builtin:view',
+    'custom:batch_view',
+    'custom:run_command',
+    'custom:report_review',
+  ]);
 });
 
 test('single Terra baseline has editing/validation tools but no Convergent report tool', () => {
