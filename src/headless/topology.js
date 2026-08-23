@@ -102,6 +102,18 @@ const TOPOLOGIES = Object.freeze({
     },
   }),
   'luna-ab-terra': Object.freeze({
+    label: 'Luna + modifying A/B convergence + Terra review',
+    kind: 'convergent',
+    peerMode: 'converge',
+    promptProfile: 'production',
+    selectors: {
+      coordinator: 'gpt-5.6-terra',
+      workerA: 'gpt-5.6-luna',
+      workerB: 'adaptive-diverse',
+      reviewer: 'gpt-5.6-terra',
+    },
+  }),
+  'luna-terra-trust-boundary': Object.freeze({
     label: 'Luna + Terra review (trust-boundary composition contract; benchmark only)',
     kind: 'convergent',
     peerMode: 'none',
