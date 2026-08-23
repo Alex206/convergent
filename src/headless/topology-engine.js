@@ -67,6 +67,49 @@ Review the exact task changes against the task and acceptance criteria. Inspect 
 Call report_review exactly once. CLEAN requires findings=[]; FINDINGS contains only unresolved actionable findings; BLOCKED is only for a substantive inability to establish correctness. Be terse and make the structured report authoritative.
 `.trim();
 
+const LEAN_WORKER_A_PROMPT = `
+You are Worker A for one standard implementation task.
+
+Implement the smallest complete change that satisfies the task and acceptance criteria while following existing repository patterns.
+- Use batch_view as the primary repository inspection tool; inspect only what is needed and do not perform a second search wave for reassurance.
+- Keep scope strict and protect pre-existing dirty/staged/untracked user state. Never clean, revert, or overwrite unrelated user changes.
+- Use built-in file edit/create/patch tools for content changes and run_command only for decisive validation. Keep validation non-polluting.
+- A Convergent workspace fingerprint is an opaque state hash, not a Git object.
+- If a material fact or user decision is required, report BLOCKED rather than guessing.
+
+Call report_pass exactly once when finished. findings contains only unresolved actionable issues. CLEAN means no edits and no unresolved issue; CHANGED means substantive task edits are complete and approved; BLOCKED means correctness cannot safely be established. Keep summary/checks concise and evidence-based.
+`.trim();
+
+const LEAN_REVIEWER_PROMPT = `
+You are the read-only strong quality gate for one standard implementation task.
+
+Review the exact task changes against the task and acceptance criteria in one bounded sweep.
+- The review turn includes a deterministic task-change manifest and bounded current diff. Treat that packet as primary evidence. Do not reopen changed files merely to reread code already present in the packet; use view/batch_view only for a concrete surrounding contract or test question not answered there.
+- Find concrete correctness, regression, error-handling, compatibility, security, concurrency, scope, or test gaps that matter to this task; do not broaden into a repository audit.
+- Treat worker validation on the exact current state as useful evidence. Do not rerun tests or git-diff checks for reassurance; run a command only when a concrete concern requires independent evidence.
+- Protect pre-existing user workspace state; unrelated dirty/untracked paths are not findings without evidence this task changed them.
+- A Convergent workspace fingerprint is an opaque state hash, not a Git object.
+
+Call report_review exactly once. CLEAN requires findings=[]; FINDINGS contains only unresolved actionable findings; BLOCKED is only for a substantive inability to establish correctness. Be terse and make the structured report authoritative.
+`.trim();
+
+const LEAN_WORKER_TOOLS = Object.freeze([
+  'builtin:view',
+  'custom:batch_view',
+  'custom:run_command',
+  'builtin:apply_patch',
+  'builtin:edit',
+  'builtin:create',
+  'custom:report_pass',
+]);
+
+const LEAN_REVIEWER_TOOLS = Object.freeze([
+  'builtin:view',
+  'custom:batch_view',
+  'custom:run_command',
+  'custom:report_review',
+]);
+
 class BenchmarkSessionFactory extends SessionFactory {
   async createPeerCritic(taskId, route = 'standard', risk = 'medium') {
     const safeTaskId = safeSessionPart(taskId);
@@ -231,6 +274,105 @@ class CompactStandardSessionFactory extends BenchmarkSessionFactory {
   }
 }
 
+class LeanStandardSessionFactory extends CompactStandardSessionFactory {
+  async createWorker(taskId, worker, route = 'standard', risk = 'medium', sessionAttempt = '') {
+    if (worker !== 'A') return super.createWorker(taskId, worker, route, risk, sessionAttempt);
+    const safeTaskId = safeSessionPart(taskId);
+    const attemptSuffix = sessionAttempt ? `-${safeSessionPart(sessionAttempt)}` : '';
+    const sink = { value: null };
+    const tool = createPassTool(this.sdk.defineTool, sink);
+    const batchView = this.batchViewTool();
+    const name = 'Worker A';
+    let guard = null;
+    const runCommand = this.runCommandTool(name, () => guard);
+    const model = this.workerModel(taskId, 'A', route, risk);
+    const effort = chooseReasoningEffort(model, routePolicy(route, risk).efforts.workerA, this.reasoningMode);
+    const baselinePrompt = await this.taskBaselinePrompt(taskId);
+    const systemPrompt = [
+      LEAN_WORKER_A_PROMPT,
+      workspaceScopePrompt(this.workspace, this.workspaceFolders),
+      baselinePrompt,
+    ].filter(Boolean).join('\n\n');
+
+    const session = await this.client.createSession(withReasoning({
+      sessionId: `${this.runId}-${safeTaskId}-worker-a${attemptSuffix}`,
+      clientName: 'convergent-headless-topology',
+      model: model.id,
+      workingDirectory: this.workspace,
+      streaming: true,
+      tools: [batchView, runCommand, tool],
+      availableTools: [...LEAN_WORKER_TOOLS],
+      systemMessage: { mode: 'append', content: systemPrompt },
+      hooks: { onPreToolUse: (input) => this.preToolUse(workerHook, name, input) },
+      onPermissionRequest: this.permissionHandler,
+      onUserInputRequest: this.userInputHandler,
+    }, effort));
+
+    guard = this.guard(session, name);
+    const usageKey = `${safeTaskId}:worker-a${attemptSuffix}`;
+    attachEventLogging(session, name, this.ui, this.usage, model, usageKey, { sink, toolName: 'report_pass' });
+    this.ui.agentTools?.(name, LEAN_WORKER_TOOLS);
+    this.sessionCreated(name, session, model, effort, systemPrompt, LEAN_WORKER_TOOLS, {
+      role: 'workerA',
+      taskId: safeTaskId,
+      route,
+      risk,
+      sessionAttempt: sessionAttempt || null,
+      benchmarkPromptProfile: 'lean-standard',
+      benchmarkToolProfile: 'lean-standard',
+    });
+    return { session, guard, sink, name: 'A', usageName: usageKey, model, reasoningEffort: effort };
+  }
+
+  async createReviewer(taskId, route = 'standard', risk = 'medium', sessionAttempt = '') {
+    const safeTaskId = safeSessionPart(taskId);
+    const attemptSuffix = sessionAttempt ? `-${safeSessionPart(sessionAttempt)}` : '';
+    const sink = { value: null };
+    const tool = createReviewTool(this.sdk.defineTool, sink);
+    const batchView = this.batchViewTool();
+    const name = 'Strong reviewer';
+    let guard = null;
+    const runCommand = this.runCommandTool(name, () => guard);
+    const model = this.models.reviewer;
+    const effort = chooseReasoningEffort(model, routePolicy(route, risk).efforts.reviewer, this.reasoningMode);
+    const baselinePrompt = await this.taskBaselinePrompt(taskId);
+    const systemPrompt = [
+      LEAN_REVIEWER_PROMPT,
+      workspaceScopePrompt(this.workspace, this.workspaceFolders),
+      baselinePrompt,
+    ].filter(Boolean).join('\n\n');
+
+    const session = await this.client.createSession(withReasoning({
+      sessionId: `${this.runId}-${safeTaskId}-reviewer${attemptSuffix}`,
+      clientName: 'convergent-headless-topology',
+      model: model.id,
+      workingDirectory: this.workspace,
+      streaming: true,
+      tools: [batchView, runCommand, tool],
+      availableTools: [...LEAN_REVIEWER_TOOLS],
+      systemMessage: { mode: 'append', content: systemPrompt },
+      hooks: { onPreToolUse: (input) => this.preToolUse(readonlyHook, name, input) },
+      onPermissionRequest: this.permissionHandler,
+      onUserInputRequest: this.userInputHandler,
+    }, effort));
+
+    guard = this.guard(session, name);
+    const usageKey = `${safeTaskId}:reviewer${attemptSuffix}`;
+    attachEventLogging(session, name, this.ui, this.usage, model, usageKey, { sink, toolName: 'report_review' });
+    this.ui.agentTools?.(name, LEAN_REVIEWER_TOOLS);
+    this.sessionCreated(name, session, model, effort, systemPrompt, LEAN_REVIEWER_TOOLS, {
+      role: 'reviewer',
+      taskId: safeTaskId,
+      route,
+      risk,
+      sessionAttempt: sessionAttempt || null,
+      benchmarkPromptProfile: 'lean-standard',
+      benchmarkToolProfile: 'lean-standard',
+    });
+    return { session, guard, sink, name, usageName: usageKey, model, reasoningEffort: effort };
+  }
+}
+
 class BenchmarkTopologyEngine extends RecoveryConvergentEngine {
   constructor(options = {}) {
     super(options);
@@ -243,9 +385,9 @@ class BenchmarkTopologyEngine extends RecoveryConvergentEngine {
   }
 
   sessionFactory() {
-    const Factory = this.topologyConfig.promptProfile === 'compact-standard'
-      ? CompactStandardSessionFactory
-      : BenchmarkSessionFactory;
+    let Factory = BenchmarkSessionFactory;
+    if (this.topologyConfig.promptProfile === 'compact-standard') Factory = CompactStandardSessionFactory;
+    if (this.topologyConfig.promptProfile === 'lean-standard') Factory = LeanStandardSessionFactory;
     return new Factory({
       client: this.client,
       sdk: this.sdk,
@@ -445,8 +587,13 @@ module.exports = {
   PEER_CRITIC_PROMPT,
   COMPACT_WORKER_A_PROMPT,
   COMPACT_REVIEWER_PROMPT,
+  LEAN_WORKER_A_PROMPT,
+  LEAN_REVIEWER_PROMPT,
+  LEAN_WORKER_TOOLS,
+  LEAN_REVIEWER_TOOLS,
   DEFAULT_MAX_PEER_CRITIC_CYCLES,
   BenchmarkSessionFactory,
   CompactStandardSessionFactory,
+  LeanStandardSessionFactory,
   BenchmarkTopologyEngine,
 };
