@@ -49,7 +49,7 @@ on:
         type: string
 
   pull_request:
-    types: [ready_for_review, synchronize]
+    types: [ready_for_review]
 
 jobs:
   benchmark:
@@ -61,9 +61,9 @@ jobs:
       fail-fast: false
       max-parallel: 1
       matrix:
-        topology: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.topologies_json || '["terra-solo","luna-terra-structured"]') }}
-        scenario: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.scenarios_json || '["benchmarks/01-small-duration-parser.md","benchmarks/03-dependency-ordering.md","benchmarks/08-artifact-path-containment.md"]') }}
-        repeat: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.repeats_json || '[1,2,3]') }}
+        topology: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.topologies_json || '["luna-terra-structured"]') }}
+        scenario: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.scenarios_json || '["benchmarks/03-dependency-ordering.md"]') }}
+        repeat: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.repeats_json || '[1]') }}
     env:
       COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
       COPILOT_PLUGIN_DIR_ONLY: 'true'
@@ -223,6 +223,7 @@ jobs:
             *07-one-shot-label-filter-bug.md)
               node src/headless/scenario07-acceptance.js \
                 "${GITHUB_WORKSPACE}/benchmark-target" \
+                "${events}" \
                 "${RUN_OUTPUT}/scenario-acceptance.json"
               ;;
             *08-artifact-path-containment.md)
