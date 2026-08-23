@@ -14,6 +14,34 @@ const {
   injectPathProbeIntoReviewerClient,
 } = require('./reviewer-path-probe');
 
+const REVIEW_AUDITOR_BOUNDARY_PROMPT = `
+Apply the evidence contract especially strictly at acceptance-rule boundaries.
+
+Derive the semantic distinctions from the TASK CONTRACT before judging the review report. When the task contains both a permissive rule and a restrictive rule over closely related transformations, a claimed matched hostile/benign pair is adequate only if:
+- the negative witness exercises the restrictive rule at its boundary;
+- the positive witness exercises the permissive rule at its boundary, not merely an easier happy path;
+- both observations stress the same controversial intermediate state or transition family as far as the task semantics permit;
+- the pair holds irrelevant dimensions as constant as practical and varies the contract property that explains why one must reject while the other must accept;
+- the positive witness would actually fail under the plausible over-restrictive remediation suggested by the negative finding.
+
+If the report proves only that some ordinary valid case still works, but does not test the edge of the task's stated permissive rule, set overrestriction_guard=false and matched_contrast_pair=false. Do not invent a hidden test case; derive the needed semantic boundary only from the supplied task contract and the review report.
+`.trim();
+
+function injectSystemPromptIntoClient(baseClient, extraPrompt) {
+  const proxy = Object.create(baseClient);
+  proxy.createSession = async (options = {}) => {
+    const originalPrompt = options.systemMessage?.content ?? '';
+    return baseClient.createSession({
+      ...options,
+      systemMessage: {
+        mode: 'append',
+        content: [originalPrompt, extraPrompt].filter(Boolean).join('\n\n'),
+      },
+    });
+  };
+  return proxy;
+}
+
 class ProbeEnabledReviewEvidenceAuditorSessionFactory extends ReviewEvidenceAuditorSessionFactory {
   async createReviewer(...args) {
     const probeTool = createPathResolutionProbeTool(this.sdk.defineTool, {
@@ -23,6 +51,16 @@ class ProbeEnabledReviewEvidenceAuditorSessionFactory extends ReviewEvidenceAudi
     this.client = injectPathProbeIntoReviewerClient(this, baseClient, probeTool);
     try {
       return await super.createReviewer(...args);
+    } finally {
+      this.client = baseClient;
+    }
+  }
+
+  async createReviewEvidenceAuditor(...args) {
+    const baseClient = this.client;
+    this.client = injectSystemPromptIntoClient(baseClient, REVIEW_AUDITOR_BOUNDARY_PROMPT);
+    try {
+      return await super.createReviewEvidenceAuditor(...args);
     } finally {
       this.client = baseClient;
     }
@@ -81,6 +119,7 @@ async function rewriteExperimentIdentity(outputDir, experimentTopology, auditorS
     lowContext: true,
     repositoryTools: false,
     reviewerIsolatedPathProbe: true,
+    positiveBoundaryEvidence: true,
   };
   await fs.writeFile(resultPath, `${JSON.stringify(result, null, 2)}\n`, 'utf8');
 
@@ -91,6 +130,7 @@ async function rewriteExperimentIdentity(outputDir, experimentTopology, auditorS
     lowContext: true,
     repositoryTools: false,
     reviewerIsolatedPathProbe: true,
+    positiveBoundaryEvidence: true,
   }, null, 2)}\n`, 'utf8');
   return true;
 }
@@ -120,6 +160,8 @@ if (require.main === module) {
 }
 
 module.exports = {
+  REVIEW_AUDITOR_BOUNDARY_PROMPT,
+  injectSystemPromptIntoClient,
   ProbeEnabledReviewEvidenceAuditorSessionFactory,
   EnvironmentConfiguredReviewAuditorEngine,
   rewriteExperimentIdentity,
