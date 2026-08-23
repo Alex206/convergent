@@ -10,6 +10,19 @@ const REVIEW_QUALITY_CONTRACT = [
   'Collect all independently discoverable actionable findings within the selected bounded scope. Do not invent hidden requirements, and do not broaden beyond the task and directly affected contracts merely to satisfy this contract.',
 ].join(' ');
 
+const TRUST_BOUNDARY_COMPOSITION_CONTRACT = [
+  'BENCHMARK TRUST-BOUNDARY COMPOSITION REVIEW: when the task transforms untrusted or externally controlled input across a security/trust boundary, do not establish safety only from the final normalized, canonical, decoded, redirected, aliased, resolved, or otherwise transformed representation.',
+  'Trace the relevant transformations in execution order and, before CLEAN, choose one bounded discriminating adversarial witness where an intermediate state crosses, escapes, or rebinds the trust boundary and a later transformation could make the final representation appear acceptable.',
+  'Also choose one bounded benign witness from the same transformation family whose representation changes but whose behavior is explicitly or directly implied to remain valid. The pair should distinguish both a final-state-only near miss and an over-restrictive remediation.',
+  'If either witness contradicts the required boundary or allowed behavior, report a finding. Derive the trust boundary and allowed behavior only from the explicit task and directly affected repository contracts; do not invent hidden requirements.',
+].join(' ');
+
+function benchmarkReviewerInstructions() {
+  return process.env.CONVERGENT_BENCHMARK_REVIEW_CONTRACT === 'trust-boundary-composition-v1'
+    ? TRUST_BOUNDARY_COMPOSITION_CONTRACT
+    : '';
+}
+
 function normalizeFlowMode(value) {
   const normalized = String(value ?? '').trim().toLowerCase();
   return FLOW_MODES.has(normalized) ? normalized : 'auto';
@@ -105,7 +118,7 @@ function reviewerFlowInstructions(mode) {
   } else {
     scope = 'AUTO FLOW REVIEW SCOPE: on the first cycle review the task diff plus directly affected architecture/contracts/test surfaces; broaden only when risk or concrete evidence warrants it.';
   }
-  return `${scope} ${REVIEW_QUALITY_CONTRACT}`;
+  return [scope, REVIEW_QUALITY_CONTRACT, benchmarkReviewerInstructions()].filter(Boolean).join(' ');
 }
 
 module.exports = {
