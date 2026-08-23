@@ -1,14 +1,12 @@
 name: Structured Capability Stress
 
 on:
-  push:
-    branches:
-      - agent/topology-benchmark-tournament
-    paths:
-      - .github/workflows/topology-structured-stress.yml
+  pull_request:
+    types: [ready_for_review]
 
 jobs:
   benchmark:
+    if: github.event.pull_request.head.ref == 'agent/topology-benchmark-tournament'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:
