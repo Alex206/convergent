@@ -9,7 +9,7 @@ const {
 const { formatTaskChangeManifest } = require('../orchestrator/task-change-manifest');
 const { routePolicy, chooseReasoningEffort } = require('../orchestrator/routing');
 const { reviewerFlowInstructions } = require('../orchestrator/flow');
-const { workspaceScopePrompt } = require('../orchestrator/workspace-scope');
+const { normalizeWorkspaceFolders, workspaceScopePrompt } = require('../orchestrator/workspace-scope');
 const { createPassTool, createReviewTool } = require('../copilot/tools');
 const {
   SessionFactory,
@@ -109,6 +109,32 @@ const LEAN_REVIEWER_TOOLS = Object.freeze([
   'custom:run_command',
   'custom:report_review',
 ]);
+
+const STRUCTURED_READ_TOOLS = Object.freeze([
+  'builtin:view',
+  'builtin:glob',
+  'builtin:rg',
+]);
+
+const STRUCTURED_REVIEWER_TOOLS = Object.freeze([
+  ...STRUCTURED_READ_TOOLS,
+  'custom:batch_view',
+  'custom:run_command',
+  'custom:report_review',
+]);
+
+function structuredWorkerTools(multiRoot = false) {
+  return [
+    ...STRUCTURED_READ_TOOLS,
+    'custom:batch_view',
+    'custom:run_command',
+    ...(multiRoot ? ['custom:workspace_edit'] : []),
+    'builtin:apply_patch',
+    'builtin:edit',
+    'builtin:create',
+    'custom:report_pass',
+  ];
+}
 
 class BenchmarkSessionFactory extends SessionFactory {
   async createPeerCritic(taskId, route = 'standard', risk = 'medium') {
@@ -277,11 +303,20 @@ class CompactStandardSessionFactory extends BenchmarkSessionFactory {
 class LeanStandardSessionFactory extends CompactStandardSessionFactory {
   constructor(options = {}) {
     super(options);
-    this.benchmarkToolProfile = options.benchmarkToolProfile === 'full' ? 'full' : 'lean';
+    const profile = String(options.benchmarkToolProfile ?? 'lean');
+    this.benchmarkToolProfile = ['full', 'structured'].includes(profile) ? profile : 'lean';
   }
 
   fullCapabilities() {
     return this.benchmarkToolProfile === 'full';
+  }
+
+  structuredCapabilities() {
+    return this.benchmarkToolProfile === 'structured';
+  }
+
+  multiRootWorkspace() {
+    return normalizeWorkspaceFolders(this.workspace, this.workspaceFolders).length > 1;
   }
 
   async createWorker(taskId, worker, route = 'standard', risk = 'medium', sessionAttempt = '') {
@@ -295,8 +330,15 @@ class LeanStandardSessionFactory extends CompactStandardSessionFactory {
     let guard = null;
     const runCommand = this.runCommandTool(name, () => guard);
     const fullCapabilities = this.fullCapabilities();
-    const workspaceEdit = fullCapabilities ? this.workspaceEditTool(name) : null;
-    const availableTools = fullCapabilities ? WORKER_TOOLS : LEAN_WORKER_TOOLS;
+    const structuredCapabilities = this.structuredCapabilities();
+    const structuredMultiRoot = structuredCapabilities && this.multiRootWorkspace();
+    const needsWorkspaceEdit = fullCapabilities || structuredMultiRoot;
+    const workspaceEdit = needsWorkspaceEdit ? this.workspaceEditTool(name) : null;
+    const availableTools = fullCapabilities
+      ? WORKER_TOOLS
+      : structuredCapabilities
+        ? structuredWorkerTools(structuredMultiRoot)
+        : LEAN_WORKER_TOOLS;
     const exploreAgent = fullCapabilities ? this.exploreAgent() : null;
     const model = this.workerModel(taskId, 'A', route, risk);
     const effort = chooseReasoningEffort(model, routePolicy(route, risk).efforts.workerA, this.reasoningMode);
@@ -313,9 +355,7 @@ class LeanStandardSessionFactory extends CompactStandardSessionFactory {
       model: model.id,
       workingDirectory: this.workspace,
       streaming: true,
-      tools: fullCapabilities
-        ? [batchView, runCommand, workspaceEdit, tool]
-        : [batchView, runCommand, tool],
+      tools: [batchView, runCommand, ...(workspaceEdit ? [workspaceEdit] : []), tool],
       availableTools: [...availableTools],
       ...(exploreAgent ? { customAgents: [exploreAgent] } : {}),
       systemMessage: { mode: 'append', content: systemPrompt },
@@ -336,7 +376,7 @@ class LeanStandardSessionFactory extends CompactStandardSessionFactory {
       sessionAttempt: sessionAttempt || null,
       ...(exploreAgent ? { exploreAgent } : {}),
       benchmarkPromptProfile: 'lean-standard',
-      benchmarkToolProfile: fullCapabilities ? 'full' : 'lean-standard',
+      benchmarkToolProfile: this.benchmarkToolProfile,
     });
     return { session, guard, sink, name: 'A', usageName: usageKey, model, reasoningEffort: effort };
   }
@@ -351,7 +391,12 @@ class LeanStandardSessionFactory extends CompactStandardSessionFactory {
     let guard = null;
     const runCommand = this.runCommandTool(name, () => guard);
     const fullCapabilities = this.fullCapabilities();
-    const availableTools = fullCapabilities ? REVIEWER_TOOLS : LEAN_REVIEWER_TOOLS;
+    const structuredCapabilities = this.structuredCapabilities();
+    const availableTools = fullCapabilities
+      ? REVIEWER_TOOLS
+      : structuredCapabilities
+        ? STRUCTURED_REVIEWER_TOOLS
+        : LEAN_REVIEWER_TOOLS;
     const exploreAgent = fullCapabilities ? this.exploreAgent() : null;
     const model = this.models.reviewer;
     const effort = chooseReasoningEffort(model, routePolicy(route, risk).efforts.reviewer, this.reasoningMode);
@@ -389,7 +434,7 @@ class LeanStandardSessionFactory extends CompactStandardSessionFactory {
       sessionAttempt: sessionAttempt || null,
       ...(exploreAgent ? { exploreAgent } : {}),
       benchmarkPromptProfile: 'lean-standard',
-      benchmarkToolProfile: fullCapabilities ? 'full' : 'lean-standard',
+      benchmarkToolProfile: this.benchmarkToolProfile,
     });
     return { session, guard, sink, name, usageName: usageKey, model, reasoningEffort: effort };
   }
@@ -614,6 +659,9 @@ module.exports = {
   LEAN_REVIEWER_PROMPT,
   LEAN_WORKER_TOOLS,
   LEAN_REVIEWER_TOOLS,
+  STRUCTURED_READ_TOOLS,
+  STRUCTURED_REVIEWER_TOOLS,
+  structuredWorkerTools,
   DEFAULT_MAX_PEER_CRITIC_CYCLES,
   BenchmarkSessionFactory,
   CompactStandardSessionFactory,
