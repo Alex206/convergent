@@ -61,8 +61,8 @@ jobs:
       fail-fast: false
       max-parallel: 1
       matrix:
-        topology: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.topologies_json || '["luna-terra-structured"]') }}
-        scenario: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.scenarios_json || '["benchmarks/01-small-duration-parser.md"]') }}
+        topology: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.topologies_json || '["luna-terra","luna-terra-capable"]') }}
+        scenario: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.scenarios_json || '["benchmarks/03-dependency-ordering.md"]') }}
         repeat: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.repeats_json || '[1,2,3]') }}
     env:
       COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
@@ -154,7 +154,7 @@ jobs:
             --audit-level full \
             --limit-policy pause \
             --max-model-calls "${{ inputs.max_model_calls || '24' }}" \
-            --max-model-calls-per-turn "${{ inputs.max_model_calls_per_turn || '10' }}" \
+            --max-model-calls-per-turn "${{ inputs.max_model_calls_per_turn || '14' }}" \
             --max-chat-requests "${{ inputs.max_chat_requests || '8' }}" \
             --max-ai-credits "${{ inputs.max_ai_credits || '25' }}" \
             2>&1 | tee "${RUN_OUTPUT}/runner.log"
