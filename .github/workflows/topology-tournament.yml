@@ -21,7 +21,7 @@ jobs:
       COPILOT_PLUGIN_DIR_ONLY: 'true'
       CONVERGENT_BENCHMARK_REVIEW_CONTRACT: acceptance-matrix-v1
       CONVERGENT_REVIEW_EVIDENCE_AUDITOR_MODEL: gpt-5.6-luna
-      CONVERGENT_REVIEW_EVIDENCE_AUDITOR_TOPOLOGY: review-audit-luna-matched
+      CONVERGENT_REVIEW_EVIDENCE_AUDITOR_TOPOLOGY: review-audit-luna-boundary
     steps:
       - name: Require benchmark credentials
         shell: bash
@@ -53,7 +53,7 @@ jobs:
       - name: Prepare benchmark state and metadata
         shell: bash
         env:
-          EXPERIMENT_TOPOLOGY: review-audit-luna-matched
+          EXPERIMENT_TOPOLOGY: review-audit-luna-boundary
           REPEAT: ${{ matrix.repeat }}
           RUN_OUTPUT: ${{ runner.temp }}/topology-run
         run: |
@@ -73,7 +73,7 @@ jobs:
           fs.writeFileSync(path.join(process.env.RUN_OUTPUT, 'benchmark-meta.json'), `${JSON.stringify(meta, null, 2)}\n`);
           NODE
 
-      - name: Run matched low-context Luna evidence auditor benchmark
+      - name: Run positive-boundary low-context Luna evidence auditor benchmark
         id: topology
         continue-on-error: true
         timeout-minutes: 15
@@ -147,7 +147,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: topology-${{ strategy.job-index }}-review-audit-luna-matched-r${{ matrix.repeat }}
+          name: topology-${{ strategy.job-index }}-review-audit-luna-boundary-r${{ matrix.repeat }}
           path: ${{ runner.temp }}/topology-run
           if-no-files-found: error
           retention-days: 14
