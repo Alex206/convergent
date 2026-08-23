@@ -223,7 +223,6 @@ jobs:
             *07-one-shot-label-filter-bug.md)
               node src/headless/scenario07-acceptance.js \
                 "${GITHUB_WORKSPACE}/benchmark-target" \
-                "${events}" \
                 "${RUN_OUTPUT}/scenario-acceptance.json"
               ;;
             *08-artifact-path-containment.md)
