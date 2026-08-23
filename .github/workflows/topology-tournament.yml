@@ -15,20 +15,13 @@ jobs:
       fail-fast: false
       max-parallel: 1
       matrix:
-        auditor:
-          - name: luna
-            selector: gpt-5.6-luna
-            topology: review-audit-luna
-          - name: terra
-            selector: gpt-5.6-terra
-            topology: review-audit-terra
         repeat: [1, 2, 3]
     env:
       COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
       COPILOT_PLUGIN_DIR_ONLY: 'true'
       CONVERGENT_BENCHMARK_REVIEW_CONTRACT: acceptance-matrix-v1
-      CONVERGENT_REVIEW_EVIDENCE_AUDITOR_MODEL: ${{ matrix.auditor.selector }}
-      CONVERGENT_REVIEW_EVIDENCE_AUDITOR_TOPOLOGY: ${{ matrix.auditor.topology }}
+      CONVERGENT_REVIEW_EVIDENCE_AUDITOR_MODEL: gpt-5.6-luna
+      CONVERGENT_REVIEW_EVIDENCE_AUDITOR_TOPOLOGY: review-audit-luna-matched
     steps:
       - name: Require benchmark credentials
         shell: bash
@@ -60,7 +53,7 @@ jobs:
       - name: Prepare benchmark state and metadata
         shell: bash
         env:
-          EXPERIMENT_TOPOLOGY: ${{ matrix.auditor.topology }}
+          EXPERIMENT_TOPOLOGY: review-audit-luna-matched
           REPEAT: ${{ matrix.repeat }}
           RUN_OUTPUT: ${{ runner.temp }}/topology-run
         run: |
@@ -80,7 +73,7 @@ jobs:
           fs.writeFileSync(path.join(process.env.RUN_OUTPUT, 'benchmark-meta.json'), `${JSON.stringify(meta, null, 2)}\n`);
           NODE
 
-      - name: Run low-context review evidence auditor benchmark
+      - name: Run matched low-context Luna evidence auditor benchmark
         id: topology
         continue-on-error: true
         timeout-minutes: 15
@@ -153,7 +146,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: topology-${{ strategy.job-index }}-${{ matrix.auditor.topology }}-r${{ matrix.repeat }}
+          name: topology-${{ strategy.job-index }}-review-audit-luna-matched-r${{ matrix.repeat }}
           path: ${{ runner.temp }}/topology-run
           if-no-files-found: error
           retention-days: 14
