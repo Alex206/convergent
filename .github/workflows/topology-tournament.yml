@@ -67,7 +67,7 @@ jobs:
     env:
       COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
       COPILOT_PLUGIN_DIR_ONLY: 'true'
-      CONVERGENT_BENCHMARK_REVIEW_CONTRACT: acceptance-matrix-v1
+      CONVERGENT_BENCHMARK_REVIEW_CONTRACT: ${{ matrix.topology == 'luna-ab-terra' && 'trust-boundary-composition-v1' || 'acceptance-matrix-v1' }}
     steps:
       - name: Require benchmark credentials
         shell: bash
