@@ -12,7 +12,7 @@ const {
 } = require('../copilot/session-factory');
 
 const REVIEW_AUDIT_TOOL = 'custom:report_review_audit';
-const DEFAULT_MAX_REVIEW_AUDIT_ROUNDS = 2;
+const DEFAULT_MAX_REVIEW_AUDIT_ROUNDS = 3;
 
 const REVIEW_EVIDENCE_AUDITOR_PROMPT = `
 You are a tiny semantic quality gate for another model's code-review report.
@@ -22,11 +22,15 @@ You do NOT review the code and you have no repository access. Judge only whether
 For a high-risk transformation at a trust/security boundary, a CLEAN review is adequate only when its own reported evidence demonstrates all of these aspects:
 1. The relevant trust/security boundary or invariant is identified concretely.
 2. A composed/transitional sequence is considered, not only the final normalized/canonical state in isolation.
-3. At least one hostile composition is actually exercised where an intermediate step crosses/rebinds the boundary and a later step can make the final representation appear acceptable; the observed result is recorded.
-4. At least one benign composition from the same transformation family is actually exercised and shown to remain accepted, guarding against an over-restrictive fix.
-5. The hostile and benign witnesses are discriminating evidence for the invariant, not generic claims such as "symlink tested", "edge cases covered", or restatements of the implementation.
+3. At least one hostile composition is actually exercised where an intermediate step crosses/rebinds the boundary and a later step can make the final representation appear acceptable; the concrete input and observed result are recorded.
+4. At least one benign composition is actually exercised and shown to remain accepted. It must be a matched counterpart to the hostile witness: it stresses the same semantic transition/normalization topology and the same controversial kind of intermediate state, except that the security-relevant boundary condition remains permitted.
+5. The report explicitly explains why the hostile and benign witnesses form a matched contrast and identifies the security-relevant property that differs between them.
+6. The benign witness is an over-restriction guard: it would fail if the remediation merely rejected the whole transition family or every intermediate excursion instead of enforcing the actual boundary invariant.
+7. The hostile and benign witnesses are discriminating performed evidence with concrete observed outcomes, not generic claims such as "symlink tested", "normalization works", "edge cases covered", or restatements of the implementation.
 
-Do not demand any particular hidden test case, path spelling, platform, or implementation. A different concrete witness is valid if it proves the same semantic properties. FINDINGS/BLOCKED reports do not need to prove CLEAN; this auditor is used only after the strong reviewer has returned CLEAN.
+A benign witness is NOT adequate merely because it belongs to the same broad feature family. If the hostile witness depends on a controversial intermediate transition followed by a later normalization/re-entry, a benign witness that never exercises the corresponding permitted transition cannot prove that the remediation preserved valid behavior. The pair must be close enough that an over-restrictive implementation would be exposed by the benign member.
+
+Do not demand any particular hidden test case, path spelling, platform, or implementation. A different concrete witness pair is valid if it proves the same semantic properties. FINDINGS/BLOCKED reports do not need to prove CLEAN; this auditor is used only after the strong reviewer has returned CLEAN.
 
 Mark each required aspect true only when the report explicitly supports it. Call report_review_audit exactly once. Keep missing_or_weak_aspects concise and actionable for the strong reviewer.
 `.trim();
@@ -34,9 +38,11 @@ Mark each required aspect true only when the report explicitly supports it. Call
 const REVIEW_AUDIT_ASPECTS = Object.freeze([
   ['boundary_identified', 'identify the concrete trust/security boundary or invariant'],
   ['transition_sequence_tested', 'exercise a composed/transitional sequence rather than only judging the final representation'],
-  ['hostile_composition_observed', 'exercise and record the result of a hostile intermediate boundary-crossing/rebinding composition whose final representation can look acceptable'],
-  ['benign_composition_observed', 'exercise and record the result of a benign composition from the same transformation family that must remain valid'],
-  ['discriminating_evidence', 'show that the hostile/benign evidence actually discriminates the invariant rather than merely restating implementation or generic coverage'],
+  ['hostile_composition_observed', 'exercise and record a concrete hostile intermediate boundary-crossing/rebinding composition and its observed result'],
+  ['benign_composition_observed', 'exercise and record a benign matched counterpart that stresses the corresponding permitted transition/normalization topology'],
+  ['matched_contrast_pair', 'show that hostile and benign witnesses are a matched contrast and identify the security-relevant property that differs'],
+  ['overrestriction_guard', 'show that the benign witness would falsify an over-restrictive remediation that rejects the whole transition family or every intermediate excursion'],
+  ['discriminating_evidence', 'show concrete performed hostile/benign observations that discriminate the invariant rather than generic coverage or implementation restatement'],
 ]);
 
 function normalizeAuditReport(args = {}) {
@@ -133,7 +139,9 @@ function auditFeedback(report) {
       .map(([, description]) => description);
   return [
     'The low-context semantic evidence auditor rejected your CLEAN review report as insufficiently demonstrated. This is a review-quality retry, not evidence that the implementation is defective.',
-    'Perform only the missing discriminating validation needed to close these evidence gaps, then submit a new report_review. Put concrete performed witness/observation evidence in checks; if that validation exposes a real code defect, return FINDINGS normally.',
+    'Perform only the missing discriminating validation needed to close these evidence gaps, then submit a new report_review. Put concrete performed witness inputs and observed outcomes in checks; if that validation exposes a real code defect, return FINDINGS normally.',
+    'For a hostile/benign contrast, the benign witness must be a matched semantic counterpart and must be capable of falsifying an over-restrictive implementation. Merely showing that some ordinary normalization or some unrelated valid case works is insufficient.',
+    'State explicitly what security-relevant property differs between the pair and why both witnesses stress the same controversial transition shape.',
     ...missing.map((item) => `- ${item}`),
     'Your next CLEAN report must itself contain enough explicit evidence for an independent auditor with no repository access to verify these aspects.',
   ].join('\n');
