@@ -62,7 +62,7 @@ jobs:
       max-parallel: 1
       matrix:
         topology: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.topologies_json || '["luna-terra-structured"]') }}
-        scenario: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.scenarios_json || '["benchmarks/01-small-duration-parser.md"]') }}
+        scenario: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.scenarios_json || '["benchmarks/03-dependency-ordering.md","benchmarks/08-artifact-path-containment.md"]') }}
         repeat: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.repeats_json || '[1,2,3]') }}
     env:
       COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
