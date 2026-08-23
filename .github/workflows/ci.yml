@@ -164,7 +164,6 @@ jobs:
 
       - name: Independently validate benchmark target
         if: always() && steps.headless-benchmark.outputs.enabled == 'true'
-        continue-on-error: true
         shell: bash
         env:
           BENCHMARK_OUTPUT: ${{ runner.temp }}/convergent-benchmark
