@@ -275,6 +275,15 @@ class CompactStandardSessionFactory extends BenchmarkSessionFactory {
 }
 
 class LeanStandardSessionFactory extends CompactStandardSessionFactory {
+  constructor(options = {}) {
+    super(options);
+    this.benchmarkToolProfile = options.benchmarkToolProfile === 'full' ? 'full' : 'lean';
+  }
+
+  fullCapabilities() {
+    return this.benchmarkToolProfile === 'full';
+  }
+
   async createWorker(taskId, worker, route = 'standard', risk = 'medium', sessionAttempt = '') {
     if (worker !== 'A') return super.createWorker(taskId, worker, route, risk, sessionAttempt);
     const safeTaskId = safeSessionPart(taskId);
@@ -285,6 +294,10 @@ class LeanStandardSessionFactory extends CompactStandardSessionFactory {
     const name = 'Worker A';
     let guard = null;
     const runCommand = this.runCommandTool(name, () => guard);
+    const fullCapabilities = this.fullCapabilities();
+    const workspaceEdit = fullCapabilities ? this.workspaceEditTool(name) : null;
+    const availableTools = fullCapabilities ? WORKER_TOOLS : LEAN_WORKER_TOOLS;
+    const exploreAgent = fullCapabilities ? this.exploreAgent() : null;
     const model = this.workerModel(taskId, 'A', route, risk);
     const effort = chooseReasoningEffort(model, routePolicy(route, risk).efforts.workerA, this.reasoningMode);
     const baselinePrompt = await this.taskBaselinePrompt(taskId);
@@ -300,8 +313,11 @@ class LeanStandardSessionFactory extends CompactStandardSessionFactory {
       model: model.id,
       workingDirectory: this.workspace,
       streaming: true,
-      tools: [batchView, runCommand, tool],
-      availableTools: [...LEAN_WORKER_TOOLS],
+      tools: fullCapabilities
+        ? [batchView, runCommand, workspaceEdit, tool]
+        : [batchView, runCommand, tool],
+      availableTools: [...availableTools],
+      ...(exploreAgent ? { customAgents: [exploreAgent] } : {}),
       systemMessage: { mode: 'append', content: systemPrompt },
       hooks: { onPreToolUse: (input) => this.preToolUse(workerHook, name, input) },
       onPermissionRequest: this.permissionHandler,
@@ -311,15 +327,16 @@ class LeanStandardSessionFactory extends CompactStandardSessionFactory {
     guard = this.guard(session, name);
     const usageKey = `${safeTaskId}:worker-a${attemptSuffix}`;
     attachEventLogging(session, name, this.ui, this.usage, model, usageKey, { sink, toolName: 'report_pass' });
-    this.ui.agentTools?.(name, LEAN_WORKER_TOOLS);
-    this.sessionCreated(name, session, model, effort, systemPrompt, LEAN_WORKER_TOOLS, {
+    this.ui.agentTools?.(name, availableTools);
+    this.sessionCreated(name, session, model, effort, systemPrompt, availableTools, {
       role: 'workerA',
       taskId: safeTaskId,
       route,
       risk,
       sessionAttempt: sessionAttempt || null,
+      ...(exploreAgent ? { exploreAgent } : {}),
       benchmarkPromptProfile: 'lean-standard',
-      benchmarkToolProfile: 'lean-standard',
+      benchmarkToolProfile: fullCapabilities ? 'full' : 'lean-standard',
     });
     return { session, guard, sink, name: 'A', usageName: usageKey, model, reasoningEffort: effort };
   }
@@ -333,6 +350,9 @@ class LeanStandardSessionFactory extends CompactStandardSessionFactory {
     const name = 'Strong reviewer';
     let guard = null;
     const runCommand = this.runCommandTool(name, () => guard);
+    const fullCapabilities = this.fullCapabilities();
+    const availableTools = fullCapabilities ? REVIEWER_TOOLS : LEAN_REVIEWER_TOOLS;
+    const exploreAgent = fullCapabilities ? this.exploreAgent() : null;
     const model = this.models.reviewer;
     const effort = chooseReasoningEffort(model, routePolicy(route, risk).efforts.reviewer, this.reasoningMode);
     const baselinePrompt = await this.taskBaselinePrompt(taskId);
@@ -349,7 +369,8 @@ class LeanStandardSessionFactory extends CompactStandardSessionFactory {
       workingDirectory: this.workspace,
       streaming: true,
       tools: [batchView, runCommand, tool],
-      availableTools: [...LEAN_REVIEWER_TOOLS],
+      availableTools: [...availableTools],
+      ...(exploreAgent ? { customAgents: [exploreAgent] } : {}),
       systemMessage: { mode: 'append', content: systemPrompt },
       hooks: { onPreToolUse: (input) => this.preToolUse(readonlyHook, name, input) },
       onPermissionRequest: this.permissionHandler,
@@ -359,15 +380,16 @@ class LeanStandardSessionFactory extends CompactStandardSessionFactory {
     guard = this.guard(session, name);
     const usageKey = `${safeTaskId}:reviewer${attemptSuffix}`;
     attachEventLogging(session, name, this.ui, this.usage, model, usageKey, { sink, toolName: 'report_review' });
-    this.ui.agentTools?.(name, LEAN_REVIEWER_TOOLS);
-    this.sessionCreated(name, session, model, effort, systemPrompt, LEAN_REVIEWER_TOOLS, {
+    this.ui.agentTools?.(name, availableTools);
+    this.sessionCreated(name, session, model, effort, systemPrompt, availableTools, {
       role: 'reviewer',
       taskId: safeTaskId,
       route,
       risk,
       sessionAttempt: sessionAttempt || null,
+      ...(exploreAgent ? { exploreAgent } : {}),
       benchmarkPromptProfile: 'lean-standard',
-      benchmarkToolProfile: 'lean-standard',
+      benchmarkToolProfile: fullCapabilities ? 'full' : 'lean-standard',
     });
     return { session, guard, sink, name, usageName: usageKey, model, reasoningEffort: effort };
   }
@@ -401,6 +423,7 @@ class BenchmarkTopologyEngine extends RecoveryConvergentEngine {
       runId: this.runId,
       reasoningMode: this.reasoningMode,
       operatorCredentialGuard: this.operatorCredentialGuard,
+      benchmarkToolProfile: this.topologyConfig.toolProfile ?? 'lean',
     });
   }
 
