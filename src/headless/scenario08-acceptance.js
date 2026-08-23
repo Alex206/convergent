@@ -53,8 +53,10 @@ with tempfile.TemporaryDirectory() as td:
         symlink.symlink_to(outside, target_is_directory=True)
     except (OSError, NotImplementedError) as exc:
         skipped["symlink_escape"] = str(exc)
+        skipped["symlink_escape_reentry"] = str(exc)
     else:
         checks["symlink_escape"] = rejects("escape/leak.txt")
+        checks["symlink_escape_reentry"] = rejects(f"escape/../{root.name}/reentered.txt")
 
     sibling_link = root / "sibling-link"
     try:
