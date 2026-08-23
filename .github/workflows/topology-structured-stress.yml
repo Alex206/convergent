@@ -2,7 +2,7 @@ name: Structured Capability Stress
 
 on:
   pull_request:
-    types: [ready_for_review]
+    types: [synchronize]
 
 jobs:
   benchmark:
