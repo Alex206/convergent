@@ -27,6 +27,15 @@ test('cohesive high-risk request can skip persistent planning but is still upgra
   assert.equal(decision.routing.peerConvergence, true);
 });
 
+test('security fix that preserves the public API can skip planning while retaining high-risk assurance', () => {
+  const decision = deterministicPlanningDecision('Fix the security boundary in the artifact-path resolver. Preserve the public API and existing valid-path behavior, reject escaping paths, and add focused regression tests.');
+  assert.equal(decision.eligible, true);
+  assert.equal(decision.plan.tasks.length, 1);
+  assert.equal(decision.plan.tasks[0].route, 'high_risk');
+  assert.equal(decision.plan.tasks[0].risk, 'high');
+  assert.equal(decision.routing.peerConvergence, true);
+});
+
 test('explicit operator credential variable forces high-risk assurance without requiring planner inference', () => {
   const decision = deterministicPlanningDecision('Update release signing so the required external validation uses TASKFLOW_RELEASE_TOKEN and add focused tests.');
   assert.equal(decision.eligible, true);
@@ -79,8 +88,9 @@ test('obviously decomposed multi-task requests retain strong planning', () => {
   assert.equal(deterministicPlanningDecision(bullets).eligible, false);
 });
 
-test('high-impact unclassified public/release boundaries retain strong planning', () => {
+test('actual high-impact public/release boundary changes retain strong planning', () => {
   assert.equal(deterministicPlanningDecision('Change the public API compatibility contract and add tests.').eligible, false);
+  assert.equal(deterministicPlanningDecision('Redesign the public API and update callers.').eligible, false);
   assert.equal(deterministicPlanningDecision('Update the production release pipeline and add validation.').eligible, false);
 });
 

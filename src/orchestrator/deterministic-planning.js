@@ -7,7 +7,8 @@ const READ_ONLY_OPENING = /^(?:please\s+)?(?:can\s+you\s+tell|could\s+you\s+expl
 const NO_MODIFICATION = /\b(?:do\s+not|don't|without)\s+(?:change|modify|edit|touch)\b/i;
 const AMBIGUOUS_DESIGN = /\b(?:choose\s+between|decide\s+(?:between|whether)|trade[- ]?offs?|compare\s+(?:approaches|options|designs)|evaluate\s+(?:approaches|options|alternatives)|which\s+(?:approach|design|option)|best\s+(?:approach|design|way)|recommend\s+(?:an?\s+)?(?:approach|design|architecture)|design\s+(?:an?\s+|the\s+)?architecture|architectural\s+design|roadmap)\b/i;
 const DECOMPOSITION_HINTS = /\b(?:separate(?:ly)?\s+(?:task|change|work)|independent(?:ly)?\s+(?:task|change|work)|unrelated\s+(?:task|change|work)|split\s+(?:this|the work)\s+into|break\s+(?:this|the work)\s+(?:up|down)\s+into)\b/i;
-const SENSITIVE_UNCLASSIFIED_HINTS = /\b(?:public\s+api|breaking\s+change|release\s+infrastructure|release\s+pipeline|production\s+rollout|production\s+release)\b/i;
+const PUBLIC_API_CHANGE_HINTS = /\b(?:change|break|redesign|replace|remove|rename|deprecat(?:e|ion)|migrat(?:e|ion)|version)\s+(?:the\s+)?public\s+api(?:\s+compatibility)?(?:\s+contract)?\b|\bpublic\s+api(?:\s+compatibility)?(?:\s+contract)?\s+(?:change|break|redesign|replacement|removal|rename|deprecation|migration|versioning)\b/i;
+const RELEASE_BOUNDARY_HINTS = /\b(?:release\s+infrastructure|release\s+pipeline|production\s+rollout|production\s+release)\b/i;
 const EXPLICIT_CREDENTIAL_NAME = /\b[A-Z][A-Z0-9_]*(?:_TOKEN|_SECRET|_PASSWORD|_PASSCODE|_CREDENTIALS?|_API_KEY|_ACCESS_KEY|_PRIVATE_KEY)\b/;
 const MAX_DIRECT_REQUEST_CHARS = 3000;
 
@@ -51,7 +52,7 @@ function deterministicPlanningDecision(userRequest, routingMode = 'adaptive') {
   if (topLevelNumberedActions(request) >= 2 || imperativeBulletActions(request) >= 2 || markdownSections(request) >= 3) {
     return { eligible: false, reason: 'request appears to contain multiple independently actionable sections' };
   }
-  if (SENSITIVE_UNCLASSIFIED_HINTS.test(request)) {
+  if (PUBLIC_API_CHANGE_HINTS.test(request) || RELEASE_BOUNDARY_HINTS.test(request)) {
     return { eligible: false, reason: 'request contains a high-impact compatibility/release boundary that still requires planner classification' };
   }
 

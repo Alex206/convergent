@@ -1,0 +1,306 @@
+name: Convergent Topology Tournament
+
+on:
+  workflow_dispatch:
+    inputs:
+      topologies_json:
+        description: JSON array of benchmark topologies, executed with max-parallel=1
+        required: true
+        default: '["terra-solo","luna-terra","luna-terra-compact","luna-terra-lean","luna-terra-structured","luna-terra-capable","luna-peer-terra","luna-ab-terra"]'
+        type: string
+      scenarios_json:
+        description: JSON array of benchmark markdown paths
+        required: true
+        default: '["benchmarks/01-small-duration-parser.md","benchmarks/03-dependency-ordering.md","benchmarks/08-artifact-path-containment.md"]'
+        type: string
+      repeats_json:
+        description: JSON array of repeat numbers
+        required: true
+        default: '[1]'
+        type: string
+      flow:
+        description: Convergent execution flow for orchestrated topologies
+        required: true
+        default: fast
+        type: choice
+        options:
+          - fast
+          - auto
+          - thorough
+      max_model_calls:
+        description: Hard total model-call fuse per run
+        required: true
+        default: '40'
+        type: string
+      max_model_calls_per_turn:
+        description: Hard model-call fuse per agent turn
+        required: true
+        default: '10'
+        type: string
+      max_chat_requests:
+        description: Hard Copilot chat-request quota delta per run
+        required: true
+        default: '14'
+        type: string
+      max_ai_credits:
+        description: Soft AI-credit boundary for Convergent topologies
+        required: true
+        default: '45'
+        type: string
+
+  pull_request:
+    types: [ready_for_review]
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        topology: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.topologies_json || '["luna-terra-structured"]') }}
+        scenario: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.scenarios_json || '["benchmarks/03-dependency-ordering.md"]') }}
+        repeat: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.repeats_json || '[1]') }}
+    env:
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+      COPILOT_PLUGIN_DIR_ONLY: 'true'
+      CONVERGENT_BENCHMARK_REVIEW_CONTRACT: acceptance-matrix-v1
+    steps:
+      - name: Require benchmark credentials
+        shell: bash
+        env:
+          BENCHMARK_REPO_TOKEN: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+        run: |
+          test -n "${COPILOT_GITHUB_TOKEN}" || { echo "COPILOT_GITHUB_TOKEN is required." >&2; exit 2; }
+          test -n "${BENCHMARK_REPO_TOKEN}" || { echo "BENCHMARK_REPO_TOKEN is required." >&2; exit 2; }
+
+      - name: Checkout Convergent
+        uses: actions/checkout@v6
+
+      - name: Checkout benchmark fixture
+        uses: actions/checkout@v6
+        with:
+          repository: Alex206/convergent-test-repo
+          ref: ${{ endsWith(matrix.scenario, '03-dependency-ordering.md') && 'benchmark/scenario03-review-contract' || endsWith(matrix.scenario, '07-one-shot-label-filter-bug.md') && 'benchmark/scenario07-one-shot-label-iterable' || endsWith(matrix.scenario, '08-artifact-path-containment.md') && 'benchmark/scenario08-path-containment' || 'main' }}
+          path: benchmark-target
+          token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Install Convergent dependencies
+        run: npm ci
+
+      - name: Prepare benchmark state and metadata
+        shell: bash
+        env:
+          TOPOLOGY: ${{ matrix.topology }}
+          SCENARIO: ${{ matrix.scenario }}
+          REPEAT: ${{ matrix.repeat }}
+          RUN_OUTPUT: ${{ runner.temp }}/topology-run
+          FIXTURE_REF: ${{ endsWith(matrix.scenario, '03-dependency-ordering.md') && 'benchmark/scenario03-review-contract' || endsWith(matrix.scenario, '07-one-shot-label-filter-bug.md') && 'benchmark/scenario07-one-shot-label-iterable' || endsWith(matrix.scenario, '08-artifact-path-containment.md') && 'benchmark/scenario08-path-containment' || 'main' }}
+        run: |
+          rm -rf "${RUN_OUTPUT}"
+          mkdir -p "${RUN_OUTPUT}"
+
+          if [[ "${SCENARIO}" == *"05-preexisting-workspace-state.md" ]]; then
+            mkdir -p benchmark-target/.vscode
+            printf '%s\n' '{"files.trimTrailingWhitespace":true}' > benchmark-target/.vscode/settings.json
+            printf '%s\n' 'local benchmark note' > benchmark-target/notes.local
+            git -C benchmark-target check-ignore -q notes.local
+          fi
+
+          fixture_sha="$(git -C benchmark-target rev-parse HEAD)"
+          FIXTURE_SHA="${fixture_sha}" node - <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const meta = {
+            topology: process.env.TOPOLOGY,
+            scenario: process.env.SCENARIO,
+            repeat: Number(process.env.REPEAT),
+            fixtureRef: process.env.FIXTURE_REF,
+            fixtureSha: process.env.FIXTURE_SHA,
+          };
+          fs.writeFileSync(path.join(process.env.RUN_OUTPUT, 'benchmark-meta.json'), `${JSON.stringify(meta, null, 2)}\n`);
+          NODE
+
+      - name: Run topology benchmark
+        id: topology
+        continue-on-error: true
+        timeout-minutes: 15
+        shell: bash
+        env:
+          RUN_OUTPUT: ${{ runner.temp }}/topology-run
+          SCENARIO: ${{ matrix.scenario }}
+          TOPOLOGY: ${{ matrix.topology }}
+        run: |
+          if [[ "${SCENARIO}" == *"04-blocked-external-validation.md" ]]; then
+            export CONVERGENT_HEADLESS_ANSWERS_JSON='["Use the benchmark-only validation token supplied by the fixture environment; do not invent or persist credentials.","Yes, continue with exactly that interpretation."]'
+          else
+            export CONVERGENT_HEADLESS_ANSWERS_JSON='[]'
+          fi
+
+          set -o pipefail
+          node src/headless/topology-cli.js \
+            --workspace "${GITHUB_WORKSPACE}/benchmark-target" \
+            --prompt-file "${GITHUB_WORKSPACE}/benchmark-target/${SCENARIO}" \
+            --output-dir "${RUN_OUTPUT}" \
+            --topology "${TOPOLOGY}" \
+            --flow "${{ inputs.flow || 'fast' }}" \
+            --audit-level full \
+            --limit-policy pause \
+            --max-model-calls "${{ inputs.max_model_calls || '40' }}" \
+            --max-model-calls-per-turn "${{ inputs.max_model_calls_per_turn || '14' }}" \
+            --max-chat-requests "${{ inputs.max_chat_requests || '14' }}" \
+            --max-ai-credits "${{ inputs.max_ai_credits || '45' }}" \
+            2>&1 | tee "${RUN_OUTPUT}/runner.log"
+
+      - name: Independently validate target tests
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          RUN_OUTPUT: ${{ runner.temp }}/topology-run
+        run: |
+          set +e
+          (
+            cd benchmark-target
+            python3 -B -m unittest discover -s tests -v
+          ) > "${RUN_OUTPUT}/target-validation.log" 2>&1
+          rc=$?
+          RC="${rc}" node - <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const rc = Number(process.env.RC);
+          fs.writeFileSync(
+            path.join(process.env.RUN_OUTPUT, 'target-validation.json'),
+            `${JSON.stringify({ ok: rc === 0, exitCode: rc }, null, 2)}\n`,
+          );
+          NODE
+          cat "${RUN_OUTPUT}/target-validation.log"
+          exit 0
+
+      - name: Run deterministic scenario oracle
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          RUN_OUTPUT: ${{ runner.temp }}/topology-run
+          SCENARIO: ${{ matrix.scenario }}
+        run: |
+          case "${SCENARIO}" in
+            *01-small-duration-parser.md)
+              node src/headless/scenario01-acceptance.js \
+                "${GITHUB_WORKSPACE}/benchmark-target" \
+                "${RUN_OUTPUT}/scenario-acceptance.json"
+              ;;
+            *03-dependency-ordering.md)
+              node src/headless/scenario03-acceptance.js \
+                "${GITHUB_WORKSPACE}/benchmark-target" \
+                "${RUN_OUTPUT}/scenario-acceptance.json"
+              ;;
+            *04-blocked-external-validation.md)
+              events="$(find "${RUN_OUTPUT}/audit" -name events.jsonl -type f 2>/dev/null | head -n 1)"
+              if [[ -n "${events}" ]]; then
+                node src/headless/scenario04-acceptance.js \
+                  "${GITHUB_WORKSPACE}/benchmark-target" \
+                  "${events}" \
+                  "${RUN_OUTPUT}/scenario-acceptance.json"
+              else
+                printf '%s\n' '{"ok":false,"error":"Scenario 04 requires trajectory events."}' > "${RUN_OUTPUT}/scenario-acceptance.json"
+              fi
+              ;;
+            *05-preexisting-workspace-state.md)
+              node src/headless/scenario05-acceptance.js \
+                "${GITHUB_WORKSPACE}/benchmark-target" \
+                "${RUN_OUTPUT}/scenario-acceptance.json"
+              ;;
+            *07-one-shot-label-filter-bug.md)
+              node src/headless/scenario07-acceptance.js \
+                "${GITHUB_WORKSPACE}/benchmark-target" \
+                "${RUN_OUTPUT}/scenario-acceptance.json"
+              ;;
+            *08-artifact-path-containment.md)
+              node src/headless/scenario08-acceptance.js \
+                "${GITHUB_WORKSPACE}/benchmark-target" \
+                "${RUN_OUTPUT}/scenario-acceptance.json"
+              ;;
+            *)
+              printf '%s\n' '{"ok":true,"dedicatedOracle":false,"note":"Independent target tests are the acceptance oracle for this scenario."}' > "${RUN_OUTPUT}/scenario-acceptance.json"
+              ;;
+          esac
+
+      - name: Capture final workspace
+        if: always()
+        shell: bash
+        env:
+          RUN_OUTPUT: ${{ runner.temp }}/topology-run
+        run: |
+          git -C benchmark-target status --porcelain=v1 --untracked-files=all > "${RUN_OUTPUT}/final-status.txt" || true
+          git -C benchmark-target diff --binary --no-ext-diff > "${RUN_OUTPUT}/final-diff.patch" || true
+
+      - name: Upload run evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: topology-${{ strategy.job-index }}-${{ matrix.topology }}-r${{ matrix.repeat }}
+          path: ${{ runner.temp }}/topology-run
+          if-no-files-found: error
+          retention-days: 14
+
+  report:
+    if: always()
+    needs: benchmark
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout Convergent
+        uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Download all topology evidence
+        uses: actions/download-artifact@v5
+        with:
+          pattern: topology-*
+          path: ${{ runner.temp }}/topology-results
+
+      - name: Quarantine infrastructure-invalid runs
+        shell: bash
+        run: |
+          node src/headless/topology-validity.js \
+            "${{ runner.temp }}/topology-results" \
+            "${{ runner.temp }}/topology-infrastructure-invalid-runs" \
+            "${{ runner.temp }}/topology-infrastructure-invalid.json" \
+            "${{ runner.temp }}/topology-infrastructure-invalid.md"
+          cat "${{ runner.temp }}/topology-infrastructure-invalid.md" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Build Pareto report
+        shell: bash
+        run: |
+          node src/headless/topology-report.js \
+            "${{ runner.temp }}/topology-results" \
+            "${{ runner.temp }}/topology-report.json" \
+            "${{ runner.temp }}/topology-report.md"
+          cat "${{ runner.temp }}/topology-report.md" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload tournament report
+        uses: actions/upload-artifact@v4
+        with:
+          name: topology-tournament-report-${{ github.run_number }}
+          path: |
+            ${{ runner.temp }}/topology-report.json
+            ${{ runner.temp }}/topology-report.md
+            ${{ runner.temp }}/topology-infrastructure-invalid.json
+            ${{ runner.temp }}/topology-infrastructure-invalid.md
+          if-no-files-found: error
+          retention-days: 30
