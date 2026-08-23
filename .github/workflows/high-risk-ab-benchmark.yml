@@ -1,0 +1,188 @@
+name: High-risk A-B controlled benchmark
+
+on:
+  pull_request:
+    types: [opened]
+
+jobs:
+  benchmark:
+    if: github.head_ref == 'agent/high-risk-ab-controlled-benchmark'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        topology:
+          - luna-terra-structured
+          - luna-ab-terra
+        repeat: [1, 2, 3]
+    env:
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+      COPILOT_PLUGIN_DIR_ONLY: 'true'
+      CONVERGENT_BENCHMARK_REVIEW_CONTRACT: acceptance-matrix-v1
+      RUN_OUTPUT: ${{ runner.temp }}/topology-run
+      SCENARIO: benchmarks/08-artifact-path-containment.md
+    steps:
+      - name: Require benchmark credentials
+        env:
+          BENCHMARK_REPO_TOKEN: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+        run: |
+          test -n "${COPILOT_GITHUB_TOKEN}" || { echo "COPILOT_GITHUB_TOKEN is required." >&2; exit 2; }
+          test -n "${BENCHMARK_REPO_TOKEN}" || { echo "BENCHMARK_REPO_TOKEN is required." >&2; exit 2; }
+
+      - name: Checkout Convergent
+        uses: actions/checkout@v6
+
+      - name: Checkout Scenario 08 fixture
+        uses: actions/checkout@v6
+        with:
+          repository: Alex206/convergent-test-repo
+          ref: benchmark/scenario08-path-containment
+          path: benchmark-target
+          token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Install Convergent dependencies
+        run: npm ci
+
+      - name: Prepare benchmark metadata
+        env:
+          TOPOLOGY: ${{ matrix.topology }}
+          REPEAT: ${{ matrix.repeat }}
+        run: |
+          rm -rf "${RUN_OUTPUT}"
+          mkdir -p "${RUN_OUTPUT}"
+          fixture_sha="$(git -C benchmark-target rev-parse HEAD)"
+          FIXTURE_SHA="${fixture_sha}" node - <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          fs.writeFileSync(path.join(process.env.RUN_OUTPUT, 'benchmark-meta.json'), `${JSON.stringify({
+            topology: process.env.TOPOLOGY,
+            scenario: process.env.SCENARIO,
+            repeat: Number(process.env.REPEAT),
+            fixtureRef: 'benchmark/scenario08-path-containment',
+            fixtureSha: process.env.FIXTURE_SHA,
+            comparison: 'structured-luna-terra-vs-structured-luna-ab-terra',
+          }, null, 2)}\n`);
+          NODE
+
+      - name: Run topology benchmark
+        id: topology
+        continue-on-error: true
+        timeout-minutes: 15
+        env:
+          TOPOLOGY: ${{ matrix.topology }}
+        run: |
+          export CONVERGENT_HEADLESS_ANSWERS_JSON='[]'
+          set -o pipefail
+          node src/headless/topology-cli.js \
+            --workspace "${GITHUB_WORKSPACE}/benchmark-target" \
+            --prompt-file "${GITHUB_WORKSPACE}/benchmark-target/${SCENARIO}" \
+            --output-dir "${RUN_OUTPUT}" \
+            --topology "${TOPOLOGY}" \
+            --flow fast \
+            --audit-level full \
+            --limit-policy pause \
+            --max-model-calls 60 \
+            --max-model-calls-per-turn 14 \
+            --max-chat-requests 20 \
+            --max-ai-credits 45 \
+            2>&1 | tee "${RUN_OUTPUT}/runner.log"
+
+      - name: Independently validate target tests
+        if: always()
+        run: |
+          set +e
+          (
+            cd benchmark-target
+            python3 -B -m unittest discover -s tests -v
+          ) > "${RUN_OUTPUT}/target-validation.log" 2>&1
+          rc=$?
+          RC="${rc}" node - <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const rc = Number(process.env.RC);
+          fs.writeFileSync(path.join(process.env.RUN_OUTPUT, 'target-validation.json'), `${JSON.stringify({ ok: rc === 0, exitCode: rc }, null, 2)}\n`);
+          NODE
+          cat "${RUN_OUTPUT}/target-validation.log"
+          exit 0
+
+      - name: Run deterministic Scenario 08 oracle
+        if: always()
+        continue-on-error: true
+        run: |
+          node src/headless/scenario08-acceptance.js \
+            "${GITHUB_WORKSPACE}/benchmark-target" \
+            "${RUN_OUTPUT}/scenario-acceptance.json"
+
+      - name: Capture final workspace
+        if: always()
+        run: |
+          git -C benchmark-target status --porcelain=v1 --untracked-files=all > "${RUN_OUTPUT}/final-status.txt" || true
+          git -C benchmark-target diff --binary --no-ext-diff > "${RUN_OUTPUT}/final-diff.patch" || true
+
+      - name: Upload run evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: high-risk-${{ matrix.topology }}-r${{ matrix.repeat }}
+          path: ${{ runner.temp }}/topology-run
+          if-no-files-found: error
+          retention-days: 14
+
+  report:
+    if: always()
+    needs: benchmark
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout Convergent
+        uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Download run evidence
+        uses: actions/download-artifact@v5
+        with:
+          pattern: high-risk-*
+          path: ${{ runner.temp }}/topology-results
+
+      - name: Quarantine infrastructure-invalid runs
+        run: |
+          node src/headless/topology-validity.js \
+            "${{ runner.temp }}/topology-results" \
+            "${{ runner.temp }}/topology-infrastructure-invalid-runs" \
+            "${{ runner.temp }}/topology-infrastructure-invalid.json" \
+            "${{ runner.temp }}/topology-infrastructure-invalid.md"
+          cat "${{ runner.temp }}/topology-infrastructure-invalid.md" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Build controlled comparison report
+        run: |
+          node src/headless/topology-report.js \
+            "${{ runner.temp }}/topology-results" \
+            "${{ runner.temp }}/topology-report.json" \
+            "${{ runner.temp }}/topology-report.md"
+          cat "${{ runner.temp }}/topology-report.md" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload controlled comparison report
+        uses: actions/upload-artifact@v4
+        with:
+          name: high-risk-ab-controlled-report
+          path: |
+            ${{ runner.temp }}/topology-report.json
+            ${{ runner.temp }}/topology-report.md
+            ${{ runner.temp }}/topology-infrastructure-invalid.json
+            ${{ runner.temp }}/topology-infrastructure-invalid.md
+          if-no-files-found: error
+          retention-days: 30
