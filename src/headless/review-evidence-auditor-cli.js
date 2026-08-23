@@ -4,7 +4,6 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { parseArgs } = require('./runner');
-const { runWithStartupRetry } = require('./topology-cli');
 const topologyEngineModule = require('./topology-engine');
 const { ReviewEvidenceAuditorBenchmarkEngine } = require('./review-evidence-auditor');
 
@@ -20,8 +19,12 @@ class EnvironmentConfiguredReviewAuditorEngine extends ReviewEvidenceAuditorBenc
   }
 }
 
+// topology-runner destructures BenchmarkTopologyEngine when it is loaded. Patch
+// the export first so Node's module cache cannot freeze the normal benchmark
+// engine into this experiment before the low-context auditor engine is active.
 topologyEngineModule.BenchmarkTopologyEngine = EnvironmentConfiguredReviewAuditorEngine;
 const { runTopologyHeadless } = require('./topology-runner');
+const { runWithStartupRetry } = require('./topology-cli');
 
 async function rewriteExperimentIdentity(outputDir, experimentTopology, auditorSelector) {
   const resultPath = path.join(outputDir, 'result.json');
