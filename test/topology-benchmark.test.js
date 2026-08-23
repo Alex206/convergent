@@ -22,6 +22,9 @@ const {
   LEAN_REVIEWER_PROMPT,
   LEAN_WORKER_TOOLS,
   LEAN_REVIEWER_TOOLS,
+  STRUCTURED_READ_TOOLS,
+  STRUCTURED_REVIEWER_TOOLS,
+  structuredWorkerTools,
 } = require('../src/headless/topology-engine');
 const {
   loadRun,
@@ -36,6 +39,7 @@ test('benchmark topology set contains the intended architecture experiment arms'
     'luna-terra',
     'luna-terra-compact',
     'luna-terra-lean',
+    'luna-terra-structured',
     'luna-terra-capable',
     'luna-peer-terra',
     'luna-ab-terra',
@@ -45,6 +49,8 @@ test('benchmark topology set contains the intended architecture experiment arms'
   assert.equal(topologyConfig('luna-terra-compact').promptProfile, 'compact-standard');
   assert.equal(topologyConfig('luna-terra-lean').promptProfile, 'lean-standard');
   assert.equal(topologyConfig('luna-terra-lean').toolProfile, 'lean');
+  assert.equal(topologyConfig('luna-terra-structured').promptProfile, 'lean-standard');
+  assert.equal(topologyConfig('luna-terra-structured').toolProfile, 'structured');
   assert.equal(topologyConfig('luna-terra-capable').promptProfile, 'lean-standard');
   assert.equal(topologyConfig('luna-terra-capable').toolProfile, 'full');
   assert.equal(topologyConfig('luna-peer-terra').peerMode, 'critic');
@@ -65,6 +71,10 @@ test('topology selectors pin Terra/Luna explicitly instead of silently using str
   const lean = applyTopologySelectors({ topology: 'luna-terra-lean' });
   assert.equal(lean.workerA, 'gpt-5.6-luna');
   assert.equal(lean.reviewer, 'gpt-5.6-terra');
+
+  const structured = applyTopologySelectors({ topology: 'luna-terra-structured' });
+  assert.equal(structured.workerA, 'gpt-5.6-luna');
+  assert.equal(structured.reviewer, 'gpt-5.6-terra');
 
   const capable = applyTopologySelectors({ topology: 'luna-terra-capable' });
   assert.equal(capable.workerA, 'gpt-5.6-luna');
@@ -111,6 +121,35 @@ test('lean standard profile preserves safety while removing unused exploration a
     'custom:run_command',
     'custom:report_review',
   ]);
+});
+
+test('structured profile keeps natural inspection and managed command escape hatches without duplicate shell surface', () => {
+  assert.deepEqual(STRUCTURED_READ_TOOLS, [
+    'builtin:view',
+    'builtin:glob',
+    'builtin:rg',
+  ]);
+  assert.deepEqual(STRUCTURED_REVIEWER_TOOLS, [
+    'builtin:view',
+    'builtin:glob',
+    'builtin:rg',
+    'custom:batch_view',
+    'custom:run_command',
+    'custom:report_review',
+  ]);
+  assert.ok(!STRUCTURED_REVIEWER_TOOLS.some((tool) => /bash|powershell|grep/.test(tool)));
+
+  const singleRootWorker = structuredWorkerTools(false);
+  assert.ok(singleRootWorker.includes('builtin:view'));
+  assert.ok(singleRootWorker.includes('builtin:glob'));
+  assert.ok(singleRootWorker.includes('builtin:rg'));
+  assert.ok(singleRootWorker.includes('custom:batch_view'));
+  assert.ok(singleRootWorker.includes('custom:run_command'));
+  assert.ok(!singleRootWorker.includes('custom:workspace_edit'));
+  assert.ok(!singleRootWorker.some((tool) => /bash|powershell|grep/.test(tool)));
+
+  const multiRootWorker = structuredWorkerTools(true);
+  assert.ok(multiRootWorker.includes('custom:workspace_edit'));
 });
 
 test('single Terra baseline has editing/validation tools but no Convergent report tool', () => {
