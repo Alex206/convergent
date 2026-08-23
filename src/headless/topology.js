@@ -119,6 +119,7 @@ const TOPOLOGIES = Object.freeze({
     peerMode: 'none',
     promptProfile: 'lean-standard',
     toolProfile: 'structured',
+    benchmarkOnly: true,
     selectors: {
       coordinator: 'gpt-5.6-terra',
       workerA: 'gpt-5.6-luna',
@@ -168,7 +169,9 @@ function applyTopologySelectors(options = {}) {
 }
 
 function topologyNames() {
-  return Object.keys(TOPOLOGIES);
+  return Object.entries(TOPOLOGIES)
+    .filter(([, config]) => !config.benchmarkOnly)
+    .map(([name]) => name);
 }
 
 module.exports = {
