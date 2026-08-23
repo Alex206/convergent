@@ -90,7 +90,8 @@ jobs:
             --topology luna-terra-structured \
             --flow fast \
             --audit-level full \
-            --limit-policy pause \
+            --limit-policy continue \
+            --max-reviewer-cycles 4 \
             --max-model-calls 60 \
             --max-model-calls-per-turn 14 \
             --max-chat-requests 20 \
