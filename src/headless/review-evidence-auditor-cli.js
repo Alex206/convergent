@@ -25,7 +25,12 @@ const { runTopologyHeadless } = require('./topology-runner');
 
 async function rewriteExperimentIdentity(outputDir, experimentTopology, auditorSelector) {
   const resultPath = path.join(outputDir, 'result.json');
-  const result = JSON.parse(await fs.readFile(resultPath, 'utf8'));
+  let result;
+  try {
+    result = JSON.parse(await fs.readFile(resultPath, 'utf8'));
+  } catch {
+    return false;
+  }
   result.topology = experimentTopology;
   result.topologyLabel = `Luna + Terra review + low-context ${auditorSelector} evidence audit`;
   result.reviewEvidenceAuditor = {
@@ -42,6 +47,7 @@ async function rewriteExperimentIdentity(outputDir, experimentTopology, auditorS
     lowContext: true,
     repositoryTools: false,
   }, null, 2)}\n`, 'utf8');
+  return true;
 }
 
 async function main() {
@@ -50,8 +56,15 @@ async function main() {
   const experimentTopology = String(process.env.CONVERGENT_REVIEW_EVIDENCE_AUDITOR_TOPOLOGY ?? `review-audit-${auditorSelector}`).trim();
 
   options.topology = 'luna-terra-structured';
-  await runWithStartupRetry(options, runTopologyHeadless);
-  await rewriteExperimentIdentity(options.outputDir, experimentTopology, auditorSelector);
+  let failure = null;
+  try {
+    await runWithStartupRetry(options, runTopologyHeadless);
+  } catch (error) {
+    failure = error;
+  } finally {
+    await rewriteExperimentIdentity(options.outputDir, experimentTopology, auditorSelector);
+  }
+  if (failure) throw failure;
 }
 
 if (require.main === module) {
