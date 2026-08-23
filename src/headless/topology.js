@@ -51,7 +51,7 @@ const TOPOLOGIES = Object.freeze({
     },
   }),
   'luna-terra-structured': Object.freeze({
-    label: 'Luna + Terra review (structured capabilities)',
+    label: 'Luna + Luna review (temporary PR smoke alias)',
     kind: 'convergent',
     peerMode: 'none',
     promptProfile: 'lean-standard',
@@ -60,7 +60,7 @@ const TOPOLOGIES = Object.freeze({
       coordinator: 'gpt-5.6-terra',
       workerA: 'gpt-5.6-luna',
       workerB: 'adaptive-diverse',
-      reviewer: 'gpt-5.6-terra',
+      reviewer: 'gpt-5.6-luna',
     },
   }),
   'luna-luna-structured': Object.freeze({
