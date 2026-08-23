@@ -5,7 +5,29 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { parseArgs } = require('./runner');
 const topologyEngineModule = require('./topology-engine');
-const { ReviewEvidenceAuditorBenchmarkEngine } = require('./review-evidence-auditor');
+const {
+  ReviewEvidenceAuditorBenchmarkEngine,
+  ReviewEvidenceAuditorSessionFactory,
+} = require('./review-evidence-auditor');
+const {
+  createPathResolutionProbeTool,
+  injectPathProbeIntoReviewerClient,
+} = require('./reviewer-path-probe');
+
+class ProbeEnabledReviewEvidenceAuditorSessionFactory extends ReviewEvidenceAuditorSessionFactory {
+  async createReviewer(...args) {
+    const probeTool = createPathResolutionProbeTool(this.sdk.defineTool, {
+      workspace: this.workspace,
+    });
+    const baseClient = this.client;
+    this.client = injectPathProbeIntoReviewerClient(this, baseClient, probeTool);
+    try {
+      return await super.createReviewer(...args);
+    } finally {
+      this.client = baseClient;
+    }
+  }
+}
 
 class EnvironmentConfiguredReviewAuditorEngine extends ReviewEvidenceAuditorBenchmarkEngine {
   constructor(options = {}) {
@@ -15,6 +37,24 @@ class EnvironmentConfiguredReviewAuditorEngine extends ReviewEvidenceAuditorBenc
       ...options,
       reviewAuditorSelector: auditorSelector,
       experimentTopology,
+    });
+  }
+
+  sessionFactory() {
+    return new ProbeEnabledReviewEvidenceAuditorSessionFactory({
+      client: this.client,
+      sdk: this.sdk,
+      workspace: this.workspace,
+      workspaceFolders: this.workspaceFolders,
+      models: this.models,
+      permissionHandler: this.permissionHandler,
+      userInputHandler: this.userInputHandler,
+      ui: this.ui,
+      usage: this.usage,
+      runId: this.runId,
+      reasoningMode: this.reasoningMode,
+      operatorCredentialGuard: this.operatorCredentialGuard,
+      reviewAuditorSelector: this.reviewAuditorSelector,
     });
   }
 }
@@ -40,6 +80,7 @@ async function rewriteExperimentIdentity(outputDir, experimentTopology, auditorS
     selector: auditorSelector,
     lowContext: true,
     repositoryTools: false,
+    reviewerIsolatedPathProbe: true,
   };
   await fs.writeFile(resultPath, `${JSON.stringify(result, null, 2)}\n`, 'utf8');
 
@@ -49,6 +90,7 @@ async function rewriteExperimentIdentity(outputDir, experimentTopology, auditorS
     auditorSelector,
     lowContext: true,
     repositoryTools: false,
+    reviewerIsolatedPathProbe: true,
   }, null, 2)}\n`, 'utf8');
   return true;
 }
@@ -78,6 +120,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  ProbeEnabledReviewEvidenceAuditorSessionFactory,
   EnvironmentConfiguredReviewAuditorEngine,
   rewriteExperimentIdentity,
   main,
