@@ -40,6 +40,7 @@ test('benchmark topology set contains the intended architecture experiment arms'
     'luna-terra-compact',
     'luna-terra-lean',
     'luna-terra-structured',
+    'luna-luna-structured',
     'luna-terra-capable',
     'luna-peer-terra',
     'luna-ab-terra',
@@ -51,6 +52,8 @@ test('benchmark topology set contains the intended architecture experiment arms'
   assert.equal(topologyConfig('luna-terra-lean').toolProfile, 'lean');
   assert.equal(topologyConfig('luna-terra-structured').promptProfile, 'lean-standard');
   assert.equal(topologyConfig('luna-terra-structured').toolProfile, 'structured');
+  assert.equal(topologyConfig('luna-luna-structured').promptProfile, 'lean-standard');
+  assert.equal(topologyConfig('luna-luna-structured').toolProfile, 'structured');
   assert.equal(topologyConfig('luna-terra-capable').promptProfile, 'lean-standard');
   assert.equal(topologyConfig('luna-terra-capable').toolProfile, 'full');
   assert.equal(topologyConfig('luna-peer-terra').peerMode, 'critic');
@@ -75,6 +78,11 @@ test('topology selectors pin Terra/Luna explicitly instead of silently using str
   const structured = applyTopologySelectors({ topology: 'luna-terra-structured' });
   assert.equal(structured.workerA, 'gpt-5.6-luna');
   assert.equal(structured.reviewer, 'gpt-5.6-terra');
+
+  const lunaReviewed = applyTopologySelectors({ topology: 'luna-luna-structured' });
+  assert.equal(lunaReviewed.coordinator, 'gpt-5.6-terra');
+  assert.equal(lunaReviewed.workerA, 'gpt-5.6-luna');
+  assert.equal(lunaReviewed.reviewer, 'gpt-5.6-luna');
 
   const capable = applyTopologySelectors({ topology: 'luna-terra-capable' });
   assert.equal(capable.workerA, 'gpt-5.6-luna');
