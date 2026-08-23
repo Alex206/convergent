@@ -61,13 +61,13 @@ jobs:
       fail-fast: false
       max-parallel: 1
       matrix:
-        topology: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.topologies_json || '["luna-terra-structured","luna-ab-terra"]') }}
+        topology: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.topologies_json || '["luna-terra-structured","luna-terra-trust-boundary"]') }}
         scenario: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.scenarios_json || '["benchmarks/08-artifact-path-containment.md"]') }}
         repeat: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.repeats_json || '[1,2,3]') }}
     env:
       COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
       COPILOT_PLUGIN_DIR_ONLY: 'true'
-      CONVERGENT_BENCHMARK_REVIEW_CONTRACT: ${{ matrix.topology == 'luna-ab-terra' && 'trust-boundary-composition-v1' || 'acceptance-matrix-v1' }}
+      CONVERGENT_BENCHMARK_REVIEW_CONTRACT: ${{ matrix.topology == 'luna-terra-trust-boundary' && 'trust-boundary-composition-v1' || 'acceptance-matrix-v1' }}
     steps:
       - name: Require benchmark credentials
         shell: bash
