@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
+  DEFAULT_MAX_REVIEW_AUDIT_ROUNDS,
   normalizeAuditReport,
   validateAuditReport,
   auditFeedback,
@@ -16,6 +17,8 @@ function completeAudit(overrides = {}) {
     transition_sequence_tested: true,
     hostile_composition_observed: true,
     benign_composition_observed: true,
+    matched_contrast_pair: true,
+    overrestriction_guard: true,
     discriminating_evidence: true,
     summary: 'All required evidence is explicit.',
     missing_or_weak_aspects: [],
@@ -37,6 +40,20 @@ test('review evidence audit derives adequate only when every semantic aspect is 
   assert.equal(validateAuditReport(weak), null);
 });
 
+test('matched benign evidence must guard against over-restrictive remediation', () => {
+  const weak = completeAudit({
+    matched_contrast_pair: false,
+    overrestriction_guard: false,
+    summary: 'The benign case is ordinary normalization rather than a matched counterpart.',
+    missing_or_weak_aspects: [
+      'Benign evidence does not exercise the corresponding permitted transition shape.',
+      'The benign witness would not expose a remediation that rejects the whole transition family.',
+    ],
+  });
+  assert.equal(weak.adequate, false);
+  assert.equal(validateAuditReport(weak), null);
+});
+
 test('review evidence audit rejects internally inconsistent structured reports', () => {
   const inadequateWithoutGap = completeAudit({
     benign_composition_observed: false,
@@ -50,10 +67,12 @@ test('review evidence audit rejects internally inconsistent structured reports',
   assert.match(validateAuditReport(adequateWithGap), /requires missing_or_weak_aspects=\[\]/i);
 });
 
-test('auditor feedback targets reviewer evidence rather than assuming a code defect', () => {
+test('auditor feedback targets reviewer evidence and matched counterexamples rather than assuming a code defect', () => {
   const weak = completeAudit({
     transition_sequence_tested: false,
     hostile_composition_observed: false,
+    matched_contrast_pair: false,
+    overrestriction_guard: false,
     summary: 'Only final-state evidence was reported.',
     missing_or_weak_aspects: ['No hostile transitional witness was exercised.'],
   });
@@ -61,6 +80,12 @@ test('auditor feedback targets reviewer evidence rather than assuming a code def
   assert.match(feedback, /review-quality retry/i);
   assert.match(feedback, /not evidence that the implementation is defective/i);
   assert.match(feedback, /No hostile transitional witness/i);
+  assert.match(feedback, /matched semantic counterpart/i);
+  assert.match(feedback, /capable of falsifying an over-restrictive implementation/i);
+});
+
+test('auditor allows a third bounded challenge after remediation', () => {
+  assert.equal(DEFAULT_MAX_REVIEW_AUDIT_ROUNDS, 3);
 });
 
 test('audit task context is deliberately bounded', () => {
