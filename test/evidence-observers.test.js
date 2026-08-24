@@ -4,6 +4,9 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
+  TRUST_BOUNDARY_REVIEW_AUDIT_CONTRACT,
+} = require('../src/headless/review-evidence-auditor');
+const {
   PATH_RESOLUTION_OBSERVER_ID,
   EvidenceObserverRegistry,
   createPathResolutionTransitionObserver,
@@ -11,7 +14,7 @@ const {
   validateObserver,
 } = require('../src/headless/evidence-observers');
 
-function stubObserver(id = 'stub-v1', applicability = () => true) {
+function stubObserver(id = 'stub-v1', applicability = () => true, auditContract = TRUST_BOUNDARY_REVIEW_AUDIT_CONTRACT) {
   return {
     id,
     schemaVersion: 1,
@@ -19,6 +22,7 @@ function stubObserver(id = 'stub-v1', applicability = () => true) {
     toolName: 'custom:observe_stub',
     reviewerPrompt: 'STUB REVIEWER PROMPT',
     auditorPrompt: 'STUB AUDITOR PROMPT',
+    auditContract,
     metadata: { oracleBlind: true },
     applicability,
     createTool({ observationSink }) {
@@ -40,14 +44,15 @@ test('typed evidence observer registry validates stable unique capability contra
   assert.throws(() => validateObserver({ id: 'missing' }), /evidenceType/);
   assert.throws(
     () => validateObserver({
-      id: 'missing-applicability',
+      id: 'missing-contract',
       evidenceType: 'test',
       toolName: 'custom:test',
+      applicability() { return true; },
       createTool() {},
       compactEvidence() {},
       augmentReview() {},
     }),
-    /applicability/,
+    /auditContract/,
   );
   assert.throws(
     () => new EvidenceObserverRegistry([stubObserver('same'), stubObserver('same')]),
@@ -59,6 +64,8 @@ test('typed evidence observer registry validates stable unique capability contra
   assert.equal(registry.metadata()[0].oracleBlind, true);
   assert.equal(registry.metadata()[0].revisionBound, true);
   assert.equal(registry.metadata()[0].typedTransitions, true);
+  assert.equal(registry.metadata()[0].auditContract, 'trust-boundary-composition-v1');
+  assert.equal(registry.auditContract().id, 'trust-boundary-composition-v1');
 });
 
 test('observer applicability is explicit and fail-closed', () => {
@@ -75,6 +82,19 @@ test('observer applicability is explicit and fail-closed', () => {
     ['throws', false],
   ]);
   assert.match(selected.decisions[2].reason, /^applicability-error:/);
+});
+
+test('selected observers must agree on one audit contract', () => {
+  const otherContract = {
+    id: 'other-v1',
+    prompt: 'Judge the other evidence contract and call report_review_audit.',
+    aspects: [['other_evidence', 'show other evidence']],
+  };
+  const registry = new EvidenceObserverRegistry([
+    stubObserver('one'),
+    stubObserver('two', () => true, otherContract),
+  ]);
+  assert.throws(() => registry.auditContract(), /incompatible audit contracts/i);
 });
 
 test('path transition observer requires an explicit high-risk artifact-path boundary contract', () => {
@@ -149,5 +169,6 @@ test('empty observer registry is a fail-safe no-op rather than weakening review'
   assert.deepEqual(registry.evidenceForRevision(state, 'revision'), []);
   assert.deepEqual(registry.metadata(), []);
   assert.equal(registry.auditorPrompt(), '');
+  assert.equal(registry.auditContract(), null);
   assert.deepEqual(registry.selectApplicable({}).decisions, []);
 });
