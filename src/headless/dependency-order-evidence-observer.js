@@ -11,9 +11,11 @@ const DEPENDENCY_ORDER_OBSERVER_ID = 'dependency-order-ready-transition-v1';
 const MAX_AUDITOR_DEPENDENCY_OBSERVATIONS = 4;
 
 const DEPENDENCY_ORDER_AUDIT_CONTRACT = Object.freeze({
-  id: 'dependency-order-evidence-v1',
+  id: 'dependency-order-evidence-v2',
   prompt: `
 You are a tiny semantic quality gate for another model's code-review report. You do NOT review the code and you have no repository access. Judge only whether the strong review report explicitly demonstrates the central dependency-ordering contract using the supplied current-revision programmatic evidence. Never infer that a check happened unless the report records it.
+
+The stable-order contract is operational, not global-pairwise: at each emission step, every dependency of the chosen task must already have been emitted, and among the tasks that are currently dependency-ready the chosen task must have the lowest original input index. Do NOT require the original relative order of arbitrary task pairs when one of those tasks was not ready at the same decision point; that stronger pairwise rule can conflict with valid dependency constraints.
 
 For a CLEAN dependency-order review, mark each aspect true only when concrete performed evidence supports it:
 1. dependency_edges_observed — a nontrivial acyclic graph was exercised and its returned order respects declared dependency edges.
@@ -30,7 +32,7 @@ Call report_review_audit exactly once. Keep missing_or_weak_aspects concise and 
 `.trim(),
   aspects: Object.freeze([
     ['dependency_edges_observed', 'exercise a nontrivial acyclic graph and show declared dependencies precede dependents'],
-    ['stable_ready_choice_observed', 'show ready-set transitions preserve original input-order tie-breaking among currently ready tasks'],
+    ['stable_ready_choice_observed', 'show each observed choice is the lowest-original-index task among the tasks ready at that step'],
     ['mixed_ready_transition_observed', 'exercise a mixed partial-order witness with competing ready tasks as dependencies unlock work'],
     ['all_tasks_preserved_observed', 'show a successful result preserves every input task exactly once'],
     ['cycle_rejection_observed', 'exercise and observe rejection of a genuine dependency cycle'],
@@ -40,12 +42,15 @@ Call report_review_audit exactly once. Keep missing_or_weak_aspects concise and 
   toolDescription: 'Assess whether a CLEAN dependency-order review explicitly demonstrates the required graph-order evidence. This tool does not review code.',
   feedbackInstructions: Object.freeze([
     'Use concrete graph witnesses and the programmatic ready-set transition facts. Do not repair an evidence gap by merely asserting an expected output list.',
-    'For stable ordering, exercise a mixed partial-order case where dependency completion changes the ready set while unrelated work is also ready; chains and all-independent lists alone are not discriminating.',
+    'For stable ordering, require earliest-original-index selection only among tasks ready at the same step; never impose global pairwise order on a task that was not ready.',
+    'Exercise a mixed partial-order case where dependency completion changes the ready set while unrelated work is also ready; chains and all-independent lists alone are not discriminating.',
   ]),
 });
 
 const REVIEW_AUDITOR_DEPENDENCY_PROMPT = `
 The review report can contain a PROGRAMMATIC DEPENDENCY-ORDER EVIDENCE entry. It is authoritative bounded evidence captured from actual probe_dependency_order executions against the exact workspace revision being approved; it is not reviewer prose and it contains no hidden expected output ordering.
+
+Stable topological ordering means: at each step, choose the earliest task in original input order among the tasks whose dependencies have all already been emitted. It does NOT mean preserving original pairwise order for arbitrary tasks that were never simultaneously ready. If dependency constraints make a later-input task ready before an earlier-input dependent task, that is compatible with the contract.
 
 For stable-order claims, inspect each witness's ready_transition_trace. A mixed witness is discriminating only when at least one step has multiple ready candidates and the trace shows which candidate the implementation actually chose versus the earliest ready candidate in original input order. Do not credit a simple chain as evidence of stable tie-breaking because it has no choice point. Do not credit an all-independent list alone because it does not exercise readiness changes caused by dependencies.
 
@@ -57,7 +62,7 @@ function dependencyOrderObserverApplicability({ task } = {}) {
   const namesApi = /\border_tasks\b/.test(contract);
   const namesSemanticContract = /dependenc/.test(contract)
     && /deterministic|stable/.test(contract)
-    && /input order|original order/.test(contract);
+    && (/input order|original order/.test(contract) || /currently.*ready|ready.*input/.test(contract));
   if (!namesApi && !namesSemanticContract) {
     return { applicable: false, reason: 'task-contract-does-not-identify-dependency-order-semantics' };
   }
