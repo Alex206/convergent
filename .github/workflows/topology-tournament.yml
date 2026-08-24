@@ -15,13 +15,14 @@ jobs:
       fail-fast: false
       max-parallel: 1
       matrix:
+        arm: [luna-ab-terra, typed-evidence-no-peer]
         repeat: [1, 2, 3]
     env:
       COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
       COPILOT_PLUGIN_DIR_ONLY: 'true'
       CONVERGENT_BENCHMARK_REVIEW_CONTRACT: acceptance-matrix-v1
       CONVERGENT_REVIEW_EVIDENCE_AUDITOR_MODEL: gpt-5.6-luna
-      CONVERGENT_REVIEW_EVIDENCE_AUDITOR_TOPOLOGY: review-audit-luna-dependency-evidence
+      CONVERGENT_REVIEW_EVIDENCE_AUDITOR_TOPOLOGY: typed-evidence-no-peer
     steps:
       - name: Require benchmark credentials
         shell: bash
@@ -38,7 +39,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: Alex206/convergent-test-repo
-          ref: benchmark/scenario03-review-contract
+          ref: benchmark/scenario08-path-containment
           path: benchmark-target
           token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
 
@@ -53,7 +54,7 @@ jobs:
       - name: Prepare benchmark state and metadata
         shell: bash
         env:
-          EXPERIMENT_TOPOLOGY: review-audit-luna-dependency-evidence
+          ARM: ${{ matrix.arm }}
           REPEAT: ${{ matrix.repeat }}
           RUN_OUTPUT: ${{ runner.temp }}/topology-run
         run: |
@@ -64,17 +65,44 @@ jobs:
           const fs = require('node:fs');
           const path = require('node:path');
           const meta = {
-            topology: process.env.EXPERIMENT_TOPOLOGY,
-            scenario: 'benchmarks/03-dependency-ordering.md',
+            topology: process.env.ARM,
+            scenario: 'benchmarks/08-artifact-path-containment.md',
             repeat: Number(process.env.REPEAT),
-            fixtureRef: 'benchmark/scenario03-review-contract',
+            fixtureRef: 'benchmark/scenario08-path-containment',
             fixtureSha: process.env.FIXTURE_SHA,
           };
           fs.writeFileSync(path.join(process.env.RUN_OUTPUT, 'benchmark-meta.json'), `${JSON.stringify(meta, null, 2)}\n`);
           NODE
 
-      - name: Run revision-bound dependency evidence Luna auditor benchmark
-        id: topology
+      - name: Run production A/B + Terra control
+        if: matrix.arm == 'luna-ab-terra'
+        id: production_control
+        continue-on-error: true
+        timeout-minutes: 15
+        shell: bash
+        env:
+          RUN_OUTPUT: ${{ runner.temp }}/topology-run
+        run: |
+          export CONVERGENT_HEADLESS_ANSWERS_JSON='[]'
+          set -o pipefail
+          node src/headless/topology-cli.js \
+            --workspace "${GITHUB_WORKSPACE}/benchmark-target" \
+            --prompt-file "${GITHUB_WORKSPACE}/benchmark-target/benchmarks/08-artifact-path-containment.md" \
+            --output-dir "${RUN_OUTPUT}" \
+            --topology luna-ab-terra \
+            --flow fast \
+            --audit-level full \
+            --limit-policy continue \
+            --max-reviewer-cycles 4 \
+            --max-model-calls 80 \
+            --max-model-calls-per-turn 16 \
+            --max-chat-requests 28 \
+            --max-ai-credits 60 \
+            2>&1 | tee "${RUN_OUTPUT}/runner.log"
+
+      - name: Run typed path-evidence candidate
+        if: matrix.arm == 'typed-evidence-no-peer'
+        id: typed_candidate
         continue-on-error: true
         timeout-minutes: 15
         shell: bash
@@ -85,17 +113,17 @@ jobs:
           set -o pipefail
           node src/headless/review-evidence-auditor-cli.js \
             --workspace "${GITHUB_WORKSPACE}/benchmark-target" \
-            --prompt-file "${GITHUB_WORKSPACE}/benchmark-target/benchmarks/03-dependency-ordering.md" \
+            --prompt-file "${GITHUB_WORKSPACE}/benchmark-target/benchmarks/08-artifact-path-containment.md" \
             --output-dir "${RUN_OUTPUT}" \
             --topology luna-terra-structured \
             --flow fast \
             --audit-level full \
             --limit-policy continue \
             --max-reviewer-cycles 4 \
-            --max-model-calls 60 \
-            --max-model-calls-per-turn 14 \
-            --max-chat-requests 20 \
-            --max-ai-credits 45 \
+            --max-model-calls 80 \
+            --max-model-calls-per-turn 16 \
+            --max-chat-requests 28 \
+            --max-ai-credits 60 \
             2>&1 | tee "${RUN_OUTPUT}/runner.log"
 
       - name: Independently validate target tests
@@ -123,14 +151,14 @@ jobs:
           cat "${RUN_OUTPUT}/target-validation.log"
           exit 0
 
-      - name: Run deterministic Scenario 03 oracle
+      - name: Run strengthened Scenario 08 oracle
         if: always()
         continue-on-error: true
         shell: bash
         env:
           RUN_OUTPUT: ${{ runner.temp }}/topology-run
         run: |
-          node src/headless/scenario03-acceptance.js \
+          node src/headless/scenario08-acceptance.js \
             "${GITHUB_WORKSPACE}/benchmark-target" \
             "${RUN_OUTPUT}/scenario-acceptance.json"
 
@@ -147,7 +175,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: topology-${{ strategy.job-index }}-review-audit-luna-dependency-evidence-r${{ matrix.repeat }}
+          name: topology-${{ strategy.job-index }}-${{ matrix.arm }}-r${{ matrix.repeat }}
           path: ${{ runner.temp }}/topology-run
           if-no-files-found: error
           retention-days: 14
