@@ -45,14 +45,60 @@ const REVIEW_AUDIT_ASPECTS = Object.freeze([
   ['discriminating_evidence', 'show concrete performed hostile/benign observations that discriminate the invariant rather than generic coverage or implementation restatement'],
 ]);
 
-function normalizeAuditReport(args = {}) {
-  const aspects = Object.fromEntries(REVIEW_AUDIT_ASPECTS.map(([key]) => [key, args[key] === true]));
+const TRUST_BOUNDARY_REVIEW_AUDIT_CONTRACT = Object.freeze({
+  id: 'trust-boundary-composition-v1',
+  prompt: REVIEW_EVIDENCE_AUDITOR_PROMPT,
+  aspects: REVIEW_AUDIT_ASPECTS,
+  toolDescription: 'Semantically assess whether a strong CLEAN review report explicitly demonstrates every required high-risk evidence aspect. This tool does not review code.',
+  feedbackInstructions: Object.freeze([
+    'For a hostile/benign contrast, the benign witness must be a matched semantic counterpart and must be capable of falsifying an over-restrictive implementation. Merely showing that some ordinary normalization or some unrelated valid case works is insufficient.',
+    'State explicitly what security-relevant property differs between the pair and why both witnesses stress the same controversial transition shape.',
+  ]),
+});
+
+function normalizeAuditContract(contract = TRUST_BOUNDARY_REVIEW_AUDIT_CONTRACT) {
+  const source = contract ?? TRUST_BOUNDARY_REVIEW_AUDIT_CONTRACT;
+  const id = String(source.id ?? '').trim();
+  const prompt = String(source.prompt ?? '').trim();
+  const rawAspects = Array.isArray(source.aspects) ? source.aspects : [];
+  const aspects = rawAspects.map((entry) => {
+    if (!Array.isArray(entry) || entry.length < 2) throw new Error(`Review audit contract ${id || '<unnamed>'} has an invalid aspect.`);
+    const key = String(entry[0] ?? '').trim();
+    const description = String(entry[1] ?? '').trim();
+    if (!/^[a-z][a-z0-9_]*$/.test(key) || !description) {
+      throw new Error(`Review audit contract ${id || '<unnamed>'} has an invalid aspect.`);
+    }
+    return [key, description];
+  });
+  if (!id) throw new Error('Review audit contract requires a stable id.');
+  if (!prompt) throw new Error(`Review audit contract ${id} requires prompt.`);
+  if (!aspects.length) throw new Error(`Review audit contract ${id} requires at least one aspect.`);
+  if (new Set(aspects.map(([key]) => key)).size !== aspects.length) {
+    throw new Error(`Review audit contract ${id} has duplicate aspect keys.`);
+  }
+  return Object.freeze({
+    id,
+    prompt,
+    aspects: Object.freeze(aspects.map((entry) => Object.freeze(entry))),
+    toolDescription: String(source.toolDescription ?? 'Assess whether the strong CLEAN review report explicitly demonstrates every required evidence aspect.').trim(),
+    feedbackInstructions: Object.freeze(
+      (Array.isArray(source.feedbackInstructions) ? source.feedbackInstructions : [])
+        .map((item) => String(item ?? '').trim())
+        .filter(Boolean),
+    ),
+  });
+}
+
+function normalizeAuditReport(args = {}, contract = TRUST_BOUNDARY_REVIEW_AUDIT_CONTRACT) {
+  const normalizedContract = normalizeAuditContract(contract);
+  const aspects = Object.fromEntries(normalizedContract.aspects.map(([key]) => [key, args[key] === true]));
   const missing = Array.isArray(args.missing_or_weak_aspects)
     ? args.missing_or_weak_aspects.map((item) => String(item ?? '').trim()).filter(Boolean)
     : [];
-  const adequate = REVIEW_AUDIT_ASPECTS.every(([key]) => aspects[key] === true);
+  const adequate = normalizedContract.aspects.every(([key]) => aspects[key] === true);
   return {
     adequate,
+    audit_contract: normalizedContract.id,
     ...aspects,
     summary: String(args.summary ?? '').trim(),
     missing_or_weak_aspects: missing,
@@ -70,10 +116,11 @@ function validateAuditReport(report) {
   return null;
 }
 
-function createReviewAuditTool(defineTool, sink) {
-  const booleanProperties = Object.fromEntries(REVIEW_AUDIT_ASPECTS.map(([key]) => [key, { type: 'boolean' }]));
+function createReviewAuditTool(defineTool, sink, contract = TRUST_BOUNDARY_REVIEW_AUDIT_CONTRACT) {
+  const normalizedContract = normalizeAuditContract(contract);
+  const booleanProperties = Object.fromEntries(normalizedContract.aspects.map(([key]) => [key, { type: 'boolean' }]));
   return defineTool('report_review_audit', {
-    description: 'Semantically assess whether a strong CLEAN review report explicitly demonstrates every required high-risk evidence aspect. This tool does not review code.',
+    description: normalizedContract.toolDescription,
     parameters: {
       type: 'object',
       properties: {
@@ -85,7 +132,7 @@ function createReviewAuditTool(defineTool, sink) {
         },
       },
       required: [
-        ...REVIEW_AUDIT_ASPECTS.map(([key]) => key),
+        ...normalizedContract.aspects.map(([key]) => key),
         'summary',
         'missing_or_weak_aspects',
       ],
@@ -94,7 +141,7 @@ function createReviewAuditTool(defineTool, sink) {
     skipPermission: true,
     defer: 'never',
     handler: async (args) => {
-      const report = normalizeAuditReport(args);
+      const report = normalizeAuditReport(args, normalizedContract);
       const error = validateAuditReport(report);
       if (error) return { accepted: false, error, retry: true };
       sink.value = report;
@@ -131,17 +178,17 @@ function auditPrompt(task, review) {
   ].join('\n');
 }
 
-function auditFeedback(report) {
+function auditFeedback(report, contract = TRUST_BOUNDARY_REVIEW_AUDIT_CONTRACT) {
+  const normalizedContract = normalizeAuditContract(contract);
   const missing = report?.missing_or_weak_aspects?.length
     ? report.missing_or_weak_aspects
-    : REVIEW_AUDIT_ASPECTS
+    : normalizedContract.aspects
       .filter(([key]) => report?.[key] !== true)
       .map(([, description]) => description);
   return [
     'The low-context semantic evidence auditor rejected your CLEAN review report as insufficiently demonstrated. This is a review-quality retry, not evidence that the implementation is defective.',
     'Perform only the missing discriminating validation needed to close these evidence gaps, then submit a new report_review. Put concrete performed witness inputs and observed outcomes in checks; if that validation exposes a real code defect, return FINDINGS normally.',
-    'For a hostile/benign contrast, the benign witness must be a matched semantic counterpart and must be capable of falsifying an over-restrictive implementation. Merely showing that some ordinary normalization or some unrelated valid case works is insufficient.',
-    'State explicitly what security-relevant property differs between the pair and why both witnesses stress the same controversial transition shape.',
+    ...normalizedContract.feedbackInstructions,
     ...missing.map((item) => `- ${item}`),
     'Your next CLEAN report must itself contain enough explicit evidence for an independent auditor with no repository access to verify these aspects.',
   ].join('\n');
@@ -151,13 +198,14 @@ class ReviewEvidenceAuditorSessionFactory extends LeanStandardSessionFactory {
   constructor(options = {}) {
     super({ ...options, benchmarkToolProfile: 'structured' });
     this.reviewAuditorSelector = String(options.reviewAuditorSelector ?? 'gpt-5.6-luna').trim();
+    this.reviewAuditContract = normalizeAuditContract(options.reviewAuditContract ?? TRUST_BOUNDARY_REVIEW_AUDIT_CONTRACT);
   }
 
   async createReviewEvidenceAuditor(taskId, route = 'high_risk', risk = 'high', sessionAttempt = '') {
     const safeTaskId = safeSessionPart(taskId);
     const attemptSuffix = sessionAttempt ? `-${safeSessionPart(sessionAttempt)}` : '';
     const sink = { value: null };
-    const tool = createReviewAuditTool(this.sdk.defineTool, sink);
+    const tool = createReviewAuditTool(this.sdk.defineTool, sink, this.reviewAuditContract);
     const model = resolveWorkerModel(
       this.reviewAuditorSelector,
       this.models.available ?? [],
@@ -166,7 +214,7 @@ class ReviewEvidenceAuditorSessionFactory extends LeanStandardSessionFactory {
     const effort = chooseReasoningEffort(model, 'low', this.reasoningMode);
     const name = 'Review evidence auditor';
     const availableTools = [REVIEW_AUDIT_TOOL];
-    const systemPrompt = REVIEW_EVIDENCE_AUDITOR_PROMPT;
+    const systemPrompt = this.reviewAuditContract.prompt;
 
     const session = await this.client.createSession(withReasoning({
       sessionId: `${this.runId}-${safeTaskId}-review-evidence-auditor${attemptSuffix}`,
@@ -194,6 +242,7 @@ class ReviewEvidenceAuditorSessionFactory extends LeanStandardSessionFactory {
       route,
       risk,
       sessionAttempt: sessionAttempt || null,
+      reviewAuditContract: this.reviewAuditContract.id,
       benchmarkOnly: true,
       lowContext: true,
       repositoryTools: false,
@@ -207,6 +256,7 @@ class ReviewEvidenceAuditorBenchmarkEngine extends BenchmarkTopologyEngine {
     super({ ...options, topology: 'luna-terra-structured' });
     this.experimentTopology = String(options.experimentTopology ?? 'review-audit').trim();
     this.reviewAuditorSelector = String(options.reviewAuditorSelector ?? 'gpt-5.6-luna').trim();
+    this.reviewAuditContract = normalizeAuditContract(options.reviewAuditContract ?? TRUST_BOUNDARY_REVIEW_AUDIT_CONTRACT);
     this.maxReviewAuditRounds = Math.max(
       1,
       Number(options.maxReviewAuditRounds) || DEFAULT_MAX_REVIEW_AUDIT_ROUNDS,
@@ -228,6 +278,7 @@ class ReviewEvidenceAuditorBenchmarkEngine extends BenchmarkTopologyEngine {
       reasoningMode: this.reasoningMode,
       operatorCredentialGuard: this.operatorCredentialGuard,
       reviewAuditorSelector: this.reviewAuditorSelector,
+      reviewAuditContract: this.reviewAuditContract,
     });
   }
 
@@ -256,6 +307,7 @@ class ReviewEvidenceAuditorBenchmarkEngine extends BenchmarkTopologyEngine {
         type: 'benchmark_review_evidence_audit',
         topology: this.experimentTopology,
         auditorSelector: this.reviewAuditorSelector,
+        auditContract: factory.reviewAuditContract?.id ?? this.reviewAuditContract.id,
         taskId: task.id,
         round,
         report,
@@ -327,7 +379,10 @@ class ReviewEvidenceAuditorBenchmarkEngine extends BenchmarkTopologyEngine {
           throw new Error(`Strong review evidence remained semantically inadequate after ${this.maxReviewAuditRounds} bounded low-context audit round(s).`);
         }
 
-        queueRecoveryInstruction(reviewer.session, auditFeedback(audit));
+        queueRecoveryInstruction(
+          reviewer.session,
+          auditFeedback(audit, factory.reviewAuditContract ?? this.reviewAuditContract),
+        );
         await this.checkAiCreditBudget(`before evidence-driven strong review retry for ${task.id}`);
         await super.runStrongReview(task, workerA, null, reviewer, evidence, effectiveRouting, {
           startReviewCycle: 1,
@@ -345,6 +400,8 @@ module.exports = {
   DEFAULT_MAX_REVIEW_AUDIT_ROUNDS,
   REVIEW_EVIDENCE_AUDITOR_PROMPT,
   REVIEW_AUDIT_ASPECTS,
+  TRUST_BOUNDARY_REVIEW_AUDIT_CONTRACT,
+  normalizeAuditContract,
   normalizeAuditReport,
   validateAuditReport,
   createReviewAuditTool,
