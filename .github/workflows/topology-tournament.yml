@@ -21,7 +21,7 @@ jobs:
       COPILOT_PLUGIN_DIR_ONLY: 'true'
       CONVERGENT_BENCHMARK_REVIEW_CONTRACT: acceptance-matrix-v1
       CONVERGENT_REVIEW_EVIDENCE_AUDITOR_MODEL: gpt-5.6-luna
-      CONVERGENT_REVIEW_EVIDENCE_AUDITOR_TOPOLOGY: review-audit-luna-probe-evidence
+      CONVERGENT_REVIEW_EVIDENCE_AUDITOR_TOPOLOGY: review-audit-luna-dependency-evidence
     steps:
       - name: Require benchmark credentials
         shell: bash
@@ -38,7 +38,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: Alex206/convergent-test-repo
-          ref: benchmark/scenario08-path-containment
+          ref: benchmark/scenario03-review-contract
           path: benchmark-target
           token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
 
@@ -53,7 +53,7 @@ jobs:
       - name: Prepare benchmark state and metadata
         shell: bash
         env:
-          EXPERIMENT_TOPOLOGY: review-audit-luna-probe-evidence
+          EXPERIMENT_TOPOLOGY: review-audit-luna-dependency-evidence
           REPEAT: ${{ matrix.repeat }}
           RUN_OUTPUT: ${{ runner.temp }}/topology-run
         run: |
@@ -65,15 +65,15 @@ jobs:
           const path = require('node:path');
           const meta = {
             topology: process.env.EXPERIMENT_TOPOLOGY,
-            scenario: 'benchmarks/08-artifact-path-containment.md',
+            scenario: 'benchmarks/03-dependency-ordering.md',
             repeat: Number(process.env.REPEAT),
-            fixtureRef: 'benchmark/scenario08-path-containment',
+            fixtureRef: 'benchmark/scenario03-review-contract',
             fixtureSha: process.env.FIXTURE_SHA,
           };
           fs.writeFileSync(path.join(process.env.RUN_OUTPUT, 'benchmark-meta.json'), `${JSON.stringify(meta, null, 2)}\n`);
           NODE
 
-      - name: Run revision-bound probe evidence Luna auditor benchmark
+      - name: Run revision-bound dependency evidence Luna auditor benchmark
         id: topology
         continue-on-error: true
         timeout-minutes: 15
@@ -85,7 +85,7 @@ jobs:
           set -o pipefail
           node src/headless/review-evidence-auditor-cli.js \
             --workspace "${GITHUB_WORKSPACE}/benchmark-target" \
-            --prompt-file "${GITHUB_WORKSPACE}/benchmark-target/benchmarks/08-artifact-path-containment.md" \
+            --prompt-file "${GITHUB_WORKSPACE}/benchmark-target/benchmarks/03-dependency-ordering.md" \
             --output-dir "${RUN_OUTPUT}" \
             --topology luna-terra-structured \
             --flow fast \
@@ -123,14 +123,14 @@ jobs:
           cat "${RUN_OUTPUT}/target-validation.log"
           exit 0
 
-      - name: Run strengthened Scenario 08 oracle
+      - name: Run deterministic Scenario 03 oracle
         if: always()
         continue-on-error: true
         shell: bash
         env:
           RUN_OUTPUT: ${{ runner.temp }}/topology-run
         run: |
-          node src/headless/scenario08-acceptance.js \
+          node src/headless/scenario03-acceptance.js \
             "${GITHUB_WORKSPACE}/benchmark-target" \
             "${RUN_OUTPUT}/scenario-acceptance.json"
 
@@ -147,7 +147,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: topology-${{ strategy.job-index }}-review-audit-luna-probe-evidence-r${{ matrix.repeat }}
+          name: topology-${{ strategy.job-index }}-review-audit-luna-dependency-evidence-r${{ matrix.repeat }}
           path: ${{ runner.temp }}/topology-run
           if-no-files-found: error
           retention-days: 14
