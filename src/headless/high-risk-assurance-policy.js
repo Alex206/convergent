@@ -19,6 +19,20 @@ function createResearchEvidenceObserverRegistry() {
   ]);
 }
 
+function fallbackDecision({ route, risk, reason, error = null, applicability = [], selectedObservers = [] }) {
+  return Object.freeze({
+    mode: HIGH_RISK_ASSURANCE_PEER_FALLBACK,
+    route,
+    risk,
+    reason,
+    ...(error ? { error: String(error).slice(0, 400) } : {}),
+    selectedObservers: Object.freeze(selectedObservers),
+    applicability: Object.freeze(applicability),
+    auditContract: null,
+    fallbackRequired: true,
+  });
+}
+
 function assuranceDecision({
   task,
   routing = {},
@@ -26,6 +40,14 @@ function assuranceDecision({
 } = {}) {
   const route = String(routing?.route ?? '').trim();
   const risk = String(routing?.risk ?? '').trim();
+
+  if (risk === 'high' && route !== 'high_risk') {
+    return fallbackDecision({
+      route,
+      risk,
+      reason: 'high-risk-routing-inconsistency',
+    });
+  }
 
   if (route !== 'high_risk') {
     return Object.freeze({
@@ -44,36 +66,24 @@ function assuranceDecision({
   try {
     selection = registry.selectApplicable({ task, routing });
   } catch (error) {
-    return Object.freeze({
-      mode: HIGH_RISK_ASSURANCE_PEER_FALLBACK,
+    return fallbackDecision({
       route,
       risk,
       reason: 'observer-selection-failed',
-      error: String(error?.message ?? error).slice(0, 400),
-      selectedObservers: Object.freeze([]),
-      applicability: Object.freeze([]),
-      auditContract: null,
-      fallbackRequired: true,
+      error: error?.message ?? error,
     });
   }
 
-  const applicability = Object.freeze(
-    (selection?.decisions ?? []).map((entry) => Object.freeze({ ...entry })),
-  );
-  const selectedObservers = Object.freeze(
-    (selection?.registry?.metadata?.() ?? []).map((entry) => Object.freeze({ ...entry })),
-  );
+  const applicability = (selection?.decisions ?? []).map((entry) => Object.freeze({ ...entry }));
+  const selectedObservers = (selection?.registry?.metadata?.() ?? []).map((entry) => Object.freeze({ ...entry }));
 
   if (!selectedObservers.length) {
-    return Object.freeze({
-      mode: HIGH_RISK_ASSURANCE_PEER_FALLBACK,
+    return fallbackDecision({
       route,
       risk,
       reason: 'no-applicable-typed-observer',
       selectedObservers,
       applicability,
-      auditContract: null,
-      fallbackRequired: true,
     });
   }
 
@@ -81,29 +91,23 @@ function assuranceDecision({
   try {
     auditContract = selection.registry.auditContract();
   } catch (error) {
-    return Object.freeze({
-      mode: HIGH_RISK_ASSURANCE_PEER_FALLBACK,
+    return fallbackDecision({
       route,
       risk,
       reason: 'incompatible-observer-audit-contracts',
-      error: String(error?.message ?? error).slice(0, 400),
+      error: error?.message ?? error,
       selectedObservers,
       applicability,
-      auditContract: null,
-      fallbackRequired: true,
     });
   }
 
   if (!auditContract?.id) {
-    return Object.freeze({
-      mode: HIGH_RISK_ASSURANCE_PEER_FALLBACK,
+    return fallbackDecision({
       route,
       risk,
       reason: 'observer-audit-contract-unavailable',
       selectedObservers,
       applicability,
-      auditContract: null,
-      fallbackRequired: true,
     });
   }
 
@@ -112,8 +116,8 @@ function assuranceDecision({
     route,
     risk,
     reason: 'applicable-compatible-typed-observer',
-    selectedObservers,
-    applicability,
+    selectedObservers: Object.freeze(selectedObservers),
+    applicability: Object.freeze(applicability),
     auditContract: auditContract.id,
     fallbackRequired: false,
   });
@@ -124,5 +128,6 @@ module.exports = {
   HIGH_RISK_ASSURANCE_PEER_FALLBACK,
   HIGH_RISK_ASSURANCE_EXISTING_ROUTE,
   createResearchEvidenceObserverRegistry,
+  fallbackDecision,
   assuranceDecision,
 };
