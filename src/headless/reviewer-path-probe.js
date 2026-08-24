@@ -15,6 +15,8 @@ For this containment benchmark you also have probe_path_resolution, a benchmark-
 Prefer this tool when independent review evidence needs temporary directories or symlinks. Derive witness cases from the task contract. For a contrastive boundary claim, probe both the restrictive rule and the corresponding permissive rule at their semantic boundary; do not substitute an easier happy path that cannot falsify an over-restrictive implementation.
 
 When correctness depends on the provenance or mechanism of an intermediate boundary transition rather than only the final state, make the pair genuinely discriminating. The hostile witness should cross by the forbidden mechanism and later converge to a final state that a final-state-only check could mistake as allowed. If the contract permits the same controversial boundary transition through another mechanism, the benign witness must actually exercise that permitted transition and converge to a comparable allowed final state. A hostile case whose final state is still plainly outside/invalid, or a benign case that never reaches the controversial boundary state, does not prove the provenance distinction.
+
+The probe reports an oracle-blind transition_trace and transition_features for every case. These describe actual filesystem resolution of each progressive input component (inside/root-self/outside, and whether the current component is a symlink); they do not encode expected resolver behavior. Use those observations rather than mentally simulating path semantics when explaining why a witness pair is genuinely matched.
 `.trim();
 
 function pythonExecutable(platform = process.platform) {
@@ -70,6 +72,63 @@ spec = json.loads(sys.argv[2])
 sys.path.insert(0, str(workspace))
 from taskflow import resolve_artifact_path
 
+
+def relation_row(value, root, base):
+    resolved = Path(value).resolve(strict=False)
+    try:
+        relative_base = resolved.relative_to(base).as_posix()
+    except ValueError:
+        relative_base = '<outside-temporary-sandbox>'
+    try:
+        relative_root = resolved.relative_to(root).as_posix()
+        relation = 'strict-descendant' if relative_root not in ('', '.') else 'root-self'
+    except ValueError:
+        relative_root = None
+        relation = 'outside-root'
+    return resolved, relative_base, relative_root, relation
+
+
+def transition_observation(root, base, artifact_path):
+    parts = Path(artifact_path).parts
+    trace = []
+    for index in range(1, len(parts) + 1):
+        prefix = Path(*parts[:index])
+        lexical_candidate = root / prefix
+        component = parts[index - 1]
+        try:
+            component_is_symlink = lexical_candidate.is_symlink()
+        except OSError:
+            component_is_symlink = False
+        resolved, relative_base, relative_root, relation = relation_row(lexical_candidate, root, base)
+        trace.append({
+            'index': index,
+            'component': component,
+            'prefix': str(prefix).replace('\\\\', '/'),
+            'component_is_symlink': component_is_symlink,
+            'resolved_relative_to_sandbox': relative_base,
+            'resolved_relative_to_root': relative_root,
+            'resolved_relation_to_root': relation,
+        })
+
+    final_relation = trace[-1]['resolved_relation_to_root'] if trace else None
+    prior = trace[:-1]
+    outside_steps = [step for step in prior if step['resolved_relation_to_root'] == 'outside-root']
+    outside_via_symlink = any(step['component_is_symlink'] for step in trace if step['resolved_relation_to_root'] == 'outside-root')
+    outside_via_parent = any(step['component'] == '..' for step in trace if step['resolved_relation_to_root'] == 'outside-root')
+    root_self_steps = [step for step in prior if step['resolved_relation_to_root'] == 'root-self']
+    final_inside = final_relation == 'strict-descendant'
+    return trace, {
+        'final_relation_to_root': final_relation,
+        'intermediate_outside_root': bool(outside_steps),
+        'intermediate_root_self': bool(root_self_steps),
+        'outside_via_symlink_component': outside_via_symlink,
+        'outside_via_parent_component': outside_via_parent,
+        'final_inside_after_outside': final_inside and bool(outside_steps),
+        'final_inside_after_symlink_escape': final_inside and outside_via_symlink,
+        'final_inside_after_parent_excursion': final_inside and outside_via_parent,
+    }
+
+
 with tempfile.TemporaryDirectory() as td:
     base = Path(td).resolve()
     root = base / spec['root_name']
@@ -95,7 +154,13 @@ with tempfile.TemporaryDirectory() as td:
     results = []
     if symlink_supported:
         for case in spec['cases']:
-            row = {'label': case['label'], 'artifact_path': case['artifact_path']}
+            trace, features = transition_observation(root, base, case['artifact_path'])
+            row = {
+                'label': case['label'],
+                'artifact_path': case['artifact_path'],
+                'transition_trace': trace,
+                'transition_features': features,
+            }
             try:
                 value = resolve_artifact_path(root, case['artifact_path'])
             except Exception as exc:
@@ -105,17 +170,7 @@ with tempfile.TemporaryDirectory() as td:
                     'error': str(exc),
                 })
             else:
-                resolved = Path(value).resolve()
-                try:
-                    relative_base = resolved.relative_to(base).as_posix()
-                except ValueError:
-                    relative_base = '<outside-temporary-sandbox>'
-                try:
-                    relative_root = resolved.relative_to(root).as_posix()
-                    relation = 'strict-descendant' if relative_root not in ('', '.') else 'root-self'
-                except ValueError:
-                    relative_root = None
-                    relation = 'outside-root'
+                resolved, relative_base, relative_root, relation = relation_row(value, root, base)
                 row.update({
                     'accepted': True,
                     'resolved_relative_to_sandbox': relative_base,
@@ -161,7 +216,7 @@ function captureProbeObservation(observationSink, observation) {
 function createPathResolutionProbeTool(defineTool, { workspace, observationSink = null } = {}) {
   if (!workspace) throw new Error('createPathResolutionProbeTool requires workspace.');
   return defineTool('probe_path_resolution', {
-    description: 'Run model-chosen artifact-path resolution cases against the current implementation using a disposable OS-temp filesystem. The tool creates only the declared temp directories/symlinks, never writes the repository, and returns observations without expected verdicts.',
+    description: 'Run model-chosen artifact-path resolution cases against the current implementation using a disposable OS-temp filesystem. The tool creates only the declared temp directories/symlinks, never writes the repository, and returns resolver outcomes plus oracle-blind per-component filesystem transition traces without expected verdicts.',
     parameters: {
       type: 'object',
       properties: {
