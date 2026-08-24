@@ -220,7 +220,23 @@ jobs:
             "${{ runner.temp }}/topology-report.md"
           cat "${{ runner.temp }}/topology-report.md" >> "${GITHUB_STEP_SUMMARY}"
 
+      - name: Require complete head-to-head sample
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          node src/headless/topology-completeness.js \
+            "${{ runner.temp }}/topology-report.json" \
+            "${{ runner.temp }}/topology-completeness.json" \
+            "${{ runner.temp }}/topology-completeness.md" \
+            luna-ab-terra=3 \
+            typed-evidence-no-peer=3
+          rc=$?
+          cat "${{ runner.temp }}/topology-completeness.md" >> "${GITHUB_STEP_SUMMARY}" 2>/dev/null || true
+          exit "${rc}"
+
       - name: Upload tournament report
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: topology-tournament-report-${{ github.run_number }}
@@ -229,5 +245,7 @@ jobs:
             ${{ runner.temp }}/topology-report.md
             ${{ runner.temp }}/topology-infrastructure-invalid.json
             ${{ runner.temp }}/topology-infrastructure-invalid.md
+            ${{ runner.temp }}/topology-completeness.json
+            ${{ runner.temp }}/topology-completeness.md
           if-no-files-found: error
           retention-days: 30
