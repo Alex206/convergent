@@ -1,8 +1,9 @@
 name: Perspective Review Tournament
 
 on:
-  push:
-    branches: [agent/perspective-review-benchmark]
+  workflow_dispatch:
+  pull_request:
+    types: [synchronize]
     paths:
       - .github/workflows/perspective-review-tournament.yml
 
