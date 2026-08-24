@@ -18,6 +18,14 @@ function normalizeExpectation(entry) {
   return { topology, runs };
 }
 
+function runRepeat(run, topology) {
+  const repeat = Number(run?.repeat);
+  if (!Number.isInteger(repeat) || repeat < 1) {
+    throw new Error(`Scored topology run ${topology} requires a positive integer repeat id.`);
+  }
+  return repeat;
+}
+
 function evaluateTopologyCompleteness(report = {}, expectations = []) {
   const expected = expectations.map(normalizeExpectation);
   if (!expected.length) throw new Error('At least one topology expectation is required.');
@@ -25,23 +33,33 @@ function evaluateTopologyCompleteness(report = {}, expectations = []) {
     throw new Error('Topology expectations must use unique topology names.');
   }
 
-  const actualRuns = new Map();
+  const repeatsByTopology = new Map();
+  const duplicates = [];
   for (const run of Array.isArray(report?.runs) ? report.runs : []) {
     const topology = String(run?.topology ?? '').trim();
     if (!topology) continue;
-    actualRuns.set(topology, (actualRuns.get(topology) ?? 0) + 1);
+    const repeat = runRepeat(run, topology);
+    const repeats = repeatsByTopology.get(topology) ?? new Set();
+    if (repeats.has(repeat)) duplicates.push({ topology, repeat });
+    repeats.add(repeat);
+    repeatsByTopology.set(topology, repeats);
   }
 
-  const arms = expected.map((entry) => ({
-    topology: entry.topology,
-    expectedRuns: entry.runs,
-    actualRuns: actualRuns.get(entry.topology) ?? 0,
-  }));
+  const arms = expected.map((entry) => {
+    const repeats = [...(repeatsByTopology.get(entry.topology) ?? new Set())].sort((a, b) => a - b);
+    return {
+      topology: entry.topology,
+      expectedRuns: entry.runs,
+      actualRuns: repeats.length,
+      repeats,
+    };
+  });
   const missing = arms.filter((entry) => entry.actualRuns < entry.expectedRuns);
   return {
-    ok: missing.length === 0,
+    ok: missing.length === 0 && duplicates.length === 0,
     arms,
     missing,
+    duplicateRepeats: duplicates,
     scoredRuns: Array.isArray(report?.runs) ? report.runs.length : 0,
   };
 }
@@ -51,14 +69,18 @@ function renderTopologyCompleteness(result) {
     '# Topology comparison completeness',
     '',
     result.ok
-      ? 'All expected topology samples are present and scored.'
-      : 'The comparison is **incomplete**. Infrastructure-invalid or missing samples must be rerun before interpreting the head-to-head.',
+      ? 'All expected topology samples are present as distinct scored repeats.'
+      : 'The comparison is **incomplete**. Infrastructure-invalid, missing, or duplicate samples must be resolved before interpreting the head-to-head.',
     '',
-    '| Topology | Expected valid runs | Actual valid runs | Complete |',
-    '|---|---:|---:|:---:|',
+    '| Topology | Expected valid repeats | Actual distinct repeats | Repeat IDs | Complete |',
+    '|---|---:|---:|---|:---:|',
   ];
   for (const arm of result.arms) {
-    lines.push(`| ${arm.topology} | ${arm.expectedRuns} | ${arm.actualRuns} | ${arm.actualRuns >= arm.expectedRuns ? '✓' : '✗'} |`);
+    const complete = arm.actualRuns >= arm.expectedRuns;
+    lines.push(`| ${arm.topology} | ${arm.expectedRuns} | ${arm.actualRuns} | ${arm.repeats.join(', ') || '—'} | ${complete ? '✓' : '✗'} |`);
+  }
+  if (result.duplicateRepeats?.length) {
+    lines.push('', `Duplicate scored repeat(s): ${result.duplicateRepeats.map((entry) => `${entry.topology}#${entry.repeat}`).join(', ')}`);
   }
   lines.push('');
   return `${lines.join('\n')}\n`;
@@ -88,6 +110,7 @@ if (require.main === module) {
 
 module.exports = {
   normalizeExpectation,
+  runRepeat,
   evaluateTopologyCompleteness,
   renderTopologyCompleteness,
   main,
