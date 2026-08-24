@@ -15,6 +15,7 @@ const {
 const { resolveHeadlessRoleModels, assertHeadlessRoleModels } = require('./model-policy');
 const { applyTopologySelectors, topologyConfig } = require('./topology');
 const { BenchmarkTopologyEngine } = require('./topology-engine');
+const { PerspectivePanelTopologyEngine } = require('./perspective-topology-engine');
 const { runSingleAgentBaseline } = require('./single-agent-baseline');
 const { UsageTracker } = require('../orchestrator/usage');
 const { flowPolicy } = require('../orchestrator/flow');
@@ -190,7 +191,10 @@ async function runTopologyHeadless(rawOptions, dependencies = {}) {
     });
     stopActive = () => baseline.stop();
   } else {
-    engine = new BenchmarkTopologyEngine({
+    const EngineClass = topologySpec.panelMode
+      ? PerspectivePanelTopologyEngine
+      : BenchmarkTopologyEngine;
+    engine = new EngineClass({
       client,
       sdk,
       workspace: options.workspace,
