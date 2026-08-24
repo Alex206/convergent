@@ -3,14 +3,18 @@
 const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
+const { workspaceRevision } = require('../orchestrator/revision');
 
 const execFileAsync = promisify(execFile);
 const PATH_PROBE_TOOL = 'custom:probe_path_resolution';
+const MAX_CAPTURED_PROBE_OBSERVATIONS = 8;
 
 const REVIEWER_PATH_PROBE_PROMPT = `
 For this containment benchmark you also have probe_path_resolution, a benchmark-only read-only diagnostic tool. It creates only an isolated OS-temporary filesystem fixture and invokes the current workspace's resolve_artifact_path implementation. You choose the fixture shape, symlinks, and artifact-path inputs; the tool has no expected answers and does not know the hidden acceptance oracle.
 
 Prefer this tool when independent review evidence needs temporary directories or symlinks. Derive witness cases from the task contract. For a contrastive boundary claim, probe both the restrictive rule and the corresponding permissive rule at their semantic boundary; do not substitute an easier happy path that cannot falsify an over-restrictive implementation.
+
+When correctness depends on the provenance or mechanism of an intermediate boundary transition rather than only the final state, make the pair genuinely discriminating. The hostile witness should cross by the forbidden mechanism and later converge to a final state that a final-state-only check could mistake as allowed. If the contract permits the same controversial boundary transition through another mechanism, the benign witness must actually exercise that permitted transition and converge to a comparable allowed final state. A hostile case whose final state is still plainly outside/invalid, or a benign case that never reaches the controversial boundary state, does not prove the provenance distinction.
 `.trim();
 
 function pythonExecutable(platform = process.platform) {
@@ -146,7 +150,15 @@ async function runPathResolutionProbe(workspace, args = {}, { platform = process
   return result;
 }
 
-function createPathResolutionProbeTool(defineTool, { workspace } = {}) {
+function captureProbeObservation(observationSink, observation) {
+  if (!Array.isArray(observationSink)) return;
+  observationSink.push(observation);
+  if (observationSink.length > MAX_CAPTURED_PROBE_OBSERVATIONS) {
+    observationSink.splice(0, observationSink.length - MAX_CAPTURED_PROBE_OBSERVATIONS);
+  }
+}
+
+function createPathResolutionProbeTool(defineTool, { workspace, observationSink = null } = {}) {
   if (!workspace) throw new Error('createPathResolutionProbeTool requires workspace.');
   return defineTool('probe_path_resolution', {
     description: 'Run model-chosen artifact-path resolution cases against the current implementation using a disposable OS-temp filesystem. The tool creates only the declared temp directories/symlinks, never writes the repository, and returns observations without expected verdicts.',
@@ -198,9 +210,20 @@ function createPathResolutionProbeTool(defineTool, { workspace } = {}) {
     skipPermission: true,
     defer: 'never',
     handler: async (args = {}) => {
+      let spec = null;
+      let revision = null;
       try {
-        return { accepted: true, ...(await runPathResolutionProbe(workspace, args)) };
+        spec = normalizeProbeSpec(args);
+        revision = await workspaceRevision(workspace);
+        const result = await runPathResolutionProbe(workspace, spec);
+        captureProbeObservation(observationSink, { revision, spec, result });
+        return { accepted: true, ...result };
       } catch (error) {
+        captureProbeObservation(observationSink, {
+          revision,
+          spec,
+          error: error?.message ?? String(error),
+        });
         return { accepted: false, error: error?.message ?? String(error) };
       }
     },
@@ -226,11 +249,13 @@ function injectPathProbeIntoReviewerClient(factory, baseClient, probeTool) {
 
 module.exports = {
   PATH_PROBE_TOOL,
+  MAX_CAPTURED_PROBE_OBSERVATIONS,
   REVIEWER_PATH_PROBE_PROMPT,
   pythonExecutable,
   normalizeSandboxRelative,
   normalizeProbeSpec,
   runPathResolutionProbe,
+  captureProbeObservation,
   createPathResolutionProbeTool,
   injectPathProbeIntoReviewerClient,
 };
