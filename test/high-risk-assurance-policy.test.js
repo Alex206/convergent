@@ -85,6 +85,23 @@ test('high-risk work with no applicable observer retains peer convergence as fai
   assert.deepEqual(decision.selectedObservers, []);
 });
 
+test('contradictory high risk classification cannot bypass assurance through a standard route', () => {
+  const registry = {
+    selectApplicable() {
+      throw new Error('must not be called for inconsistent routing');
+    },
+  };
+  const decision = assuranceDecision({
+    task: { title: 'security boundary' },
+    routing: { route: 'standard', risk: 'high' },
+    registry,
+  });
+
+  assert.equal(decision.mode, HIGH_RISK_ASSURANCE_PEER_FALLBACK);
+  assert.equal(decision.fallbackRequired, true);
+  assert.equal(decision.reason, 'high-risk-routing-inconsistency');
+});
+
 test('observer applicability errors fail closed to peer convergence', () => {
   const registry = new EvidenceObserverRegistry([
     observer('broken', 'broken-v1', () => { throw new Error('selector exploded'); }),
