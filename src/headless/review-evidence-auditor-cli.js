@@ -10,89 +10,35 @@ const {
   ReviewEvidenceAuditorSessionFactory,
 } = require('./review-evidence-auditor');
 const {
-  createPathResolutionProbeTool,
-  injectPathProbeIntoReviewerClient,
-} = require('./reviewer-path-probe');
+  MAX_AUDITOR_PROBE_OBSERVATIONS,
+  REVIEW_AUDITOR_BOUNDARY_PROMPT,
+  injectSystemPromptIntoClient,
+  compactProbeEvidence,
+  augmentReviewWithProgrammaticProbeEvidence,
+  createPathResolutionTransitionObserver,
+  EvidenceObserverRegistry,
+} = require('./evidence-observers');
 
-const MAX_AUDITOR_PROBE_OBSERVATIONS = 4;
-const REVIEW_AUDITOR_BOUNDARY_PROMPT = `
-Apply the evidence contract especially strictly at acceptance-rule boundaries.
-
-The review report can contain a PROGRAMMATIC PROBE EVIDENCE entry. That entry is authoritative bounded evidence captured from actual probe_path_resolution executions against the exact workspace revision being approved; it is not reviewer prose. Use it to verify the reviewer's claims. Do not infer a probe happened from prose alone, and do not credit stale evidence from another revision.
-
-Derive the semantic distinctions from the TASK CONTRACT before judging the review report. When the task contains both a permissive rule and a restrictive rule over closely related transformations, a claimed matched hostile/benign pair is adequate only if:
-- the hostile witness exercises the restrictive rule at its boundary and the authoritative observation records its concrete outcome;
-- for a transition/provenance invariant, the hostile witness later converges to a final state that a final-state-only implementation could plausibly mistake as allowed; a case whose final state remains plainly invalid/outside is not discriminating for that invariant;
-- the benign witness exercises the permissive rule at its boundary, not merely an easier happy path, and its concrete outcome is present in the authoritative observations;
-- if the contract permits the same controversial intermediate boundary transition under a different provenance or mechanism, BOTH witnesses must actually exercise that boundary transition and converge to comparable final states; the security-relevant provenance/mechanism should be the material difference;
-- the benign witness would actually fail under the plausible over-restrictive remediation suggested by the hostile finding.
-
-A benign case that never reaches the controversial intermediate boundary state cannot prove preservation of a rule that explicitly permits such a transition. Likewise, a hostile case that never returns to an otherwise allowed-looking final state cannot expose a final-state-only near miss.
-
-For this benchmark, set matched_contrast_pair, overrestriction_guard, and discriminating_evidence true only when the PROGRAMMATIC PROBE EVIDENCE for the current revision supports those claims. If there is no current-revision programmatic evidence for the claimed pair, reject the CLEAN evidence. Do not invent a hidden test case; derive the needed semantic boundary only from the supplied task contract and actual observations.
-`.trim();
-
-function injectSystemPromptIntoClient(baseClient, extraPrompt) {
-  const proxy = Object.create(baseClient);
-  proxy.createSession = async (options = {}) => {
-    const originalPrompt = options.systemMessage?.content ?? '';
-    return baseClient.createSession({
-      ...options,
-      systemMessage: {
-        mode: 'append',
-        content: [originalPrompt, extraPrompt].filter(Boolean).join('\n\n'),
-      },
-    });
-  };
-  return proxy;
-}
-
-function compactProbeEvidence(observations = [], revision, maxObservations = MAX_AUDITOR_PROBE_OBSERVATIONS) {
-  const expectedRevision = String(revision ?? '');
-  return (Array.isArray(observations) ? observations : [])
-    .filter((entry) => entry?.revision === expectedRevision && entry?.spec && entry?.result)
-    .slice(-Math.max(1, Number(maxObservations) || MAX_AUDITOR_PROBE_OBSERVATIONS))
-    .map((entry, index) => ({
-      id: `probe-${index + 1}`,
-      root_name: entry.spec.root_name,
-      directories: entry.spec.directories,
-      symlinks: entry.spec.symlinks,
-      cases: entry.spec.cases,
-      symlink_supported: entry.result.symlink_supported,
-      symlink_error: entry.result.symlink_error,
-      results: entry.result.results,
-    }));
-}
-
-function augmentReviewWithProgrammaticProbeEvidence(review, probeEvidence, revision) {
-  const checks = Array.isArray(review?.checks) ? review.checks : [];
-  const payload = {
-    workspace_revision: String(revision ?? '').slice(0, 16),
-    source: 'captured probe_path_resolution tool executions on this exact revision',
-    observations: probeEvidence,
-  };
-  return {
-    ...review,
-    checks: [
-      ...checks,
-      `PROGRAMMATIC PROBE EVIDENCE (authoritative; current revision only): ${JSON.stringify(payload)}`,
-    ],
-  };
+function createDefaultEvidenceObserverRegistry() {
+  return new EvidenceObserverRegistry([
+    createPathResolutionTransitionObserver(),
+  ]);
 }
 
 class ProbeEnabledReviewEvidenceAuditorSessionFactory extends ReviewEvidenceAuditorSessionFactory {
   constructor(options = {}) {
     super(options);
-    this.reviewProbeObservations = [];
+    this.evidenceObservers = options.evidenceObservers ?? createDefaultEvidenceObserverRegistry();
+    this.evidenceObservationState = this.evidenceObservers.createObservationState();
   }
 
   async createReviewer(...args) {
-    const probeTool = createPathResolutionProbeTool(this.sdk.defineTool, {
-      workspace: this.workspace,
-      observationSink: this.reviewProbeObservations,
-    });
     const baseClient = this.client;
-    this.client = injectPathProbeIntoReviewerClient(this, baseClient, probeTool);
+    this.client = this.evidenceObservers.injectReviewerClient(
+      baseClient,
+      this,
+      this.evidenceObservationState,
+    );
     try {
       return await super.createReviewer(...args);
     } finally {
@@ -100,13 +46,23 @@ class ProbeEnabledReviewEvidenceAuditorSessionFactory extends ReviewEvidenceAudi
     }
   }
 
+  observerEvidenceForRevision(revision) {
+    return this.evidenceObservers.evidenceForRevision(this.evidenceObservationState, revision);
+  }
+
+  // Compatibility accessor retained for the existing benchmark tests and audit
+  // event shape while the mechanism is generalized behind typed observers.
   reviewProbeEvidenceForRevision(revision) {
-    return compactProbeEvidence(this.reviewProbeObservations, revision);
+    return this.observerEvidenceForRevision(revision)[0]?.observations ?? [];
+  }
+
+  augmentReviewWithObserverEvidence(review, revision) {
+    return this.evidenceObservers.augmentReview(review, this.evidenceObservationState, revision);
   }
 
   async createReviewEvidenceAuditor(...args) {
     const baseClient = this.client;
-    this.client = injectSystemPromptIntoClient(baseClient, REVIEW_AUDITOR_BOUNDARY_PROMPT);
+    this.client = injectSystemPromptIntoClient(baseClient, this.evidenceObservers.auditorPrompt());
     try {
       return await super.createReviewEvidenceAuditor(...args);
     } finally {
@@ -141,13 +97,17 @@ class EnvironmentConfiguredReviewAuditorEngine extends ReviewEvidenceAuditorBenc
       reasoningMode: this.reasoningMode,
       operatorCredentialGuard: this.operatorCredentialGuard,
       reviewAuditorSelector: this.reviewAuditorSelector,
+      evidenceObservers: createDefaultEvidenceObserverRegistry(),
     });
   }
 
   async runReviewEvidenceAudit(factory, task, taskSessionKey, routing, review, round) {
     const revision = await this.revisionProvider(this.workspace, this.workspaceFolders);
-    const probeEvidence = factory.reviewProbeEvidenceForRevision?.(revision) ?? [];
-    const augmentedReview = augmentReviewWithProgrammaticProbeEvidence(review, probeEvidence, revision);
+    const packet = factory.augmentReviewWithObserverEvidence?.(review, revision) ?? {
+      review,
+      packets: [],
+    };
+    const probeEvidence = packet.packets[0]?.observations ?? [];
     this.ui?.audit?.({
       type: 'benchmark_review_probe_evidence_packet',
       topology: this.experimentTopology,
@@ -155,13 +115,14 @@ class EnvironmentConfiguredReviewAuditorEngine extends ReviewEvidenceAuditorBenc
       round,
       revision,
       probeEvidence,
+      observerEvidence: packet.packets,
     });
     return super.runReviewEvidenceAudit(
       factory,
       task,
       taskSessionKey,
       routing,
-      augmentedReview,
+      packet.review,
       round,
     );
   }
@@ -182,12 +143,14 @@ async function rewriteExperimentIdentity(outputDir, experimentTopology, auditorS
   } catch {
     return false;
   }
+  const observerMetadata = createDefaultEvidenceObserverRegistry().metadata();
   result.topology = experimentTopology;
-  result.topologyLabel = `Luna + Terra review + low-context ${auditorSelector} evidence audit`;
+  result.topologyLabel = `Luna + Terra review + low-context ${auditorSelector} typed-evidence audit`;
   result.reviewEvidenceAuditor = {
     selector: auditorSelector,
     lowContext: true,
     repositoryTools: false,
+    typedEvidenceObservers: observerMetadata,
     reviewerIsolatedPathProbe: true,
     positiveBoundaryEvidence: true,
     authoritativeProbeEvidence: true,
@@ -201,6 +164,7 @@ async function rewriteExperimentIdentity(outputDir, experimentTopology, auditorS
     auditorSelector,
     lowContext: true,
     repositoryTools: false,
+    typedEvidenceObservers: observerMetadata,
     reviewerIsolatedPathProbe: true,
     positiveBoundaryEvidence: true,
     authoritativeProbeEvidence: true,
@@ -239,6 +203,7 @@ module.exports = {
   injectSystemPromptIntoClient,
   compactProbeEvidence,
   augmentReviewWithProgrammaticProbeEvidence,
+  createDefaultEvidenceObserverRegistry,
   ProbeEnabledReviewEvidenceAuditorSessionFactory,
   EnvironmentConfiguredReviewAuditorEngine,
   rewriteExperimentIdentity,
