@@ -19,12 +19,12 @@ test('default experimental registry exposes both typed capabilities but selects 
     task: {
       title: 'Task dependencies',
       description: 'Add order_tasks in deterministic dependency order.',
-      acceptanceCriteria: ['Preserve original input order for unconstrained tasks.'],
+      acceptanceCriteria: ['Choose the earliest original-input task among tasks that are currently dependency-ready.'],
     },
     routing: { route: 'standard' },
   });
   assert.deepEqual(dependency.registry.metadata().map((entry) => entry.id), ['dependency-order-ready-transition-v1']);
-  assert.equal(dependency.registry.auditContract().id, 'dependency-order-evidence-v1');
+  assert.equal(dependency.registry.auditContract().id, 'dependency-order-evidence-v2');
 });
 
 test('session factory switches audit contract when an observer is selected', () => {
@@ -40,12 +40,12 @@ test('session factory switches audit contract when an observer is selected', () 
     task: {
       title: 'Dependency ordering',
       description: 'Implement order_tasks with stable deterministic dependency ordering.',
-      acceptanceCriteria: ['Preserve original input order whenever dependencies do not constrain two tasks.'],
+      acceptanceCriteria: ['At each step choose the earliest original-input task among tasks whose dependencies are already emitted.'],
     },
     routing: { route: 'standard' },
   });
 
   assert.ok(decisions.some((entry) => entry.observerId === 'dependency-order-ready-transition-v1' && entry.applicable));
-  assert.equal(factory.reviewAuditContract.id, 'dependency-order-evidence-v1');
+  assert.equal(factory.reviewAuditContract.id, 'dependency-order-evidence-v2');
   assert.deepEqual(factory.evidenceObservers.metadata().map((entry) => entry.id), ['dependency-order-ready-transition-v1']);
 });
