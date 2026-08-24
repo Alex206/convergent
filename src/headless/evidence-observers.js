@@ -1,6 +1,10 @@
 'use strict';
 
 const {
+  TRUST_BOUNDARY_REVIEW_AUDIT_CONTRACT,
+  normalizeAuditContract,
+} = require('./review-evidence-auditor');
+const {
   PATH_PROBE_TOOL,
   REVIEWER_PATH_PROBE_PROMPT,
   createPathResolutionProbeTool,
@@ -114,6 +118,7 @@ function createPathResolutionTransitionObserver() {
     toolName: PATH_PROBE_TOOL,
     reviewerPrompt: REVIEWER_PATH_PROBE_PROMPT,
     auditorPrompt: REVIEW_AUDITOR_BOUNDARY_PROMPT,
+    auditContract: TRUST_BOUNDARY_REVIEW_AUDIT_CONTRACT,
     metadata: Object.freeze({
       oracleBlind: true,
       revisionBound: true,
@@ -140,6 +145,8 @@ function validateObserver(observer) {
   if (!String(observer.id ?? '').trim()) throw new Error('Evidence observer requires a stable id.');
   if (!String(observer.evidenceType ?? '').trim()) throw new Error(`Evidence observer ${observer.id} requires evidenceType.`);
   if (!String(observer.toolName ?? '').trim()) throw new Error(`Evidence observer ${observer.id} requires toolName.`);
+  if (!observer.auditContract) throw new Error(`Evidence observer ${observer.id} requires auditContract.`);
+  normalizeAuditContract(observer.auditContract);
   if (typeof observer.applicability !== 'function') throw new Error(`Evidence observer ${observer.id} requires applicability().`);
   if (typeof observer.createTool !== 'function') throw new Error(`Evidence observer ${observer.id} requires createTool().`);
   if (typeof observer.compactEvidence !== 'function') throw new Error(`Evidence observer ${observer.id} requires compactEvidence().`);
@@ -191,6 +198,16 @@ class EvidenceObserverRegistry {
       registry: new EvidenceObserverRegistry(this.observers.filter((observer) => applicableIds.has(observer.id))),
       decisions,
     };
+  }
+
+  auditContract() {
+    if (!this.observers.length) return null;
+    const contracts = this.observers.map((observer) => normalizeAuditContract(observer.auditContract));
+    const ids = new Set(contracts.map((contract) => contract.id));
+    if (ids.size !== 1) {
+      throw new Error(`Selected evidence observers require incompatible audit contracts: ${[...ids].join(', ')}`);
+    }
+    return contracts[0];
   }
 
   createObservationState() {
@@ -252,6 +269,7 @@ class EvidenceObserverRegistry {
       schemaVersion: observer.schemaVersion ?? 1,
       evidenceType: observer.evidenceType,
       toolName: observer.toolName,
+      auditContract: normalizeAuditContract(observer.auditContract).id,
       ...(observer.metadata ?? {}),
     }));
   }
