@@ -47,6 +47,7 @@ Your job is to make a plausible implementation fail.
 5. Report only defects that matter to the requested behavior.
 Do not merely restate existing tests; search for behavior they are likely not to exercise.
 `.trim(),
+  }),
   state: Object.freeze({
     id: 'state',
     label: 'State/data-flow perspective',
