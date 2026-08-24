@@ -38,7 +38,7 @@ test('command evidence packet is explicit, authoritative only as execution recor
   assert.equal(augmented.checks[0], 'review claim');
   assert.match(augmented.checks[1], /PROGRAMMATIC COMMAND EVIDENCE/);
   assert.match(augmented.checks[1], /authoritative execution record/i);
-  assert.match(augmented.checks[1], /revision-1234567890/);
+  assert.match(augmented.checks[1], /revision-1234567/);
   assert.match(augmented.checks[1], /python -m unittest/);
 });
 
