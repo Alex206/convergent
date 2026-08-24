@@ -74,6 +74,38 @@ function augmentReviewWithProgrammaticProbeEvidence(review, probeEvidence, revis
   };
 }
 
+function taskContractText(task) {
+  return [
+    task?.title,
+    task?.description,
+    ...(Array.isArray(task?.acceptanceCriteria) ? task.acceptanceCriteria : []),
+  ]
+    .map((value) => String(value ?? '').trim())
+    .filter(Boolean)
+    .join('\n')
+    .toLowerCase();
+}
+
+function pathResolutionObserverApplicability({ task, routing } = {}) {
+  if (routing?.route !== 'high_risk') {
+    return { applicable: false, reason: 'requires-high-risk-route' };
+  }
+  const contract = taskContractText(task);
+  const namesResolver = /\bresolve_artifact_path\b/.test(contract);
+  const namesArtifactPathBoundary = /artifact[- ]path/.test(contract)
+    && /\b(root|containment|descendant)\b/.test(contract)
+    && /\bsymlink\b|symbolic link/.test(contract);
+  if (!namesResolver && !namesArtifactPathBoundary) {
+    return { applicable: false, reason: 'task-contract-does-not-identify-artifact-path-boundary' };
+  }
+  return {
+    applicable: true,
+    reason: namesResolver
+      ? 'task-contract-identifies-resolve_artifact_path-boundary'
+      : 'task-contract-identifies-artifact-path-symlink-boundary',
+  };
+}
+
 function createPathResolutionTransitionObserver() {
   return Object.freeze({
     id: PATH_RESOLUTION_OBSERVER_ID,
@@ -88,6 +120,9 @@ function createPathResolutionTransitionObserver() {
       typedTransitions: true,
       repositoryWrites: false,
     }),
+    applicability(context) {
+      return pathResolutionObserverApplicability(context);
+    },
     createTool({ defineTool, workspace, observationSink }) {
       return createPathResolutionProbeTool(defineTool, { workspace, observationSink });
     },
@@ -105,10 +140,24 @@ function validateObserver(observer) {
   if (!String(observer.id ?? '').trim()) throw new Error('Evidence observer requires a stable id.');
   if (!String(observer.evidenceType ?? '').trim()) throw new Error(`Evidence observer ${observer.id} requires evidenceType.`);
   if (!String(observer.toolName ?? '').trim()) throw new Error(`Evidence observer ${observer.id} requires toolName.`);
+  if (typeof observer.applicability !== 'function') throw new Error(`Evidence observer ${observer.id} requires applicability().`);
   if (typeof observer.createTool !== 'function') throw new Error(`Evidence observer ${observer.id} requires createTool().`);
   if (typeof observer.compactEvidence !== 'function') throw new Error(`Evidence observer ${observer.id} requires compactEvidence().`);
   if (typeof observer.augmentReview !== 'function') throw new Error(`Evidence observer ${observer.id} requires augmentReview().`);
   return observer;
+}
+
+function normalizeApplicability(observer, value) {
+  if (value === true) return { observerId: observer.id, applicable: true, reason: 'observer-declared-applicable' };
+  if (value === false || value == null) return { observerId: observer.id, applicable: false, reason: 'observer-declared-not-applicable' };
+  if (typeof value !== 'object') {
+    return { observerId: observer.id, applicable: false, reason: 'invalid-applicability-result' };
+  }
+  return {
+    observerId: observer.id,
+    applicable: value.applicable === true,
+    reason: String(value.reason ?? (value.applicable === true ? 'observer-declared-applicable' : 'observer-declared-not-applicable')).slice(0, 240),
+  };
 }
 
 class EvidenceObserverRegistry {
@@ -119,6 +168,29 @@ class EvidenceObserverRegistry {
       if (ids.has(observer.id)) throw new Error(`Duplicate evidence observer id: ${observer.id}`);
       ids.add(observer.id);
     }
+  }
+
+  evaluateApplicability(context = {}) {
+    return this.observers.map((observer) => {
+      try {
+        return normalizeApplicability(observer, observer.applicability(context));
+      } catch (error) {
+        return {
+          observerId: observer.id,
+          applicable: false,
+          reason: `applicability-error:${String(error?.message ?? error).slice(0, 200)}`,
+        };
+      }
+    });
+  }
+
+  selectApplicable(context = {}) {
+    const decisions = this.evaluateApplicability(context);
+    const applicableIds = new Set(decisions.filter((entry) => entry.applicable).map((entry) => entry.observerId));
+    return {
+      registry: new EvidenceObserverRegistry(this.observers.filter((observer) => applicableIds.has(observer.id))),
+      decisions,
+    };
   }
 
   createObservationState() {
@@ -192,7 +264,10 @@ module.exports = {
   injectSystemPromptIntoClient,
   compactProbeEvidence,
   augmentReviewWithProgrammaticProbeEvidence,
+  taskContractText,
+  pathResolutionObserverApplicability,
   createPathResolutionTransitionObserver,
   validateObserver,
+  normalizeApplicability,
   EvidenceObserverRegistry,
 };
