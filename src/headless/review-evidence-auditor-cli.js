@@ -28,6 +28,7 @@ function createDefaultEvidenceObserverRegistry() {
 class ProbeEnabledReviewEvidenceAuditorSessionFactory extends ReviewEvidenceAuditorSessionFactory {
   constructor(options = {}) {
     super(options);
+    this.defaultReviewAuditContract = this.reviewAuditContract;
     this.availableEvidenceObservers = options.evidenceObservers ?? createDefaultEvidenceObserverRegistry();
     this.evidenceObservers = new EvidenceObserverRegistry([]);
     this.evidenceObservationState = this.evidenceObservers.createObservationState();
@@ -39,6 +40,7 @@ class ProbeEnabledReviewEvidenceAuditorSessionFactory extends ReviewEvidenceAudi
     this.evidenceObservers = selected.registry;
     this.evidenceObservationState = this.evidenceObservers.createObservationState();
     this.evidenceObserverApplicability = selected.decisions;
+    this.reviewAuditContract = this.evidenceObservers.auditContract() ?? this.defaultReviewAuditContract;
     return selected.decisions;
   }
 
@@ -122,6 +124,7 @@ class EnvironmentConfiguredReviewAuditorEngine extends ReviewEvidenceAuditorBenc
       risk: routing.risk,
       applicability,
       selectedObservers: selected,
+      auditContract: factory.reviewAuditContract?.id ?? null,
     });
     if (!selected.length) {
       throw new Error('Typed-evidence benchmark has no applicable observer; fail closed rather than silently weakening high-risk assurance.');
@@ -144,6 +147,7 @@ class EnvironmentConfiguredReviewAuditorEngine extends ReviewEvidenceAuditorBenc
       revision,
       probeEvidence,
       observerEvidence: packet.packets,
+      auditContract: factory.reviewAuditContract?.id ?? null,
     });
     return super.runReviewEvidenceAudit(
       factory,
@@ -171,7 +175,9 @@ async function rewriteExperimentIdentity(outputDir, experimentTopology, auditorS
   } catch {
     return false;
   }
-  const observerMetadata = createDefaultEvidenceObserverRegistry().metadata();
+  const registry = createDefaultEvidenceObserverRegistry();
+  const observerMetadata = registry.metadata();
+  const auditContract = registry.auditContract()?.id ?? null;
   result.topology = experimentTopology;
   result.topologyLabel = `Luna + Terra review + low-context ${auditorSelector} typed-evidence audit`;
   result.reviewEvidenceAuditor = {
@@ -179,6 +185,7 @@ async function rewriteExperimentIdentity(outputDir, experimentTopology, auditorS
     lowContext: true,
     repositoryTools: false,
     typedEvidenceObservers: observerMetadata,
+    auditContract,
     observerSelection: 'explicit-fail-closed',
     reviewerIsolatedPathProbe: true,
     positiveBoundaryEvidence: true,
@@ -194,6 +201,7 @@ async function rewriteExperimentIdentity(outputDir, experimentTopology, auditorS
     lowContext: true,
     repositoryTools: false,
     typedEvidenceObservers: observerMetadata,
+    auditContract,
     observerSelection: 'explicit-fail-closed',
     reviewerIsolatedPathProbe: true,
     positiveBoundaryEvidence: true,
