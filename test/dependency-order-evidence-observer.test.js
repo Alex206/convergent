@@ -18,9 +18,11 @@ test('dependency-order observer declares a separate typed graph audit contract',
   const observer = createDependencyOrderEvidenceObserver();
   assert.equal(observer.id, DEPENDENCY_ORDER_OBSERVER_ID);
   assert.equal(observer.evidenceType, 'graph.dependency-order-ready-transition');
-  assert.equal(observer.auditContract.id, 'dependency-order-evidence-v1');
+  assert.equal(observer.auditContract.id, 'dependency-order-evidence-v2');
   assert.equal(DEPENDENCY_ORDER_AUDIT_CONTRACT.aspects.length, 7);
   assert.match(REVIEW_AUDITOR_DEPENDENCY_PROMPT, /ready_transition_trace/);
+  assert.match(REVIEW_AUDITOR_DEPENDENCY_PROMPT, /does NOT mean preserving original pairwise order/i);
+  assert.match(DEPENDENCY_ORDER_AUDIT_CONTRACT.prompt, /operational, not global-pairwise/i);
   assert.equal(observer.metadata.graphReadySetEvidence, true);
 });
 
@@ -28,7 +30,7 @@ test('dependency-order applicability requires explicit stable dependency-order s
   const task = {
     title: 'Add dependency ordering',
     description: 'Add order_tasks(tasks) in deterministic dependency order.',
-    acceptanceCriteria: ['Preserve original input order whenever dependencies do not constrain two tasks.'],
+    acceptanceCriteria: ['Choose the earliest original-input task among tasks that are currently dependency-ready.'],
   };
   assert.equal(dependencyOrderObserverApplicability({ task }).applicable, true);
   assert.equal(dependencyOrderObserverApplicability({
@@ -66,12 +68,12 @@ test('registry selects path and dependency capabilities independently', () => {
     task: {
       title: 'Dependency ordering',
       description: 'Add order_tasks with deterministic dependency order.',
-      acceptanceCriteria: ['Preserve original input order for unconstrained tasks.'],
+      acceptanceCriteria: ['Choose the earliest original-input task among currently ready tasks.'],
     },
     routing: { route: 'standard' },
   });
   assert.deepEqual(dependency.registry.metadata().map((entry) => entry.id), [DEPENDENCY_ORDER_OBSERVER_ID]);
-  assert.equal(dependency.registry.auditContract().id, 'dependency-order-evidence-v1');
+  assert.equal(dependency.registry.auditContract().id, 'dependency-order-evidence-v2');
 
   const path = registry.selectApplicable({
     task: {
