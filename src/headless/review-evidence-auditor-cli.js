@@ -18,10 +18,14 @@ const {
   createPathResolutionTransitionObserver,
   EvidenceObserverRegistry,
 } = require('./evidence-observers');
+const {
+  createDependencyOrderEvidenceObserver,
+} = require('./dependency-order-evidence-observer');
 
 function createDefaultEvidenceObserverRegistry() {
   return new EvidenceObserverRegistry([
     createPathResolutionTransitionObserver(),
+    createDependencyOrderEvidenceObserver(),
   ]);
 }
 
@@ -62,8 +66,8 @@ class ProbeEnabledReviewEvidenceAuditorSessionFactory extends ReviewEvidenceAudi
     return this.evidenceObservers.evidenceForRevision(this.evidenceObservationState, revision);
   }
 
-  // Compatibility accessor retained for the existing benchmark tests and audit
-  // event shape while the mechanism is generalized behind typed observers.
+  // Compatibility accessor retained for the existing path benchmark tests while
+  // the active experiment is selected through the generic observer registry.
   reviewProbeEvidenceForRevision(revision) {
     return this.observerEvidenceForRevision(revision)[0]?.observations ?? [];
   }
@@ -127,7 +131,7 @@ class EnvironmentConfiguredReviewAuditorEngine extends ReviewEvidenceAuditorBenc
       auditContract: factory.reviewAuditContract?.id ?? null,
     });
     if (!selected.length) {
-      throw new Error('Typed-evidence benchmark has no applicable observer; fail closed rather than silently weakening high-risk assurance.');
+      throw new Error('Typed-evidence benchmark has no applicable observer; fail closed rather than silently weakening assurance.');
     }
     return super.runFullTask(factory, task, taskSessionKey, routing, taskResumeState);
   }
@@ -138,14 +142,14 @@ class EnvironmentConfiguredReviewAuditorEngine extends ReviewEvidenceAuditorBenc
       review,
       packets: [],
     };
-    const probeEvidence = packet.packets[0]?.observations ?? [];
+    const compatibilityEvidence = packet.packets[0]?.observations ?? [];
     this.ui?.audit?.({
-      type: 'benchmark_review_probe_evidence_packet',
+      type: 'benchmark_review_typed_evidence_packet',
       topology: this.experimentTopology,
       taskId: task.id,
       round,
       revision,
-      probeEvidence,
+      probeEvidence: compatibilityEvidence,
       observerEvidence: packet.packets,
       auditContract: factory.reviewAuditContract?.id ?? null,
     });
@@ -175,22 +179,18 @@ async function rewriteExperimentIdentity(outputDir, experimentTopology, auditorS
   } catch {
     return false;
   }
-  const registry = createDefaultEvidenceObserverRegistry();
-  const observerMetadata = registry.metadata();
-  const auditContract = registry.auditContract()?.id ?? null;
+  const observerMetadata = createDefaultEvidenceObserverRegistry().metadata();
   result.topology = experimentTopology;
   result.topologyLabel = `Luna + Terra review + low-context ${auditorSelector} typed-evidence audit`;
   result.reviewEvidenceAuditor = {
     selector: auditorSelector,
     lowContext: true,
     repositoryTools: false,
-    typedEvidenceObservers: observerMetadata,
-    auditContract,
+    availableTypedEvidenceObservers: observerMetadata,
+    auditContractSelection: 'selected-observer-contract',
     observerSelection: 'explicit-fail-closed',
-    reviewerIsolatedPathProbe: true,
-    positiveBoundaryEvidence: true,
-    authoritativeProbeEvidence: true,
-    revisionBoundProbeEvidence: true,
+    authoritativeEvidence: true,
+    revisionBoundEvidence: true,
   };
   await fs.writeFile(resultPath, `${JSON.stringify(result, null, 2)}\n`, 'utf8');
 
@@ -200,13 +200,11 @@ async function rewriteExperimentIdentity(outputDir, experimentTopology, auditorS
     auditorSelector,
     lowContext: true,
     repositoryTools: false,
-    typedEvidenceObservers: observerMetadata,
-    auditContract,
+    availableTypedEvidenceObservers: observerMetadata,
+    auditContractSelection: 'selected-observer-contract',
     observerSelection: 'explicit-fail-closed',
-    reviewerIsolatedPathProbe: true,
-    positiveBoundaryEvidence: true,
-    authoritativeProbeEvidence: true,
-    revisionBoundProbeEvidence: true,
+    authoritativeEvidence: true,
+    revisionBoundEvidence: true,
   }, null, 2)}\n`, 'utf8');
   return true;
 }
