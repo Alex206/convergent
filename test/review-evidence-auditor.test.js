@@ -5,6 +5,8 @@ const assert = require('node:assert/strict');
 
 const {
   DEFAULT_MAX_REVIEW_AUDIT_ROUNDS,
+  TRUST_BOUNDARY_REVIEW_AUDIT_CONTRACT,
+  normalizeAuditContract,
   normalizeAuditReport,
   validateAuditReport,
   auditFeedback,
@@ -29,6 +31,7 @@ function completeAudit(overrides = {}) {
 test('review evidence audit derives adequate only when every semantic aspect is explicit', () => {
   const adequate = completeAudit();
   assert.equal(adequate.adequate, true);
+  assert.equal(adequate.audit_contract, 'trust-boundary-composition-v1');
   assert.equal(validateAuditReport(adequate), null);
 
   const weak = completeAudit({
@@ -38,6 +41,42 @@ test('review evidence audit derives adequate only when every semantic aspect is 
   });
   assert.equal(weak.adequate, false);
   assert.equal(validateAuditReport(weak), null);
+});
+
+test('review audit contracts can define a different typed checklist', () => {
+  const graphContract = normalizeAuditContract({
+    id: 'dependency-order-v1',
+    prompt: 'Judge graph-order evidence and call report_review_audit once.',
+    aspects: [
+      ['dependency_edges_observed', 'show dependency edges are respected'],
+      ['stable_unconstrained_order_observed', 'show unconstrained input order is preserved'],
+      ['cycle_behavior_observed', 'show cycle behavior'],
+    ],
+    feedbackInstructions: ['Use concrete graph witnesses and observed output orders.'],
+  });
+  const report = normalizeAuditReport({
+    dependency_edges_observed: true,
+    stable_unconstrained_order_observed: true,
+    cycle_behavior_observed: false,
+    summary: 'Cycle evidence is missing.',
+    missing_or_weak_aspects: ['No cycle witness was exercised.'],
+  }, graphContract);
+  assert.equal(report.audit_contract, 'dependency-order-v1');
+  assert.equal(report.adequate, false);
+  assert.equal(report.dependency_edges_observed, true);
+  assert.equal(report.boundary_identified, undefined);
+  assert.match(auditFeedback(report, graphContract), /concrete graph witnesses/i);
+});
+
+test('review audit contract validation rejects ambiguous schemas', () => {
+  assert.throws(() => normalizeAuditContract({ id: '', prompt: 'x', aspects: [['a', 'A']] }), /stable id/i);
+  assert.throws(() => normalizeAuditContract({ id: 'x', prompt: '', aspects: [['a', 'A']] }), /requires prompt/i);
+  assert.throws(() => normalizeAuditContract({ id: 'x', prompt: 'p', aspects: [] }), /at least one aspect/i);
+  assert.throws(
+    () => normalizeAuditContract({ id: 'x', prompt: 'p', aspects: [['same', 'A'], ['same', 'B']] }),
+    /duplicate aspect/i,
+  );
+  assert.equal(normalizeAuditContract(TRUST_BOUNDARY_REVIEW_AUDIT_CONTRACT).id, 'trust-boundary-composition-v1');
 });
 
 test('matched benign evidence must guard against over-restrictive remediation', () => {
