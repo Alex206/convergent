@@ -28,8 +28,18 @@ function createDefaultEvidenceObserverRegistry() {
 class ProbeEnabledReviewEvidenceAuditorSessionFactory extends ReviewEvidenceAuditorSessionFactory {
   constructor(options = {}) {
     super(options);
-    this.evidenceObservers = options.evidenceObservers ?? createDefaultEvidenceObserverRegistry();
+    this.availableEvidenceObservers = options.evidenceObservers ?? createDefaultEvidenceObserverRegistry();
+    this.evidenceObservers = new EvidenceObserverRegistry([]);
     this.evidenceObservationState = this.evidenceObservers.createObservationState();
+    this.evidenceObserverApplicability = [];
+  }
+
+  configureEvidenceObservers(context = {}) {
+    const selected = this.availableEvidenceObservers.selectApplicable(context);
+    this.evidenceObservers = selected.registry;
+    this.evidenceObservationState = this.evidenceObservers.createObservationState();
+    this.evidenceObserverApplicability = selected.decisions;
+    return selected.decisions;
   }
 
   async createReviewer(...args) {
@@ -101,6 +111,24 @@ class EnvironmentConfiguredReviewAuditorEngine extends ReviewEvidenceAuditorBenc
     });
   }
 
+  async runFullTask(factory, task, taskSessionKey, routing, taskResumeState = null) {
+    const applicability = factory.configureEvidenceObservers?.({ task, routing }) ?? [];
+    const selected = factory.evidenceObservers?.metadata?.() ?? [];
+    this.ui?.audit?.({
+      type: 'benchmark_evidence_observer_selection',
+      topology: this.experimentTopology,
+      taskId: task.id,
+      route: routing.route,
+      risk: routing.risk,
+      applicability,
+      selectedObservers: selected,
+    });
+    if (!selected.length) {
+      throw new Error('Typed-evidence benchmark has no applicable observer; fail closed rather than silently weakening high-risk assurance.');
+    }
+    return super.runFullTask(factory, task, taskSessionKey, routing, taskResumeState);
+  }
+
   async runReviewEvidenceAudit(factory, task, taskSessionKey, routing, review, round) {
     const revision = await this.revisionProvider(this.workspace, this.workspaceFolders);
     const packet = factory.augmentReviewWithObserverEvidence?.(review, revision) ?? {
@@ -151,6 +179,7 @@ async function rewriteExperimentIdentity(outputDir, experimentTopology, auditorS
     lowContext: true,
     repositoryTools: false,
     typedEvidenceObservers: observerMetadata,
+    observerSelection: 'explicit-fail-closed',
     reviewerIsolatedPathProbe: true,
     positiveBoundaryEvidence: true,
     authoritativeProbeEvidence: true,
@@ -165,6 +194,7 @@ async function rewriteExperimentIdentity(outputDir, experimentTopology, auditorS
     lowContext: true,
     repositoryTools: false,
     typedEvidenceObservers: observerMetadata,
+    observerSelection: 'explicit-fail-closed',
     reviewerIsolatedPathProbe: true,
     positiveBoundaryEvidence: true,
     authoritativeProbeEvidence: true,
