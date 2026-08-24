@@ -81,3 +81,92 @@ test('panel engine extends benchmark machinery without changing production engin
   assert.ok(PerspectivePanelSessionFactory.prototype instanceof LeanStandardSessionFactory);
   assert.ok(PerspectivePanelTopologyEngine.prototype instanceof BenchmarkTopologyEngine);
 });
+
+test('perspective panel reviews one exact revision independently before one bounded remediation', async () => {
+  const engine = Object.create(PerspectivePanelTopologyEngine.prototype);
+  const events = [];
+  const worker = { session: { id: 'worker' }, model: { id: 'gpt-5.6-luna' }, reasoningEffort: 'medium' };
+  const strongReviewer = { session: { id: 'terra' }, model: { id: 'gpt-5.6-terra' }, reasoningEffort: 'high' };
+  const panelById = new Map();
+  const factory = {
+    async createWorker() { return worker; },
+    async createPanelReviewer(_taskId, spec) {
+      const reviewer = {
+        session: { id: `panel-${spec.id}` },
+        model: { id: 'gpt-5.6-luna' },
+        reasoningEffort: 'medium',
+        panelReviewer: spec,
+      };
+      panelById.set(spec.id, reviewer);
+      return reviewer;
+    },
+    async createReviewer() { return strongReviewer; },
+  };
+
+  engine.sessions = [];
+  engine.topologyConfig = { panelMode: 'perspective' };
+  engine.ui = {
+    agentConfiguration() {},
+    passResult() {},
+    phase(name, detail) { events.push({ type: 'phase', name, detail }); },
+  };
+  engine.revisionProvider = async () => 'revision-1';
+  engine.runWorkerPass = async (_agent, _task, mode, findings) => {
+    events.push({ type: 'worker', mode, findings });
+    return {
+      report: { verdict: 'changed', summary: mode, findings: [], checks: [] },
+      changed: true,
+      revision: 'revision-1',
+    };
+  };
+  engine.resolveSingleWorkerPass = async () => ({ evidence: [{ command: 'unit-tests', ok: true }] });
+  engine.runPanelReviewPass = async (reviewer, _task, evidence, revision) => {
+    events.push({
+      type: 'panel',
+      id: reviewer.panelReviewer.id,
+      revision,
+      evidence,
+    });
+    if (reviewer.panelReviewer.id === 'adversarial') {
+      return {
+        verdict: 'findings',
+        summary: 'one falsifying witness',
+        findings: [{ severity: 'high', title: 'counterexample', description: 'witness' }],
+      };
+    }
+    return { verdict: 'clean', summary: 'clean in charter', findings: [] };
+  };
+  engine.saveTaskCheckpoint = async () => {};
+  engine.checkAiCreditBudget = async () => {};
+  engine.runStrongReview = async (_task, _workerA, _workerB, reviewer, evidence) => {
+    events.push({ type: 'strong-review', reviewer, evidence });
+  };
+  engine.disposeTaskSessions = async (sessions) => {
+    events.push({ type: 'dispose', sessions });
+  };
+
+  await engine.runPanelTask(
+    factory,
+    { id: 'task-1', description: 'benchmark task' },
+    'task-1',
+    { route: 'standard', risk: 'high' },
+    'perspective',
+  );
+
+  const panelEvents = events.filter((event) => event.type === 'panel');
+  assert.deepEqual(panelEvents.map((event) => event.id), ['contract', 'adversarial', 'state']);
+  assert.ok(panelEvents.every((event) => event.revision === 'revision-1'));
+  assert.ok(panelEvents.every((event) => event.evidence.length === 1));
+  assert.equal(panelById.size, 3);
+
+  const workerEvents = events.filter((event) => event.type === 'worker');
+  assert.deepEqual(workerEvents.map((event) => event.mode), ['IMPLEMENT', 'FIX_REVIEW_PANEL_FINDINGS']);
+  assert.equal(workerEvents[1].findings.length, 1);
+
+  const strongReviews = events.filter((event) => event.type === 'strong-review');
+  assert.equal(strongReviews.length, 1);
+  assert.equal(strongReviews[0].reviewer, strongReviewer);
+
+  const disposed = events.find((event) => event.type === 'dispose');
+  assert.equal(disposed.sessions.length, 5);
+});
