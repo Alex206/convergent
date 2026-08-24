@@ -54,5 +54,7 @@ test('reviewer client injection adds only the isolated probe and its guidance', 
   assert.equal(received.tools.at(-1), probeTool);
   assert.ok(received.availableTools.includes(PATH_PROBE_TOOL));
   assert.match(received.systemMessage.content, /temporary filesystem fixture/i);
-  assert.match(received.systemMessage.content, /positive and negative witnesses/i);
+  assert.match(received.systemMessage.content, /restrictive rule/i);
+  assert.match(received.systemMessage.content, /corresponding permissive rule/i);
+  assert.match(received.systemMessage.content, /semantic boundary/i);
 });
