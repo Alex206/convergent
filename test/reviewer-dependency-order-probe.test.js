@@ -80,6 +80,14 @@ function mixedAndCycleSpec() {
         ],
       },
       {
+        label: 'tournament-44-regression',
+        tasks: [
+          { name: 'c', depends_on: ['b'] },
+          { name: 'a' },
+          { name: 'b' },
+        ],
+      },
+      {
         label: 'cycle',
         tasks: [
           { name: 'left', depends_on: ['right'] },
@@ -111,6 +119,7 @@ test('dependency probe exposes stable ready-set transitions and cycle diagnostic
   try {
     const result = await runDependencyOrderProbe(root, mixedAndCycleSpec());
     const mixed = result.results.find((entry) => entry.label === 'mixed-stability');
+    const regression = result.results.find((entry) => entry.label === 'tournament-44-regression');
     const cycle = result.results.find((entry) => entry.label === 'cycle');
 
     assert.equal(mixed.accepted, true);
@@ -120,6 +129,18 @@ test('dependency probe exposes stable ready-set transitions and cycle diagnostic
     assert.equal(mixed.all_choices_earliest_ready_by_input, true);
     assert.ok(mixed.mixed_ready_step_count >= 1);
     assert.ok(mixed.ready_transition_trace.some((row) => row.ready_before.length >= 2));
+
+    assert.equal(regression.accepted, true);
+    assert.deepEqual(regression.output_order, ['a', 'b', 'c']);
+    assert.equal(regression.all_declared_dependencies_respected, true);
+    assert.equal(regression.all_choices_earliest_ready_by_input, true);
+    assert.deepEqual(regression.ready_transition_trace[0].ready_before, ['a', 'b']);
+    assert.equal(regression.ready_transition_trace[0].earliest_ready_input, 'a');
+    assert.equal(regression.ready_transition_trace[0].chosen, 'a');
+    assert.deepEqual(regression.ready_transition_trace[1].ready_before, ['b']);
+    assert.equal(regression.ready_transition_trace[1].chosen, 'b');
+    assert.deepEqual(regression.ready_transition_trace[2].ready_before, ['c']);
+    assert.equal(regression.ready_transition_trace[2].chosen, 'c');
 
     assert.equal(cycle.graph.has_cycle, true);
     assert.equal(cycle.accepted, false);
@@ -151,5 +172,6 @@ test('dependency observation capture is bounded and reviewer guidance requires d
   assert.equal(sink[0].index, 2);
   assert.match(REVIEWER_DEPENDENCY_ORDER_PROMPT, /mixed partial-order graph/i);
   assert.match(REVIEWER_DEPENDENCY_ORDER_PROMPT, /ready_before/i);
+  assert.match(REVIEWER_DEPENDENCY_ORDER_PROMPT, /global pairwise input-order rule/i);
   assert.match(REVIEWER_DEPENDENCY_ORDER_PROMPT, /does not know the external acceptance oracle/i);
 });
