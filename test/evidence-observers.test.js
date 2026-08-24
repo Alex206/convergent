@@ -7,10 +7,11 @@ const {
   PATH_RESOLUTION_OBSERVER_ID,
   EvidenceObserverRegistry,
   createPathResolutionTransitionObserver,
+  pathResolutionObserverApplicability,
   validateObserver,
 } = require('../src/headless/evidence-observers');
 
-function stubObserver(id = 'stub-v1') {
+function stubObserver(id = 'stub-v1', applicability = () => true) {
   return {
     id,
     schemaVersion: 1,
@@ -19,6 +20,7 @@ function stubObserver(id = 'stub-v1') {
     reviewerPrompt: 'STUB REVIEWER PROMPT',
     auditorPrompt: 'STUB AUDITOR PROMPT',
     metadata: { oracleBlind: true },
+    applicability,
     createTool({ observationSink }) {
       return { name: 'observe_stub', observationSink };
     },
@@ -37,6 +39,17 @@ function stubObserver(id = 'stub-v1') {
 test('typed evidence observer registry validates stable unique capability contracts', () => {
   assert.throws(() => validateObserver({ id: 'missing' }), /evidenceType/);
   assert.throws(
+    () => validateObserver({
+      id: 'missing-applicability',
+      evidenceType: 'test',
+      toolName: 'custom:test',
+      createTool() {},
+      compactEvidence() {},
+      augmentReview() {},
+    }),
+    /applicability/,
+  );
+  assert.throws(
     () => new EvidenceObserverRegistry([stubObserver('same'), stubObserver('same')]),
     /Duplicate evidence observer id/,
   );
@@ -46,6 +59,36 @@ test('typed evidence observer registry validates stable unique capability contra
   assert.equal(registry.metadata()[0].oracleBlind, true);
   assert.equal(registry.metadata()[0].revisionBound, true);
   assert.equal(registry.metadata()[0].typedTransitions, true);
+});
+
+test('observer applicability is explicit and fail-closed', () => {
+  const registry = new EvidenceObserverRegistry([
+    stubObserver('yes', () => ({ applicable: true, reason: 'matched' })),
+    stubObserver('no', () => ({ applicable: false, reason: 'not-matched' })),
+    stubObserver('throws', () => { throw new Error('bad selector'); }),
+  ]);
+  const selected = registry.selectApplicable({ task: { title: 'task' } });
+  assert.deepEqual(selected.registry.metadata().map((entry) => entry.id), ['yes']);
+  assert.deepEqual(selected.decisions.map((entry) => [entry.observerId, entry.applicable]), [
+    ['yes', true],
+    ['no', false],
+    ['throws', false],
+  ]);
+  assert.match(selected.decisions[2].reason, /^applicability-error:/);
+});
+
+test('path transition observer requires an explicit high-risk artifact-path boundary contract', () => {
+  const task = {
+    title: 'Fix artifact path containment security boundary',
+    description: 'Fix resolve_artifact_path(root, artifact_path).',
+    acceptanceCriteria: ['Reject symlink escapes and preserve normalized in-root paths.'],
+  };
+  assert.equal(pathResolutionObserverApplicability({ task, routing: { route: 'high_risk' } }).applicable, true);
+  assert.equal(pathResolutionObserverApplicability({ task, routing: { route: 'standard' } }).applicable, false);
+  assert.equal(pathResolutionObserverApplicability({
+    task: { title: 'Rotate signing credentials', description: 'Update release secret handling.' },
+    routing: { route: 'high_risk' },
+  }).applicable, false);
 });
 
 test('observer registry keeps observations isolated by capability and exact revision', () => {
@@ -106,4 +149,5 @@ test('empty observer registry is a fail-safe no-op rather than weakening review'
   assert.deepEqual(registry.evidenceForRevision(state, 'revision'), []);
   assert.deepEqual(registry.metadata(), []);
   assert.equal(registry.auditorPrompt(), '');
+  assert.deepEqual(registry.selectApplicable({}).decisions, []);
 });
