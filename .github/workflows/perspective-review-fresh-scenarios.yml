@@ -1,0 +1,234 @@
+name: Perspective Review Fresh Scenarios
+
+on:
+  push:
+    branches:
+      - agent/perspective-review-protocol-benchmark
+    paths:
+      - .github/workflows/perspective-review-fresh-scenarios.yml
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        arm:
+          - broad-terra
+          - generic-luna-panel-terra
+          - perspective-luna-terra
+        scenario:
+          - s09
+          - s10
+    env:
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+      COPILOT_PLUGIN_DIR_ONLY: 'true'
+      CONVERGENT_BENCHMARK_REVIEW_CONTRACT: acceptance-matrix-v1
+
+    steps:
+      - name: Require benchmark credentials
+        shell: bash
+        env:
+          BENCHMARK_REPO_TOKEN: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+        run: |
+          test -n "${COPILOT_GITHUB_TOKEN}" || { echo "COPILOT_GITHUB_TOKEN is required." >&2; exit 2; }
+          test -n "${BENCHMARK_REPO_TOKEN}" || { echo "BENCHMARK_REPO_TOKEN is required." >&2; exit 2; }
+
+      - name: Checkout Convergent
+        uses: actions/checkout@v6
+
+      - name: Checkout benchmark fixture
+        uses: actions/checkout@v6
+        with:
+          repository: Alex206/convergent-test-repo
+          ref: ${{ matrix.scenario == 's09' && 'benchmark/scenario09-metadata-isolation' || 'benchmark/scenario10-cleanup-exception-precedence' }}
+          path: benchmark-target
+          token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Install Convergent dependencies
+        run: npm ci
+
+      - name: Validate benchmark implementation
+        run: |
+          npm test
+          npm run check
+
+      - name: Prepare benchmark metadata
+        shell: bash
+        env:
+          ARM: ${{ matrix.arm }}
+          SCENARIO: ${{ matrix.scenario }}
+          RUN_OUTPUT: ${{ runner.temp }}/review-run
+          FIXTURE_REF: ${{ matrix.scenario == 's09' && 'benchmark/scenario09-metadata-isolation' || 'benchmark/scenario10-cleanup-exception-precedence' }}
+        run: |
+          rm -rf "${RUN_OUTPUT}"
+          mkdir -p "${RUN_OUTPUT}"
+          fixture_sha="$(git -C benchmark-target rev-parse HEAD)"
+          FIXTURE_SHA="${fixture_sha}" node - <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          fs.writeFileSync(path.join(process.env.RUN_OUTPUT, 'benchmark-meta.json'), `${JSON.stringify({
+            topology: process.env.ARM,
+            scenario: process.env.SCENARIO,
+            repeat: 1,
+            fixtureRef: process.env.FIXTURE_REF,
+            fixtureSha: process.env.FIXTURE_SHA,
+          }, null, 2)}\n`);
+          NODE
+
+      - name: Run review architecture
+        continue-on-error: true
+        timeout-minutes: 20
+        shell: bash
+        env:
+          RUN_OUTPUT: ${{ runner.temp }}/review-run
+        run: |
+          export CONVERGENT_HEADLESS_ANSWERS_JSON='[]'
+          prompt="benchmarks/09-metadata-isolation.md"
+          if [[ "${{ matrix.scenario }}" == "s10" ]]; then
+            prompt="benchmarks/10-cleanup-exception-precedence.md"
+          fi
+          set -o pipefail
+          node src/headless/perspective-review-cli.js \
+            --workspace "${GITHUB_WORKSPACE}/benchmark-target" \
+            --prompt-file "${GITHUB_WORKSPACE}/benchmark-target/${prompt}" \
+            --output-dir "${RUN_OUTPUT}" \
+            --arm "${{ matrix.arm }}" \
+            --flow fast \
+            --audit-level full \
+            --limit-policy continue \
+            --max-reviewer-cycles 4 \
+            --max-model-calls 100 \
+            --max-model-calls-per-turn 18 \
+            --max-chat-requests 36 \
+            --max-ai-credits 80 \
+            2>&1 | tee "${RUN_OUTPUT}/runner.log"
+
+      - name: Independently validate target tests
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          RUN_OUTPUT: ${{ runner.temp }}/review-run
+        run: |
+          set +e
+          (
+            cd benchmark-target
+            python3 -B -m unittest discover -s tests -v
+          ) > "${RUN_OUTPUT}/target-validation.log" 2>&1
+          rc=$?
+          RC="${rc}" node - <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const rc = Number(process.env.RC);
+          fs.writeFileSync(path.join(process.env.RUN_OUTPUT, 'target-validation.json'), `${JSON.stringify({ ok: rc === 0, exitCode: rc }, null, 2)}\n`);
+          NODE
+          cat "${RUN_OUTPUT}/target-validation.log"
+          exit 0
+
+      - name: Run deterministic scenario oracle
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          RUN_OUTPUT: ${{ runner.temp }}/review-run
+        run: |
+          if [[ "${{ matrix.scenario }}" == "s09" ]]; then
+            node src/headless/scenario09-acceptance.js "${GITHUB_WORKSPACE}/benchmark-target" "${RUN_OUTPUT}/scenario-acceptance.json"
+          else
+            node src/headless/scenario10-acceptance.js "${GITHUB_WORKSPACE}/benchmark-target" "${RUN_OUTPUT}/scenario-acceptance.json"
+          fi
+
+      - name: Capture final workspace
+        if: always()
+        shell: bash
+        env:
+          RUN_OUTPUT: ${{ runner.temp }}/review-run
+        run: |
+          git -C benchmark-target status --porcelain=v1 --untracked-files=all > "${RUN_OUTPUT}/final-status.txt" || true
+          git -C benchmark-target diff --binary --no-ext-diff > "${RUN_OUTPUT}/final-diff.patch" || true
+
+      - name: Upload run evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fresh-${{ matrix.arm }}-${{ matrix.scenario }}-r1
+          path: ${{ runner.temp }}/review-run
+          if-no-files-found: error
+          retention-days: 14
+
+  report:
+    if: always()
+    needs: benchmark
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout Convergent
+        uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Download all review evidence
+        uses: actions/download-artifact@v5
+        with:
+          pattern: fresh-*
+          path: ${{ runner.temp }}/review-results
+
+      - name: Quarantine infrastructure-invalid runs
+        shell: bash
+        run: |
+          node src/headless/topology-validity.js \
+            "${{ runner.temp }}/review-results" \
+            "${{ runner.temp }}/review-infrastructure-invalid-runs" \
+            "${{ runner.temp }}/review-infrastructure-invalid.json" \
+            "${{ runner.temp }}/review-infrastructure-invalid.md"
+
+      - name: Verify panel causal isolation
+        shell: bash
+        run: |
+          node src/headless/perspective-review-validity.js \
+            "${{ runner.temp }}/review-results" \
+            "${{ runner.temp }}/perspective-review-validity.json" \
+            "${{ runner.temp }}/perspective-review-validity.md" \
+            --assert
+
+      - name: Build comparison reports
+        shell: bash
+        run: |
+          node src/headless/topology-report.js \
+            "${{ runner.temp }}/review-results" \
+            "${{ runner.temp }}/review-report.json" \
+            "${{ runner.temp }}/review-report.md"
+          node src/headless/perspective-review-report.js \
+            "${{ runner.temp }}/review-results" \
+            "${{ runner.temp }}/perspective-review-discovery.json" \
+            "${{ runner.temp }}/perspective-review-discovery.md"
+
+      - name: Upload tournament report
+        uses: actions/upload-artifact@v4
+        with:
+          name: fresh-perspective-review-report
+          path: |
+            ${{ runner.temp }}/review-report.json
+            ${{ runner.temp }}/review-report.md
+            ${{ runner.temp }}/perspective-review-discovery.json
+            ${{ runner.temp }}/perspective-review-discovery.md
+            ${{ runner.temp }}/perspective-review-validity.json
+            ${{ runner.temp }}/perspective-review-validity.md
+            ${{ runner.temp }}/review-infrastructure-invalid.json
+            ${{ runner.temp }}/review-infrastructure-invalid.md
+          if-no-files-found: error
+          retention-days: 30
