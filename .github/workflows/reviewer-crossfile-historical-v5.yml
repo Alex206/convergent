@@ -1,0 +1,193 @@
+name: Reviewer Cross-File + Historical V5
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - agent/perspective-review-protocol-benchmark
+
+jobs:
+  benchmark:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[reviewer-v5-run]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+      COPILOT_PLUGIN_DIR_ONLY: 'true'
+    steps:
+      - name: Require benchmark credentials
+        shell: bash
+        env:
+          BENCHMARK_REPO_TOKEN: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+        run: |
+          test -n "${COPILOT_GITHUB_TOKEN}" || { echo "COPILOT_GITHUB_TOKEN is required." >&2; exit 2; }
+          test -n "${BENCHMARK_REPO_TOKEN}" || { echo "BENCHMARK_REPO_TOKEN is required." >&2; exit 2; }
+
+      - name: Initialize run root
+        shell: bash
+        run: echo "RUN_ROOT=${RUNNER_TEMP}/reviewer-v5" >> "${GITHUB_ENV}"
+
+      - name: Checkout benchmark harness
+        uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Validate benchmark framework
+        shell: bash
+        run: |
+          npm ci
+          npm test
+          npm run check
+
+      - name: Checkout S19 defective
+        uses: actions/checkout@v6
+        with:
+          repository: Alex206/convergent-test-repo
+          ref: 50ae4bfe141db8a8b82547d4d5ecbb49059cc686
+          path: benchmark-targets/s19-defect
+          token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+      - name: Checkout S19 clean
+        uses: actions/checkout@v6
+        with:
+          repository: Alex206/convergent-test-repo
+          ref: ac5d57414363e5369fea07750a286c30722d9edf
+          path: benchmark-targets/s19-clean
+          token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+
+      - name: Checkout historical H22 defective snapshot
+        uses: actions/checkout@v6
+        with:
+          repository: Alex206/convergent
+          ref: 9ec6918680982b46e35a8820eb1e67a297fcff33
+          path: benchmark-targets/h22-defect
+      - name: Checkout historical H22 fixed snapshot
+        uses: actions/checkout@v6
+        with:
+          repository: Alex206/convergent
+          ref: 27d221accb2d13772b1edf0cbb8b30cca43cb08b
+          path: benchmark-targets/h22-fixed
+
+      - name: Install historical target dependencies
+        shell: bash
+        run: |
+          npm ci --prefix benchmark-targets/h22-defect
+          npm ci --prefix benchmark-targets/h22-fixed
+
+      - name: Validate frozen targets and exact ground truth
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUN_ROOT}/validation"
+
+          (cd benchmark-targets/s19-defect && python3 -B -m unittest tests.test_dispatch_service -v)
+          (cd benchmark-targets/s19-clean && python3 -B -m unittest tests.test_dispatch_service -v)
+          (cd benchmark-targets/h22-defect && npm test)
+          (cd benchmark-targets/h22-fixed && npm test)
+
+          node src/headless/reviewer-v5-case-validation.js \
+            v5-s19-dispatch-multidefect \
+            "${GITHUB_WORKSPACE}/benchmark-targets/s19-defect" \
+            "${RUN_ROOT}/validation/v5-s19-dispatch-multidefect.json"
+          node src/headless/reviewer-v5-case-validation.js \
+            v5-s19-dispatch-clean \
+            "${GITHUB_WORKSPACE}/benchmark-targets/s19-clean" \
+            "${RUN_ROOT}/validation/v5-s19-dispatch-clean.json"
+          node src/headless/reviewer-v5-case-validation.js \
+            v5-h22-budget-regression \
+            "${GITHUB_WORKSPACE}/benchmark-targets/h22-defect" \
+            "${RUN_ROOT}/validation/v5-h22-budget-regression.json"
+          node src/headless/reviewer-v5-case-validation.js \
+            v5-h22-budget-fixed \
+            "${GITHUB_WORKSPACE}/benchmark-targets/h22-fixed" \
+            "${RUN_ROOT}/validation/v5-h22-budget-fixed.json"
+
+      - name: Run R2 and R3 reviewer cases sequentially
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p "${RUN_ROOT}/runs"
+          failures=0
+          cases=(
+            'v5-s19-dispatch-multidefect|benchmark-targets/s19-defect|benchmark-targets/s19-defect/benchmarks/19-dispatch-lifecycle.md'
+            'v5-s19-dispatch-clean|benchmark-targets/s19-clean|benchmark-targets/s19-clean/benchmarks/19-dispatch-lifecycle.md'
+            'v5-h22-budget-regression|benchmark-targets/h22-defect|benchmarks/reviewer-v5-h22-headless-budget.md'
+            'v5-h22-budget-fixed|benchmark-targets/h22-fixed|benchmarks/reviewer-v5-h22-headless-budget.md'
+          )
+          for arm in luna-broad-3 luna-specialized-3; do
+            for entry in "${cases[@]}"; do
+              IFS='|' read -r case_id target prompt <<<"${entry}"
+              out="${RUN_ROOT}/runs/${arm}/${case_id}"
+              rm -rf "${out}"
+              mkdir -p "${out}"
+              fixture_sha="$(git -C "${target}" rev-parse HEAD)"
+              RUN_OUTPUT="${out}" CASE_ID="${case_id}" ARM="${arm}" FIXTURE_SHA="${fixture_sha}" TARGET="${target}" node - <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          fs.writeFileSync(path.join(process.env.RUN_OUTPUT, 'benchmark-meta.json'), `${JSON.stringify({
+            caseId: process.env.CASE_ID,
+            fixtureRef: process.env.FIXTURE_SHA,
+            fixtureSha: process.env.FIXTURE_SHA,
+            arm: process.env.ARM,
+            repeat: 1,
+            target: process.env.TARGET,
+          }, null, 2)}\n`);
+          NODE
+              echo "== ${arm} · ${case_id} · ${fixture_sha} =="
+              export CONVERGENT_HEADLESS_ANSWERS_JSON='[]'
+              node src/headless/reviewer-only-cli.js \
+                --workspace "${GITHUB_WORKSPACE}/${target}" \
+                --prompt-file "${GITHUB_WORKSPACE}/${prompt}" \
+                --output-dir "${out}" \
+                --arm "${arm}" \
+                --flow auto \
+                --audit-level full \
+                --limit-policy continue \
+                --max-model-calls 60 \
+                --max-model-calls-per-turn 18 \
+                --max-chat-requests 36 \
+                --max-ai-credits 80
+              rc=$?
+              if [ "${rc}" -ne 0 ]; then
+                echo "Cell failed: ${arm} ${case_id} (rc=${rc})" >&2
+                failures=$((failures + 1))
+              fi
+              dirty="$(git -C "${target}" status --porcelain=v1 --untracked-files=all)"
+              if [ -n "${dirty}" ]; then
+                echo "Reviewer changed frozen workspace: ${arm} ${case_id}" >&2
+                printf '%s\n' "${dirty}" >&2
+                failures=$((failures + 1))
+              fi
+            done
+          done
+          printf '%s\n' "${failures}" > "${RUN_ROOT}/cell-failures.txt"
+
+      - name: Build V5 report
+        if: always()
+        shell: bash
+        run: |
+          node src/headless/reviewer-v5-report.js \
+            "${RUN_ROOT}/runs" \
+            "${RUN_ROOT}/reviewer-v5-report.json" \
+            "${RUN_ROOT}/reviewer-v5-report.md"
+          cat "${RUN_ROOT}/reviewer-v5-report.md" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload V5 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reviewer-v5-${{ github.run_number }}
+          path: ${{ runner.temp }}/reviewer-v5
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Fail on incomplete reviewer cells
+        if: always()
+        shell: bash
+        run: |
+          failures="$(cat "${RUN_ROOT}/cell-failures.txt" 2>/dev/null || echo 999)"
+          test "${failures}" = "0" || { echo "${failures} reviewer cell(s) failed." >&2; exit 1; }
