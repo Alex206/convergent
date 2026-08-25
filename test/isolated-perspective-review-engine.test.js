@@ -14,7 +14,13 @@ const {
   IsolatedPerspectiveReviewEngine,
 } = require('../src/headless/isolated-perspective-review-engine');
 
-const REPOSITORY_INSPECTION_TOOL = /(?:batch_view|run_command|view|grep|glob|rg|shell|command)/i;
+const REPOSITORY_INSPECTION_TOOLS = new Set([
+  'builtin:view',
+  'builtin:glob',
+  'builtin:rg',
+  'custom:batch_view',
+  'custom:run_command',
+]);
 
 test('panel Terra controller has reporting tools only and cannot inspect repository state', () => {
   assert.deepEqual(ISOLATED_GENERIC_CONTROLLER_TOOLS, [
@@ -24,8 +30,8 @@ test('panel Terra controller has reporting tools only and cannot inspect reposit
     'custom:report_review_plan',
     'custom:report_review',
   ]);
-  assert.equal(ISOLATED_GENERIC_CONTROLLER_TOOLS.some((tool) => REPOSITORY_INSPECTION_TOOL.test(tool)), false);
-  assert.equal(ISOLATED_PERSPECTIVE_CONTROLLER_TOOLS.some((tool) => REPOSITORY_INSPECTION_TOOL.test(tool)), false);
+  assert.equal(ISOLATED_GENERIC_CONTROLLER_TOOLS.some((tool) => REPOSITORY_INSPECTION_TOOLS.has(tool)), false);
+  assert.equal(ISOLATED_PERSPECTIVE_CONTROLLER_TOOLS.some((tool) => REPOSITORY_INSPECTION_TOOLS.has(tool)), false);
 });
 
 test('panel Terra prompts explicitly assign repository-level defect discovery to Luna', () => {
