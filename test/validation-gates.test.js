@@ -2,6 +2,10 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 const {
   normalizeValidationGate,
   validationGateApplies,
@@ -186,4 +190,32 @@ test('missing revision evidence fails closed and prevents command execution when
   assert.equal(evidence.outcome, 'revision_unavailable');
   assert.equal(evidence.blocksAcceptance, true);
   assert.match(evidence.executionError, /not a git worktree/);
+});
+
+test('real managed backend passes a non-mutating gate and invalidates a zero-exit mutating gate', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'convergent-validation-gate-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  execFileSync('git', ['init', '--quiet', root]);
+
+  const clean = await runValidationGate({
+    id: 'real-pass',
+    command: 'node -e "process.exit(0)"',
+    timeoutMs: 10_000,
+  }, { workspace: root });
+  assert.equal(clean.outcome, 'passed');
+  assert.equal(clean.commandResult.state, 'completed');
+  assert.equal(clean.commandResult.exitCode, 0);
+  assert.equal(clean.revisionStable, true);
+
+  const mutation = await runValidationGate({
+    id: 'real-mutation',
+    command: 'node -e "require(\'fs\').writeFileSync(\'gate-output.txt\', \'changed\')"',
+    timeoutMs: 10_000,
+  }, { workspace: root });
+  assert.equal(mutation.commandResult.state, 'completed');
+  assert.equal(mutation.commandResult.exitCode, 0);
+  assert.equal(mutation.outcome, 'invalidated');
+  assert.equal(mutation.blocksAcceptance, true);
+  assert.equal(mutation.revisionStable, false);
+  assert.equal(fs.readFileSync(path.join(root, 'gate-output.txt'), 'utf8'), 'changed');
 });
