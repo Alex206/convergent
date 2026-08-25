@@ -11,7 +11,7 @@ on:
       scenarios_json:
         description: JSON array of benchmark scenarios
         required: true
-        default: '["benchmarks/03-dependency-ordering.md","benchmarks/07-one-shot-label-filter-bug.md","benchmarks/08-artifact-path-containment.md"]'
+        default: '["benchmarks/09-metadata-isolation.md","benchmarks/10-cleanup-exception-precedence.md"]'
         type: string
       repeats_json:
         description: JSON array of repeat numbers
@@ -62,7 +62,7 @@ jobs:
       max-parallel: 1
       matrix:
         arm: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.arms_json || '["broad-terra","generic-luna-panel-terra","perspective-luna-terra"]') }}
-        scenario: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.scenarios_json || '["benchmarks/03-dependency-ordering.md","benchmarks/07-one-shot-label-filter-bug.md","benchmarks/08-artifact-path-containment.md"]') }}
+        scenario: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.scenarios_json || '["benchmarks/09-metadata-isolation.md","benchmarks/10-cleanup-exception-precedence.md"]') }}
         repeat: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.repeats_json || '[1]') }}
     env:
       COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
@@ -85,7 +85,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: Alex206/convergent-test-repo
-          ref: ${{ endsWith(matrix.scenario, '03-dependency-ordering.md') && 'benchmark/scenario03-review-contract' || endsWith(matrix.scenario, '07-one-shot-label-filter-bug.md') && 'benchmark/scenario07-one-shot-label-iterable' || endsWith(matrix.scenario, '08-artifact-path-containment.md') && 'benchmark/scenario08-path-containment' || 'main' }}
+          ref: ${{ endsWith(matrix.scenario, '03-dependency-ordering.md') && 'benchmark/scenario03-review-contract' || endsWith(matrix.scenario, '07-one-shot-label-filter-bug.md') && 'benchmark/scenario07-one-shot-label-iterable' || endsWith(matrix.scenario, '08-artifact-path-containment.md') && 'benchmark/scenario08-path-containment' || endsWith(matrix.scenario, '09-metadata-isolation.md') && 'benchmark/scenario09-metadata-isolation' || endsWith(matrix.scenario, '10-cleanup-exception-precedence.md') && 'benchmark/scenario10-cleanup-exception-precedence' || 'main' }}
           path: benchmark-target
           token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
 
@@ -109,7 +109,7 @@ jobs:
           SCENARIO: ${{ matrix.scenario }}
           REPEAT: ${{ matrix.repeat }}
           RUN_OUTPUT: ${{ runner.temp }}/review-run
-          FIXTURE_REF: ${{ endsWith(matrix.scenario, '03-dependency-ordering.md') && 'benchmark/scenario03-review-contract' || endsWith(matrix.scenario, '07-one-shot-label-filter-bug.md') && 'benchmark/scenario07-one-shot-label-iterable' || endsWith(matrix.scenario, '08-artifact-path-containment.md') && 'benchmark/scenario08-path-containment' || 'main' }}
+          FIXTURE_REF: ${{ endsWith(matrix.scenario, '03-dependency-ordering.md') && 'benchmark/scenario03-review-contract' || endsWith(matrix.scenario, '07-one-shot-label-filter-bug.md') && 'benchmark/scenario07-one-shot-label-iterable' || endsWith(matrix.scenario, '08-artifact-path-containment.md') && 'benchmark/scenario08-path-containment' || endsWith(matrix.scenario, '09-metadata-isolation.md') && 'benchmark/scenario09-metadata-isolation' || endsWith(matrix.scenario, '10-cleanup-exception-precedence.md') && 'benchmark/scenario10-cleanup-exception-precedence' || 'main' }}
         run: |
           rm -rf "${RUN_OUTPUT}"
           mkdir -p "${RUN_OUTPUT}"
@@ -191,6 +191,12 @@ jobs:
             *08-artifact-path-containment.md)
               node src/headless/scenario08-acceptance.js "${GITHUB_WORKSPACE}/benchmark-target" "${RUN_OUTPUT}/scenario-acceptance.json"
               ;;
+            *09-metadata-isolation.md)
+              node src/headless/scenario09-acceptance.js "${GITHUB_WORKSPACE}/benchmark-target" "${RUN_OUTPUT}/scenario-acceptance.json"
+              ;;
+            *10-cleanup-exception-precedence.md)
+              node src/headless/scenario10-acceptance.js "${GITHUB_WORKSPACE}/benchmark-target" "${RUN_OUTPUT}/scenario-acceptance.json"
+              ;;
             *)
               printf '%s\n' '{"ok":true,"dedicatedOracle":false}' > "${RUN_OUTPUT}/scenario-acceptance.json"
               ;;
@@ -209,7 +215,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: review-${{ strategy.job-index }}-${{ matrix.arm }}-${{ matrix.scenario == 'benchmarks/03-dependency-ordering.md' && 's03' || matrix.scenario == 'benchmarks/07-one-shot-label-filter-bug.md' && 's07' || 's08' }}-r${{ matrix.repeat }}
+          name: review-${{ strategy.job-index }}-${{ matrix.arm }}-${{ matrix.scenario == 'benchmarks/03-dependency-ordering.md' && 's03' || matrix.scenario == 'benchmarks/07-one-shot-label-filter-bug.md' && 's07' || matrix.scenario == 'benchmarks/08-artifact-path-containment.md' && 's08' || matrix.scenario == 'benchmarks/09-metadata-isolation.md' && 's09' || 's10' }}-r${{ matrix.repeat }}
           path: ${{ runner.temp }}/review-run
           if-no-files-found: error
           retention-days: 14
@@ -245,6 +251,16 @@ jobs:
             "${{ runner.temp }}/review-infrastructure-invalid.md"
           cat "${{ runner.temp }}/review-infrastructure-invalid.md" >> "${GITHUB_STEP_SUMMARY}"
 
+      - name: Verify panel causal isolation
+        shell: bash
+        run: |
+          node src/headless/perspective-review-validity.js \
+            "${{ runner.temp }}/review-results" \
+            "${{ runner.temp }}/perspective-review-validity.json" \
+            "${{ runner.temp }}/perspective-review-validity.md" \
+            --assert
+          cat "${{ runner.temp }}/perspective-review-validity.md" >> "${GITHUB_STEP_SUMMARY}"
+
       - name: Build comparison report
         shell: bash
         run: |
@@ -272,6 +288,8 @@ jobs:
             ${{ runner.temp }}/review-report.md
             ${{ runner.temp }}/perspective-review-discovery.json
             ${{ runner.temp }}/perspective-review-discovery.md
+            ${{ runner.temp }}/perspective-review-validity.json
+            ${{ runner.temp }}/perspective-review-validity.md
             ${{ runner.temp }}/review-infrastructure-invalid.json
             ${{ runner.temp }}/review-infrastructure-invalid.md
           if-no-files-found: error
