@@ -22,6 +22,14 @@ test('V7 matchers identify the historical mechanisms without generic issue overm
     title: 'Late usage event breaches turn cap after accepted report',
     description: 'When report_pass completes before assistant_usage for the capped call, the accepted structured report is treated as a budget breach.',
   }), true);
+  assert.equal(matchesDefect('accepted_report_order_invariance', {
+    title: 'Hard-limit handling discards a terminal report when hard and turn limits coincide',
+    description: 'At the exact hard call boundary a terminal report can be converted into a hard-limit breach.',
+  }), false);
+  assert.equal(matchesDefect('accepted_report_order_invariance', {
+    title: 'Turn budget can be order-dependent',
+    description: 'assistant_usage emitted after an accepted structured report is handled differently from usage emitted before the report tool completes.',
+  }), true);
   assert.equal(matchesDefect('oracle_failure_propagates', {
     title: 'Failed acceptance oracle can leave CI green',
     description: 'continue-on-error swallows a non-zero independent benchmark validation result instead of failing the job.',
