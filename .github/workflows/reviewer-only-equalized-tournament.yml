@@ -1,0 +1,237 @@
+name: Equalized Reviewer-Only Tournament
+
+on:
+  workflow_dispatch:
+    inputs:
+      repeats_json:
+        description: JSON array of repeat numbers
+        required: true
+        default: '[1]'
+        type: string
+  push:
+    branches:
+      - agent/perspective-review-protocol-benchmark
+
+jobs:
+  framework-validation:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[reviewer-only-run]')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - run: npm ci
+      - run: npm test
+      - run: npm run check
+
+  case-validation:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[reviewer-only-run]')
+    needs: framework-validation
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        case:
+          - id: s08-symlink-reentry
+            ref: benchmark/review-case-s08-symlink-reentry
+            prompt: benchmarks/08-artifact-path-containment.md
+          - id: s09-mappingproxy
+            ref: benchmark/review-case-s09-mappingproxy
+            prompt: benchmarks/09-metadata-isolation.md
+          - id: s10-baseexception
+            ref: benchmark/review-case-s10-baseexception
+            prompt: benchmarks/10-cleanup-exception-precedence.md
+          - id: s09-clean
+            ref: benchmark/review-case-s09-clean
+            prompt: benchmarks/09-metadata-isolation.md
+    steps:
+      - name: Checkout Convergent
+        uses: actions/checkout@v6
+      - name: Checkout frozen review case
+        uses: actions/checkout@v6
+        with:
+          repository: Alex206/convergent-test-repo
+          ref: ${{ matrix.case.ref }}
+          path: benchmark-target
+          token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - run: npm ci
+      - name: Visible fixture tests must pass
+        shell: bash
+        run: |
+          cd benchmark-target
+          python3 -B -m unittest discover -s tests -v
+      - name: Validate hidden frozen-case ground truth
+        shell: bash
+        run: |
+          node src/headless/reviewer-only-case-validation.js \
+            '${{ matrix.case.id }}' \
+            '${{ github.workspace }}/benchmark-target' \
+            '${{ runner.temp }}/case-validation.json'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reviewer-only-case-validation-${{ matrix.case.id }}
+          path: ${{ runner.temp }}/case-validation.json
+          retention-days: 14
+
+  benchmark:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[reviewer-only-run]')
+    needs: case-validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        arm:
+          - terra-broad
+          - luna-broad-3
+          - luna-specialized-3
+        case:
+          - id: s08-symlink-reentry
+            ref: benchmark/review-case-s08-symlink-reentry
+            prompt: benchmarks/08-artifact-path-containment.md
+          - id: s09-mappingproxy
+            ref: benchmark/review-case-s09-mappingproxy
+            prompt: benchmarks/09-metadata-isolation.md
+          - id: s10-baseexception
+            ref: benchmark/review-case-s10-baseexception
+            prompt: benchmarks/10-cleanup-exception-precedence.md
+          - id: s09-clean
+            ref: benchmark/review-case-s09-clean
+            prompt: benchmarks/09-metadata-isolation.md
+        repeat: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.repeats_json || '[1]') }}
+    env:
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+      COPILOT_PLUGIN_DIR_ONLY: 'true'
+    steps:
+      - name: Require benchmark credentials
+        shell: bash
+        env:
+          BENCHMARK_REPO_TOKEN: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+        run: |
+          test -n "${COPILOT_GITHUB_TOKEN}" || { echo "COPILOT_GITHUB_TOKEN is required." >&2; exit 2; }
+          test -n "${BENCHMARK_REPO_TOKEN}" || { echo "BENCHMARK_REPO_TOKEN is required." >&2; exit 2; }
+
+      - name: Checkout Convergent
+        uses: actions/checkout@v6
+
+      - name: Checkout frozen review case
+        uses: actions/checkout@v6
+        with:
+          repository: Alex206/convergent-test-repo
+          ref: ${{ matrix.case.ref }}
+          path: benchmark-target
+          token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - run: npm ci
+
+      - name: Prepare benchmark metadata
+        shell: bash
+        env:
+          RUN_OUTPUT: ${{ runner.temp }}/reviewer-only-run
+          CASE_ID: ${{ matrix.case.id }}
+          CASE_REF: ${{ matrix.case.ref }}
+          ARM: ${{ matrix.arm }}
+          REPEAT: ${{ matrix.repeat }}
+        run: |
+          rm -rf "${RUN_OUTPUT}"
+          mkdir -p "${RUN_OUTPUT}"
+          fixture_sha="$(git -C benchmark-target rev-parse HEAD)"
+          FIXTURE_SHA="${fixture_sha}" node - <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          fs.writeFileSync(path.join(process.env.RUN_OUTPUT, 'benchmark-meta.json'), `${JSON.stringify({
+            caseId: process.env.CASE_ID,
+            fixtureRef: process.env.CASE_REF,
+            fixtureSha: process.env.FIXTURE_SHA,
+            arm: process.env.ARM,
+            repeat: Number(process.env.REPEAT),
+          }, null, 2)}\n`);
+          NODE
+
+      - name: Run frozen reviewer-only architecture
+        shell: bash
+        env:
+          RUN_OUTPUT: ${{ runner.temp }}/reviewer-only-run
+        run: |
+          export CONVERGENT_HEADLESS_ANSWERS_JSON='[]'
+          node src/headless/reviewer-only-cli.js \
+            --workspace "${GITHUB_WORKSPACE}/benchmark-target" \
+            --prompt-file "${GITHUB_WORKSPACE}/benchmark-target/${{ matrix.case.prompt }}" \
+            --output-dir "${RUN_OUTPUT}" \
+            --arm "${{ matrix.arm }}" \
+            --flow auto \
+            --audit-level full \
+            --limit-policy continue \
+            --max-model-calls 60 \
+            --max-model-calls-per-turn 18 \
+            --max-chat-requests 36 \
+            --max-ai-credits 80
+
+      - name: Assert workspace stayed frozen
+        shell: bash
+        run: |
+          test -z "$(git -C benchmark-target status --porcelain=v1 --untracked-files=all)" || {
+            echo "Reviewer-only architecture changed the frozen workspace." >&2
+            git -C benchmark-target status --porcelain=v1 --untracked-files=all >&2
+            exit 1
+          }
+
+      - name: Upload reviewer evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reviewer-only-${{ matrix.arm }}-${{ matrix.case.id }}-r${{ matrix.repeat }}
+          path: ${{ runner.temp }}/reviewer-only-run
+          if-no-files-found: error
+          retention-days: 14
+
+  report:
+    if: always() && (github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[reviewer-only-run]'))
+    needs: benchmark
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Download reviewer evidence
+        uses: actions/download-artifact@v5
+        with:
+          pattern: reviewer-only-*
+          path: ${{ runner.temp }}/reviewer-only-results
+      - name: Build reviewer-only comparison report
+        shell: bash
+        run: |
+          node src/headless/reviewer-only-report.js \
+            "${{ runner.temp }}/reviewer-only-results" \
+            "${{ runner.temp }}/reviewer-only-report.json" \
+            "${{ runner.temp }}/reviewer-only-report.md"
+          cat "${{ runner.temp }}/reviewer-only-report.md" >> "${GITHUB_STEP_SUMMARY}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reviewer-only-equalized-report-${{ github.run_number }}
+          path: |
+            ${{ runner.temp }}/reviewer-only-report.json
+            ${{ runner.temp }}/reviewer-only-report.md
+          retention-days: 30
