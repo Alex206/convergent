@@ -77,6 +77,15 @@ function validateCase(caseId, workspace) {
       oracle,
     };
   }
+  if (caseId === 's10-clean') {
+    const oracle = runScenario10(workspace);
+    return {
+      valid: oracle.ok === true,
+      expectedDefect: false,
+      expectedDefectId: null,
+      oracle,
+    };
+  }
   throw new Error(`Unknown reviewer-only case ${JSON.stringify(caseId)}.`);
 }
 
