@@ -113,14 +113,14 @@ jobs:
           mkdir -p "${RUN_ROOT}/runs"
           failures=0
           cases=(
-            'v5-s19-dispatch-multidefect|benchmark-targets/s19-defect|benchmark-targets/s19-defect/benchmarks/19-dispatch-lifecycle.md'
-            'v5-s19-dispatch-clean|benchmark-targets/s19-clean|benchmark-targets/s19-clean/benchmarks/19-dispatch-lifecycle.md'
-            'v5-h22-budget-regression|benchmark-targets/h22-defect|benchmarks/reviewer-v5-h22-headless-budget.md'
-            'v5-h22-budget-fixed|benchmark-targets/h22-fixed|benchmarks/reviewer-v5-h22-headless-budget.md'
+            'v5-s19-dispatch-multidefect|benchmark-targets/s19-defect|benchmark-targets/s19-defect/benchmarks/19-dispatch-lifecycle.md|file'
+            'v5-s19-dispatch-clean|benchmark-targets/s19-clean|benchmark-targets/s19-clean/benchmarks/19-dispatch-lifecycle.md|file'
+            'v5-h22-budget-regression|benchmark-targets/h22-defect|benchmarks/reviewer-v5-h22-headless-budget.md|inline'
+            'v5-h22-budget-fixed|benchmark-targets/h22-fixed|benchmarks/reviewer-v5-h22-headless-budget.md|inline'
           )
           for arm in luna-broad-3 luna-specialized-3; do
             for entry in "${cases[@]}"; do
-              IFS='|' read -r case_id target prompt <<<"${entry}"
+              IFS='|' read -r case_id target prompt prompt_mode <<<"${entry}"
               out="${RUN_ROOT}/runs/${arm}/${case_id}"
               rm -rf "${out}"
               mkdir -p "${out}"
@@ -139,9 +139,15 @@ jobs:
           NODE
               echo "== ${arm} · ${case_id} · ${fixture_sha} =="
               export CONVERGENT_HEADLESS_ANSWERS_JSON='[]'
-              node src/headless/reviewer-only-cli.js \
+              prompt_args=()
+              if [ "${prompt_mode}" = "inline" ]; then
+                prompt_args=(--prompt "$(cat "${GITHUB_WORKSPACE}/${prompt}")")
+              else
+                prompt_args=(--prompt-file "${GITHUB_WORKSPACE}/${prompt}")
+              fi
+              if node src/headless/reviewer-only-cli.js \
                 --workspace "${GITHUB_WORKSPACE}/${target}" \
-                --prompt-file "${GITHUB_WORKSPACE}/${prompt}" \
+                "${prompt_args[@]}" \
                 --output-dir "${out}" \
                 --arm "${arm}" \
                 --flow auto \
@@ -150,8 +156,11 @@ jobs:
                 --max-model-calls 60 \
                 --max-model-calls-per-turn 18 \
                 --max-chat-requests 36 \
-                --max-ai-credits 80
-              rc=$?
+                --max-ai-credits 80; then
+                rc=0
+              else
+                rc=$?
+              fi
               if [ "${rc}" -ne 0 ]; then
                 echo "Cell failed: ${arm} ${case_id} (rc=${rc})" >&2
                 failures=$((failures + 1))
