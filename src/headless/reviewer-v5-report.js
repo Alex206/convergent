@@ -37,7 +37,9 @@ function matchesDefect(defect, finding) {
     case 'tenant_idempotency_isolation':
       return /tenant/.test(text) && /idempoten/.test(text) && /(cross|bleed|key|isolation|scope|other tenant)/.test(text);
     case 'stale_lease_after_reclaim':
-      return /(stale|old|previous)/.test(text) && /lease/.test(text) && /(generation|reclaim|expiry|expired|same worker|capability)/.test(text);
+      return /lease/.test(text)
+        && /generation/.test(text)
+        && /(reclaim|expiry|expired|same worker|capability|complete|completion|current|wrong|arbitrary)/.test(text);
     case 'terminal_queue_entry_not_claimable':
       return /(cancel|terminal)/.test(text) && /(queue|claim|lease|reclaim)/.test(text);
     case 'accepted_report_order_invariance':
