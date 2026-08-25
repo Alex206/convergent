@@ -25,6 +25,16 @@ function findingText(finding = {}) {
   return [finding.severity, finding.title, finding.file, finding.description].filter(Boolean).join(' ').toLowerCase();
 }
 
+function matchesH22OrderRegression(text) {
+  const mentionsAcceptedReport = /(accepted|structured).*report|report.*(accepted|structured)|report_(pass|review|plan|recovery)/.test(text);
+  const mentionsUsage = /assistant_usage|usage event|usage callback|usage notification|usage accounting/.test(text);
+  const explicitlyOrdersReportBeforeUsage = /(?:report|tool(?:\s+completion|\s+complete)?).{0,100}(?:before|preced(?:e|es|ed|ing)|then).{0,100}(?:assistant_usage|usage)|(?:assistant_usage|usage).{0,100}(?:after|late|later|following).{0,100}(?:report|tool(?:\s+completion|\s+complete)?)/.test(text);
+  const explicitOrderInvariant = /(event[- ]order|order(?:ing)? invariance|order-dependent|order dependent)/.test(text)
+    && /(?:assistant_usage|usage)/.test(text)
+    && /(?:report|tool)/.test(text);
+  return mentionsAcceptedReport && mentionsUsage && (explicitlyOrdersReportBeforeUsage || explicitOrderInvariant);
+}
+
 function matchesDefect(defect, finding) {
   const text = findingText(finding);
   switch (defect) {
@@ -34,8 +44,7 @@ function matchesDefect(defect, finding) {
         && /(missing|negative|error|credential|token)/.test(text)
         && /(block|reconcil|false positive|misclass|classif)/.test(text);
     case 'accepted_report_order_invariance':
-      return /(accepted|structured|report)/.test(text)
-        && /(usage|assistant_usage|event order|ordering|late|after.*tool|tool.*before|cap|turn limit|budget)/.test(text);
+      return matchesH22OrderRegression(text);
     case 'oracle_failure_propagates':
       return /(oracle|acceptance|independent|validation|validator|benchmark)/.test(text)
         && /(continue-on-error|green|success|successful|ignore|swallow|propagat|fail the job|job fail)/.test(text)
