@@ -1,0 +1,35 @@
+name: Convergent 0.5 Test VSIX
+
+on:
+  push:
+    branches:
+      - agent/0.5-review-architecture
+    paths:
+      - .github/workflows/0.5-test-vsix.yml
+
+permissions:
+  contents: read
+
+jobs:
+  package-windows-x64:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - run: npm ci
+      - run: npm test
+      - run: npm run check
+      - name: Package Windows x64 VSIX
+        shell: pwsh
+        run: |
+          npm run package -- --out convergent-0.5.0-win32-x64.vsix
+      - name: Upload test VSIX
+        uses: actions/upload-artifact@v4
+        with:
+          name: convergent-0.5.0-win32-x64
+          path: convergent-0.5.0-win32-x64.vsix
+          if-no-files-found: error
