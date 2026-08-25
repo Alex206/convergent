@@ -42,6 +42,8 @@ with tempfile.TemporaryDirectory() as td:
     valid = resolve_artifact_path(root, "reports/../result.json")
     checks["normalized_in_root"] = valid == (root / "result.json").resolve()
     checks["canonical_return"] = valid == valid.resolve()
+    lexical_reentry = resolve_artifact_path(root, f"../{root.name}/reentered.txt")
+    checks["normalized_reentry_in_root"] = lexical_reentry == (root / "reentered.txt").resolve()
     checks["sibling_prefix_traversal"] = rejects("../work-shadow/leak.txt")
     checks["absolute_inside_root"] = rejects(str((root / "result.json").resolve()))
     checks["root_self_dot"] = rejects(".")
@@ -53,8 +55,10 @@ with tempfile.TemporaryDirectory() as td:
         symlink.symlink_to(outside, target_is_directory=True)
     except (OSError, NotImplementedError) as exc:
         skipped["symlink_escape"] = str(exc)
+        skipped["symlink_escape_reentry"] = str(exc)
     else:
         checks["symlink_escape"] = rejects("escape/leak.txt")
+        checks["symlink_escape_reentry"] = rejects(f"escape/../{root.name}/reentered.txt")
 
     sibling_link = root / "sibling-link"
     try:
