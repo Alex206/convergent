@@ -2,7 +2,7 @@
   "name": "convergent",
   "displayName": "Convergent",
   "description": "Adaptive multi-agent implementation and adversarial review workflows powered by GitHub Copilot.",
-  "version": "0.4.0-dev.4",
+  "version": "0.5.0",
   "publisher": "alex206",
   "license": "MIT",
   "engines": {
@@ -19,7 +19,7 @@
     "orchestration",
     "workflow"
   ],
-  "main": "./src/extension.js",
+  "main": "./src/extension-0.5.js",
   "activationEvents": [
     "onChatParticipant:convergent.workflow",
     "onCommand:convergent.start",
@@ -27,6 +27,7 @@
     "onCommand:convergent.stop",
     "onCommand:convergent.steer",
     "onCommand:convergent.selectFlow",
+    "onCommand:convergent.selectReviewArchitecture",
     "onCommand:convergent.showModels",
     "onCommand:convergent.showUsage",
     "onCommand:convergent.showDiagnostics",
@@ -88,6 +89,10 @@
         "title": "Convergent: Select Default Flow"
       },
       {
+        "command": "convergent.selectReviewArchitecture",
+        "title": "Convergent: Select Review Architecture"
+      },
+      {
         "command": "convergent.showModels",
         "title": "Convergent: Show Available Copilot Models"
       },
@@ -124,11 +129,26 @@
           ],
           "default": "auto",
           "enumDescriptions": [
-            "Focused inspection/review with short autonomous tranches; ask the user sooner before spending more iterations.",
+            "Focused inspection/review with short autonomous tranches; ask sooner before spending more iterations.",
             "Balanced adaptive workflow.",
-            "Broader first review and larger autonomous convergence/review tranches for maximum assurance."
+            "Broader assurance and larger autonomous review tranches."
           ],
           "description": "Default execution flow. Override one run with @convergent /fast, /auto, or /thorough. Fast changes review depth/iteration policy, not necessarily model price."
+        },
+        "convergent.reviewArchitecture": {
+          "type": "string",
+          "enum": [
+            "terra-single",
+            "luna-broad",
+            "luna-specialized"
+          ],
+          "default": "luna-specialized",
+          "enumDescriptions": [
+            "R1: one persistent broad reviewer using the configured strong/Terra reviewer model.",
+            "R2: three independent persistent GPT-5.6 Luna reviewers; each performs the complete broad review contract.",
+            "R3: three independent persistent GPT-5.6 Luna reviewers with complementary contract/integration, adversarial/security, and state/resources priorities. Each still retains the complete review contract."
+          ],
+          "description": "Reviewer architecture for modifying-task acceptance. R1=Single Terra, R2=Broad Luna Panel, R3=Specialized Luna Panel. New workflows use the current setting; resumable workflows keep the architecture saved in their checkpoint."
         },
         "convergent.models.coordinator": {
           "type": "string",
@@ -138,17 +158,17 @@
         "convergent.models.workerA": {
           "type": "string",
           "default": "adaptive",
-          "description": "Worker A model selector. adaptive resolves after task classification: trivial/low uses the cheap tier, normal standard work uses an economical capable tier, and high-risk work promotes capability. An exact model id/name or explicit preset overrides adaptation."
+          "description": "Worker A model selector. adaptive resolves after task classification: trivial/low uses the cheap tier, normal standard work uses an economical capable tier, and high-risk work promotes capability. An exact Copilot model id/name or explicit preset overrides adaptation."
         },
         "convergent.models.workerB": {
           "type": "string",
           "default": "adaptive-diverse",
-          "description": "Worker B model selector. Worker B is activated for high-risk/full peer convergence (and existing trivial escalation behavior), not every standard task. adaptive-diverse scales capability with task risk and prefers a suitable model different from Worker A. An exact model id/name or explicit preset overrides adaptation."
+          "description": "Worker B model selector. Worker B is activated for high-risk/full peer convergence (and existing trivial escalation behavior), not every standard task. adaptive-diverse scales capability with task risk and prefers a suitable model different from Worker A. An exact Copilot model id/name or explicit preset overrides adaptation."
         },
         "convergent.models.reviewer": {
           "type": "string",
           "default": "strong",
-          "description": "Strong independent reviewer model selector. The reviewer is the required acceptance gate for normal modifying tasks and retains context for the lifetime of one implementation task."
+          "description": "Reviewer model selector used by the R1 Single Terra architecture. R2/R3 deliberately require GPT-5.6 Luna so architecture comparisons cannot silently degrade to another model."
         },
         "convergent.routingMode": {
           "type": "string",
@@ -158,8 +178,8 @@
           ],
           "default": "adaptive",
           "enumDescriptions": [
-            "Use deterministic/strong classification to select read-only, trivial, standard, or high-risk execution. Standard work uses Worker A plus strong review; high-risk work adds diversified Worker B peer convergence.",
-            "Force every modifying task through Worker A/Worker B exact-fingerprint convergence plus strong review. Read-only tasks remain read-only."
+            "Use deterministic/strong classification to select read-only, trivial, standard, or high-risk execution. Standard work uses Worker A plus the selected review architecture; high-risk work also adds diversified Worker B peer convergence.",
+            "Force every modifying task through Worker A/Worker B exact-fingerprint convergence plus the selected review architecture. Read-only tasks remain read-only."
           ],
           "description": "How Convergent chooses workflow depth for each task. Architecture significance is classified separately and may activate the read-only software architect."
         },
@@ -188,7 +208,7 @@
           "default": 3,
           "minimum": 1,
           "maximum": 20,
-          "description": "Soft strong-review/remediation cycle limit per tranche. Fast allows the initial review plus one automatic remediation/delta re-review before asking whether to spend more; auto/thorough use their configured/profile tranche."
+          "description": "Soft review/remediation cycle limit per tranche. For R2/R3 one cycle means one complete three-reviewer panel pass on the same revision; all three reviewers re-check after remediation."
         },
         "convergent.maxAiCredits": {
           "type": "number",
@@ -247,7 +267,7 @@
           "default": 14,
           "minimum": 1,
           "maximum": 365,
-          "description": "Maximum age of retained trajectory-audit runs."
+          "description": "Maximum age of retained Convergent trajectory-audit runs."
         },
         "convergent.agentInactivityTimeoutSeconds": {
           "type": "number",
@@ -320,7 +340,7 @@
     "test": "node --test",
     "benchmark": "node src/headless/cli.js",
     "benchmark:models": "node src/headless/model-preflight.js",
-    "check": "node --check src/extension.js && node --check src/orchestrator/engine.js && node --check src/orchestrator/model-resolver.js && node --check src/orchestrator/resumable-engine.js && node --check src/orchestrator/resume.js && node --check src/orchestrator/control.js && node --check src/orchestrator/task-commit.js && node --check src/orchestrator/request-preflight.js && node --check src/orchestrator/routing.js && node --check src/orchestrator/flow.js && node --check src/orchestrator/audit.js && node --check src/orchestrator/workspace-baseline.js && node --check src/orchestrator/task-change-manifest.js && node --check src/orchestrator/usage.js && node --check src/orchestrator/architecture-advisor.js && node --check src/orchestrator/deterministic-planning.js && node --check src/orchestrator/report-blocker.js && node --check src/orchestrator/runtime-stall.js && node --check src/orchestrator/report-integrity.js && node --check src/ui/vscode-ui.js && node --check src/copilot/tools.js && node --check src/copilot/operator-credential-guard.js && node --check src/copilot/batch-search-tool.js && node --check src/copilot/batch-view-tool.js && node --check src/copilot/session-factory.js && node --check src/copilot/session-guard.js && node --check src/copilot/run-command-tool.js && node --check src/copilot/workspace-edit-tool.js && node --check src/runtime/local-command-backend.js && node --check src/copilot/runtime.js && node --check src/headless/ui.js && node --check src/headless/model-policy.js && node --check src/headless/model-preflight.js && node --check src/headless/runner.js && node --check src/headless/cli.js && node --check src/headless/efficiency-summary.js && node --check src/headless/scenario03-acceptance.js && node --check scripts/package-vsix.js && node --check src/headless/scenario04-acceptance.js && node --check src/headless/scenario05-acceptance.js",
+    "check": "node --check src/extension.js && node --check src/extension-0.5.js && node --check src/orchestrator/engine.js && node --check src/orchestrator/review-architecture.js && node --check src/orchestrator/review-architecture-engine.js && node --check src/orchestrator/model-resolver.js && node --check src/orchestrator/resumable-engine.js && node --check src/orchestrator/resume.js && node --check src/orchestrator/control.js && node --check src/orchestrator/task-commit.js && node --check src/orchestrator/request-preflight.js && node --check src/orchestrator/routing.js && node --check src/orchestrator/flow.js && node --check src/orchestrator/audit.js && node --check src/orchestrator/workspace-baseline.js && node --check src/orchestrator/task-change-manifest.js && node --check src/orchestrator/usage.js && node --check src/orchestrator/architecture-advisor.js && node --check src/orchestrator/deterministic-planning.js && node --check src/orchestrator/report-blocker.js && node --check src/orchestrator/runtime-stall.js && node --check src/orchestrator/report-integrity.js && node --check src/ui/vscode-ui.js && node --check src/copilot/tools.js && node --check src/copilot/operator-credential-guard.js && node --check src/copilot/batch-search-tool.js && node --check src/copilot/batch-view-tool.js && node --check src/copilot/session-factory.js && node --check src/copilot/review-architecture-session-factory.js && node --check src/copilot/session-guard.js && node --check src/copilot/run-command-tool.js && node --check src/copilot/workspace-edit-tool.js && node --check src/runtime/local-command-backend.js && node --check src/copilot/runtime.js && node --check src/headless/ui.js && node --check src/headless/model-policy.js && node --check src/headless/model-preflight.js && node --check src/headless/runner.js && node --check src/headless/cli.js && node --check src/headless/efficiency-summary.js && node --check src/headless/scenario03-acceptance.js && node --check scripts/package-vsix.js && node --check src/headless/scenario04-acceptance.js && node --check src/headless/scenario05-acceptance.js",
     "package": "node scripts/package-vsix.js",
     "package:list": "vsce ls --tree"
   },
