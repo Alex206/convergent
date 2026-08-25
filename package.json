@@ -208,7 +208,7 @@
           "default": 3,
           "minimum": 1,
           "maximum": 20,
-          "description": "Soft review/remediation cycle limit per tranche. For R2/R3 one cycle means one complete three-reviewer panel pass on the same revision; all three reviewers re-check after remediation."
+          "description": "Soft review/remediation cycle limit per tranche before Convergent asks whether to continue. For R2/R3 one cycle means one complete three-reviewer panel pass on the same revision; all three reviewers re-check after remediation."
         },
         "convergent.maxAiCredits": {
           "type": "number",
@@ -267,7 +267,7 @@
           "default": 14,
           "minimum": 1,
           "maximum": 365,
-          "description": "Maximum age of retained Convergent trajectory-audit runs."
+          "description": "Maximum age of retained trajectory-audit runs."
         },
         "convergent.agentInactivityTimeoutSeconds": {
           "type": "number",
