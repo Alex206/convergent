@@ -88,7 +88,7 @@ function compositeGuard(panelLabel, members, state) {
   };
 }
 
-function createCompositeReviewer(factory, taskId, architecture, members, route, risk, sessionAttempt) {
+function createCompositeReviewer(factory, taskId, architecture, members, aggregateSink, sessionAttempt = '') {
   const safeTaskId = safeSessionPart(taskId);
   const state = {
     activeMember: null,
@@ -104,6 +104,7 @@ function createCompositeReviewer(factory, taskId, architecture, members, route, 
       const token = {};
       state.activeRejectors.add(token);
       const reports = [];
+      aggregateSink.value = null;
       try {
         for (const member of members) {
           state.activeMember = member;
@@ -132,7 +133,7 @@ function createCompositeReviewer(factory, taskId, architecture, members, route, 
           } catch {}
         }
         state.lastReports = reports;
-        factory._activeCompositeReviewSink.value = aggregateReviewReports(reports, architecture.id);
+        aggregateSink.value = aggregateReviewReports(reports, architecture.id);
         return { reviewArchitecture: architecture.id, reports };
       } finally {
         state.activeMember = null;
@@ -153,7 +154,7 @@ function createCompositeReviewer(factory, taskId, architecture, members, route, 
   return {
     session,
     guard: session.__convergentGuard,
-    sink: factory._activeCompositeReviewSink,
+    sink: aggregateSink,
     name: panelLabel,
     usageName: null,
     model: {
@@ -251,8 +252,8 @@ class ReviewArchitectureSessionFactory extends SessionFactory {
     for (const spec of reviewerSpecs(architecture.id)) {
       members.push(await this.createPanelMember(taskId, route, risk, architecture, spec, sessionAttempt));
     }
-    this._activeCompositeReviewSink = { value: null };
-    return createCompositeReviewer(this, taskId, architecture, members, route, risk, sessionAttempt);
+    const aggregateSink = { value: null };
+    return createCompositeReviewer(this, taskId, architecture, members, aggregateSink, sessionAttempt);
   }
 }
 
