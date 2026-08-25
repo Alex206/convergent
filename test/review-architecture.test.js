@@ -10,7 +10,10 @@ const {
   reviewerSpecs,
   aggregateReviewReports,
 } = require('../src/orchestrator/review-architecture');
-const { resolveLunaReviewerModel } = require('../src/copilot/review-architecture-session-factory');
+const {
+  resolveLunaReviewerModel,
+  createCompositeReviewer,
+} = require('../src/copilot/review-architecture-session-factory');
 
 function finding(title, description = title) {
   return { severity: 'medium', title, file: 'src/example.js', description };
@@ -74,6 +77,54 @@ test('panel aggregation requires all reviewers to be non-blocked and unions acti
   ], 'luna-specialized');
   assert.equal(blocked.verdict, 'blocked');
   assert.match(blocked.summary, /fail-closed/i);
+});
+
+test('composite reviewer reuses the same three persistent members across panel cycles', async () => {
+  const architecture = normalizeReviewArchitecture('luna-specialized');
+  const calls = [0, 0, 0];
+  const members = reviewerSpecs(architecture.id).map((spec, index) => {
+    const sink = { value: null };
+    return {
+      label: spec.label,
+      reviewSpec: spec,
+      usageName: `review-${index}`,
+      sink,
+      session: {
+        async sendAndWait() {
+          calls[index] += 1;
+          sink.value = {
+            verdict: index === 0 && calls[index] === 1 ? 'findings' : 'clean',
+            findings: index === 0 && calls[index] === 1 ? [finding('First-cycle defect')] : [],
+            checks: [],
+            summary: `member ${index} cycle ${calls[index]}`,
+          };
+        },
+        async abort() {},
+        async disconnect() {},
+      },
+    };
+  });
+  const refreshed = [];
+  const factory = {
+    runId: 'test-run',
+    usage: {
+      recordTurn() {},
+      async refresh(key) { refreshed.push(key); },
+    },
+    ui: { log() {} },
+  };
+  const sink = { value: null };
+  const panel = createCompositeReviewer(factory, 'task-1', architecture, members, sink);
+
+  await panel.session.sendAndWait({ prompt: 'cycle one' }, 1000);
+  assert.equal(panel.sink.value.verdict, 'findings');
+  assert.equal(panel.sink.value.findings.length, 1);
+  assert.deepEqual(calls, [1, 1, 1]);
+
+  await panel.session.sendAndWait({ prompt: 'cycle two' }, 1000);
+  assert.equal(panel.sink.value.verdict, 'clean');
+  assert.deepEqual(calls, [2, 2, 2]);
+  assert.equal(refreshed.length, 6);
 });
 
 test('package exposes the review architecture setting and selector command with R3 default', () => {
