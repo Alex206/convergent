@@ -9,6 +9,7 @@ const {
 const {
   PANEL_MODES,
   GENERIC_PANEL_SIZE,
+  GENERIC_REVIEW_CONTROLLER_TOOLS,
   REVIEW_CONTROLLER_TOOLS,
   PerspectiveReviewSessionFactory,
   PerspectiveReviewEngine,
@@ -37,10 +38,13 @@ test('panel arms map to generic or perspective review modes', () => {
   assert.equal(GENERIC_PANEL_SIZE, 3);
 });
 
-test('panel architecture uses only generic reviewer tools and the controller planning tool', () => {
+test('perspective controller can plan while generic control is adjudication-only', () => {
   assert.equal(REVIEW_CONTROLLER_TOOLS.includes('custom:report_review_plan'), true);
   assert.equal(REVIEW_CONTROLLER_TOOLS.includes('custom:report_review'), true);
+  assert.equal(GENERIC_REVIEW_CONTROLLER_TOOLS.includes('custom:report_review_plan'), false);
+  assert.equal(GENERIC_REVIEW_CONTROLLER_TOOLS.includes('custom:report_review'), true);
   assert.equal(REVIEW_CONTROLLER_TOOLS.some((tool) => /probe|observer|evidence/.test(tool)), false);
+  assert.equal(GENERIC_REVIEW_CONTROLLER_TOOLS.some((tool) => /probe|observer|evidence/.test(tool)), false);
   assert.equal(typeof PerspectiveReviewSessionFactory, 'function');
   assert.equal(typeof PerspectiveReviewEngine, 'function');
 });
