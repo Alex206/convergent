@@ -14,7 +14,8 @@ const {
 } = require('./runner');
 const { resolveHeadlessRoleModels, assertHeadlessRoleModels } = require('./model-policy');
 const { applyTopologySelectors } = require('./topology');
-const { PerspectiveReviewEngine, PANEL_MODES } = require('./perspective-review-engine');
+const { PANEL_MODES } = require('./perspective-review-engine');
+const { IsolatedPerspectiveReviewEngine } = require('./isolated-perspective-review-engine');
 const { flowPolicy } = require('../orchestrator/flow');
 const { TrajectoryAudit } = require('../orchestrator/audit');
 const { createClientOptions } = require('../copilot/runtime');
@@ -186,7 +187,7 @@ async function runPanelReviewHeadless(rawOptions, dependencies = {}) {
     topology: armConfig.arm,
   });
 
-  engine = new PerspectiveReviewEngine({
+  engine = new IsolatedPerspectiveReviewEngine({
     client,
     sdk,
     workspace: options.workspace,
