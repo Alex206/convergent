@@ -143,19 +143,32 @@ function successfulCommand(result) {
     && !result.error;
 }
 
-function buildValidationGateEvidence({ gate, beforeRevision, afterRevision, commandResult = null, executionError = null }) {
+function buildValidationGateEvidence({
+  gate,
+  beforeRevision,
+  afterRevision,
+  expectedRevision = null,
+  commandResult = null,
+  executionError = null,
+}) {
   const normalized = normalizeValidationGate(gate);
   const revisionAvailable = typeof beforeRevision === 'string' && beforeRevision.length > 0
     && typeof afterRevision === 'string' && afterRevision.length > 0;
   const revisionStable = revisionAvailable && beforeRevision === afterRevision;
+  const expected = typeof expectedRevision === 'string' && expectedRevision.length > 0 ? expectedRevision : null;
+  const candidateRevisionMatched = expected === null
+    ? null
+    : (typeof beforeRevision === 'string' && beforeRevision === expected);
 
   let outcome;
   if (!revisionAvailable) outcome = 'revision_unavailable';
+  else if (expected !== null && !candidateRevisionMatched) outcome = 'candidate_changed';
   else if (!revisionStable) outcome = 'invalidated';
   else if (!executionError && successfulCommand(commandResult)) outcome = 'passed';
   else outcome = 'failed';
 
-  const blocksAcceptance = outcome === 'invalidated'
+  const blocksAcceptance = outcome === 'candidate_changed'
+    || outcome === 'invalidated'
     || outcome === 'revision_unavailable'
     || (normalized.policy === 'required' && outcome !== 'passed');
 
@@ -168,6 +181,8 @@ function buildValidationGateEvidence({ gate, beforeRevision, afterRevision, comm
     outcome,
     blocksAcceptance,
     revisionStable,
+    expectedRevision: expected,
+    candidateRevisionMatched,
     beforeRevision: beforeRevision ?? null,
     afterRevision: afterRevision ?? null,
     commandResult,
@@ -186,11 +201,34 @@ function skippedValidationGateEvidence(gate, platform = process.platform) {
     outcome: 'skipped',
     blocksAcceptance: false,
     revisionStable: null,
+    expectedRevision: null,
+    candidateRevisionMatched: null,
     beforeRevision: null,
     afterRevision: null,
     commandResult: null,
     executionError: null,
     skippedForPlatform: String(platform),
+  });
+}
+
+function notRunValidationGateEvidence(gate, reason, expectedRevision = null) {
+  const normalized = normalizeValidationGate(gate);
+  return Object.freeze({
+    gateId: normalized.id,
+    validatorId: normalized.validatorId,
+    policy: normalized.policy,
+    workspaceFolder: normalized.workspaceFolder,
+    cwd: normalized.cwd,
+    outcome: 'not_run',
+    blocksAcceptance: normalized.policy === 'required',
+    revisionStable: null,
+    expectedRevision,
+    candidateRevisionMatched: null,
+    beforeRevision: null,
+    afterRevision: null,
+    commandResult: null,
+    executionError: null,
+    notRunReason: String(reason),
   });
 }
 
@@ -219,6 +257,10 @@ async function authorizeValidationGateCommand(gate, { permissionHandler, workspa
   return cwd;
 }
 
+async function readRevision(revision, workspace, workspaceFolders) {
+  return revision(workspace, workspaceFolders);
+}
+
 async function runValidationGate(definition, options = {}) {
   const gate = normalizeValidationGate(definition);
   const platform = String(options.platform ?? process.platform);
@@ -227,43 +269,184 @@ async function runValidationGate(definition, options = {}) {
   const revision = options.revision ?? workspaceRevision;
   const workspace = options.workspace;
   const workspaceFolders = options.workspaceFolders ?? null;
+  const expectedRevision = typeof options.expectedRevision === 'string' && options.expectedRevision.length > 0
+    ? options.expectedRevision
+    : null;
   if (!workspace) throw new Error('Validation gate execution requires a workspace directory.');
 
   let beforeRevision;
   try {
-    beforeRevision = await revision(workspace, workspaceFolders);
+    beforeRevision = await readRevision(revision, workspace, workspaceFolders);
   } catch (error) {
-    return buildValidationGateEvidence({ gate, beforeRevision: null, afterRevision: null, executionError: error });
+    return buildValidationGateEvidence({ gate, beforeRevision: null, afterRevision: null, expectedRevision, executionError: error });
+  }
+
+  if (expectedRevision !== null && beforeRevision !== expectedRevision) {
+    return buildValidationGateEvidence({ gate, beforeRevision, afterRevision: beforeRevision, expectedRevision });
   }
 
   const runtime = options.runtime ?? new ManagedCommandRuntime({ workspace, workspaceFolders });
   let commandResult = null;
   let executionError = null;
+  let cwd = null;
   try {
-    const cwd = await authorizeValidationGateCommand(gate, {
+    cwd = await authorizeValidationGateCommand(gate, {
       permissionHandler: options.permissionHandler,
       workspace,
       workspaceFolders,
-    });
-    commandResult = await runtime.execute(`validation-gate:${gate.id}`, {
-      command: gate.command,
-      cwd: cwd.runtimeCwd,
-      timeoutMs: gate.timeoutMs,
-      onStart: options.onStart,
-      onOutput: options.onOutput,
     });
   } catch (error) {
     executionError = error;
   }
 
+  if (!executionError) {
+    let preExecutionRevision = null;
+    try {
+      preExecutionRevision = await readRevision(revision, workspace, workspaceFolders);
+    } catch (error) {
+      return buildValidationGateEvidence({ gate, beforeRevision, afterRevision: null, expectedRevision, executionError: error });
+    }
+    if (preExecutionRevision !== beforeRevision) {
+      return buildValidationGateEvidence({
+        gate,
+        beforeRevision,
+        afterRevision: preExecutionRevision,
+        expectedRevision,
+        executionError: new Error('Workspace revision changed after gate permission and before command start; command was not started.'),
+      });
+    }
+
+    try {
+      commandResult = await runtime.execute(`validation-gate:${gate.id}`, {
+        command: gate.command,
+        cwd: cwd.runtimeCwd,
+        timeoutMs: gate.timeoutMs,
+        onStart: options.onStart,
+        onOutput: options.onOutput,
+      });
+    } catch (error) {
+      executionError = error;
+    }
+  }
+
   let afterRevision = null;
   try {
-    afterRevision = await revision(workspace, workspaceFolders);
+    afterRevision = await readRevision(revision, workspace, workspaceFolders);
   } catch (error) {
     executionError = executionError ?? error;
   }
 
-  return buildValidationGateEvidence({ gate, beforeRevision, afterRevision, commandResult, executionError });
+  return buildValidationGateEvidence({
+    gate,
+    beforeRevision,
+    afterRevision,
+    expectedRevision,
+    commandResult,
+    executionError,
+  });
+}
+
+async function runValidationGates(definitions, options = {}) {
+  if (!Array.isArray(definitions)) throw new Error('Validation gate set must be an array.');
+  const gates = definitions.map((definition) => normalizeValidationGate(definition));
+  const platform = String(options.platform ?? process.platform);
+  const applicable = gates.filter((gate) => validationGateApplies(gate, platform));
+  if (applicable.length === 0) {
+    return Object.freeze({
+      candidateRevision: null,
+      currentRevision: null,
+      accepted: true,
+      blocksAcceptance: false,
+      completedAllApplicable: true,
+      requiredApplicable: 0,
+      requiredPassed: 0,
+      evidences: Object.freeze(gates.map((gate) => skippedValidationGateEvidence(gate, platform))),
+      revisionError: null,
+    });
+  }
+
+  const workspace = options.workspace;
+  const workspaceFolders = options.workspaceFolders ?? null;
+  const revision = options.revision ?? workspaceRevision;
+  if (!workspace) throw new Error('Validation gate execution requires a workspace directory.');
+
+  let candidateRevision;
+  try {
+    candidateRevision = await readRevision(revision, workspace, workspaceFolders);
+  } catch (error) {
+    const evidences = gates.map((gate) => validationGateApplies(gate, platform)
+      ? buildValidationGateEvidence({ gate, beforeRevision: null, afterRevision: null, executionError: error })
+      : skippedValidationGateEvidence(gate, platform));
+    return Object.freeze({
+      candidateRevision: null,
+      currentRevision: null,
+      accepted: false,
+      blocksAcceptance: true,
+      completedAllApplicable: false,
+      requiredApplicable: applicable.filter((gate) => gate.policy === 'required').length,
+      requiredPassed: 0,
+      evidences: Object.freeze(evidences),
+      revisionError: String(error.message ?? error),
+    });
+  }
+
+  const runtime = options.runtime ?? new ManagedCommandRuntime({ workspace, workspaceFolders });
+  const evidences = [];
+  let halted = false;
+  let haltReason = null;
+  for (const gate of gates) {
+    if (!validationGateApplies(gate, platform)) {
+      evidences.push(skippedValidationGateEvidence(gate, platform));
+      continue;
+    }
+    if (halted) {
+      evidences.push(notRunValidationGateEvidence(gate, haltReason, candidateRevision));
+      continue;
+    }
+    const evidence = await runValidationGate(gate, {
+      ...options,
+      runtime,
+      revision,
+      expectedRevision: candidateRevision,
+    });
+    evidences.push(evidence);
+    if (['candidate_changed', 'invalidated', 'revision_unavailable'].includes(evidence.outcome)) {
+      halted = true;
+      haltReason = `previous gate ${gate.id} produced ${evidence.outcome}`;
+    }
+  }
+
+  let currentRevision = null;
+  let revisionError = null;
+  try {
+    currentRevision = await readRevision(revision, workspace, workspaceFolders);
+  } catch (error) {
+    revisionError = String(error.message ?? error);
+  }
+
+  const requiredApplicable = applicable.filter((gate) => gate.policy === 'required').length;
+  const requiredPassed = evidences.filter((evidence) => evidence.policy === 'required'
+    && evidence.outcome === 'passed'
+    && currentRevision !== null
+    && validationGateEvidenceIsCurrent(evidence, currentRevision)).length;
+  const completedAllApplicable = !evidences.some((evidence) => evidence.outcome === 'not_run');
+  const revisionStillCurrent = currentRevision !== null && currentRevision === candidateRevision;
+  const blocksAcceptance = Boolean(revisionError)
+    || !revisionStillCurrent
+    || !completedAllApplicable
+    || evidences.some((evidence) => evidence.blocksAcceptance);
+
+  return Object.freeze({
+    candidateRevision,
+    currentRevision,
+    accepted: !blocksAcceptance,
+    blocksAcceptance,
+    completedAllApplicable,
+    requiredApplicable,
+    requiredPassed,
+    evidences: Object.freeze(evidences),
+    revisionError,
+  });
 }
 
 module.exports = {
@@ -281,7 +464,9 @@ module.exports = {
   successfulCommand,
   buildValidationGateEvidence,
   skippedValidationGateEvidence,
+  notRunValidationGateEvidence,
   validationGateEvidenceIsCurrent,
   authorizeValidationGateCommand,
   runValidationGate,
+  runValidationGates,
 };
