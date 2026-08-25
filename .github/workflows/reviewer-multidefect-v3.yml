@@ -1,0 +1,204 @@
+name: Reviewer Multi-Defect V3
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - agent/perspective-review-protocol-benchmark
+
+jobs:
+  framework-validation:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[reviewer-v3-run]')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - run: npm ci
+      - run: npm test
+      - run: npm run check
+
+  case-validation:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[reviewer-v3-run]')
+    needs: framework-validation
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        case:
+          - id: v3-s14-wireframe-multidefect
+            ref: benchmark/review-v3-s14-wireframe-multidefect
+          - id: v3-s14-wireframe-clean
+            ref: benchmark/review-v3-s14-wireframe-clean
+    steps:
+      - name: Checkout Convergent
+        uses: actions/checkout@v6
+      - name: Checkout frozen review case
+        uses: actions/checkout@v6
+        with:
+          repository: Alex206/convergent-test-repo
+          ref: ${{ matrix.case.ref }}
+          path: benchmark-target
+          token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - run: npm ci
+      - name: Visible tests must pass
+        shell: bash
+        run: |
+          cd benchmark-target
+          python3 -B -m unittest discover -s tests -v
+      - name: Validate exact multi-defect ground truth
+        shell: bash
+        run: |
+          node src/headless/reviewer-v3-case-validation.js \
+            '${{ matrix.case.id }}' \
+            '${{ github.workspace }}/benchmark-target' \
+            '${{ runner.temp }}/case-validation.json'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reviewer-v3-case-validation-${{ matrix.case.id }}
+          path: ${{ runner.temp }}/case-validation.json
+          retention-days: 14
+
+  benchmark:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[reviewer-v3-run]')
+    needs: case-validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        arm:
+          - terra-broad
+          - luna-broad-3
+          - luna-specialized-3
+        case:
+          - id: v3-s14-wireframe-multidefect
+            ref: benchmark/review-v3-s14-wireframe-multidefect
+          - id: v3-s14-wireframe-clean
+            ref: benchmark/review-v3-s14-wireframe-clean
+    env:
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+      COPILOT_PLUGIN_DIR_ONLY: 'true'
+    steps:
+      - name: Require benchmark credentials
+        shell: bash
+        env:
+          BENCHMARK_REPO_TOKEN: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+        run: |
+          test -n "${COPILOT_GITHUB_TOKEN}" || { echo "COPILOT_GITHUB_TOKEN is required." >&2; exit 2; }
+          test -n "${BENCHMARK_REPO_TOKEN}" || { echo "BENCHMARK_REPO_TOKEN is required." >&2; exit 2; }
+      - name: Checkout Convergent
+        uses: actions/checkout@v6
+      - name: Checkout frozen review case
+        uses: actions/checkout@v6
+        with:
+          repository: Alex206/convergent-test-repo
+          ref: ${{ matrix.case.ref }}
+          path: benchmark-target
+          token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - run: npm ci
+      - name: Prepare metadata
+        shell: bash
+        env:
+          RUN_OUTPUT: ${{ runner.temp }}/reviewer-v3-run
+          CASE_ID: ${{ matrix.case.id }}
+          CASE_REF: ${{ matrix.case.ref }}
+          ARM: ${{ matrix.arm }}
+        run: |
+          rm -rf "${RUN_OUTPUT}"
+          mkdir -p "${RUN_OUTPUT}"
+          fixture_sha="$(git -C benchmark-target rev-parse HEAD)"
+          FIXTURE_SHA="${fixture_sha}" node - <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          fs.writeFileSync(path.join(process.env.RUN_OUTPUT, 'benchmark-meta.json'), `${JSON.stringify({
+            caseId: process.env.CASE_ID,
+            fixtureRef: process.env.CASE_REF,
+            fixtureSha: process.env.FIXTURE_SHA,
+            arm: process.env.ARM,
+            repeat: 1,
+          }, null, 2)}\n`);
+          NODE
+      - name: Run frozen reviewer-only architecture
+        shell: bash
+        env:
+          RUN_OUTPUT: ${{ runner.temp }}/reviewer-v3-run
+        run: |
+          export CONVERGENT_HEADLESS_ANSWERS_JSON='[]'
+          node src/headless/reviewer-only-cli.js \
+            --workspace "${GITHUB_WORKSPACE}/benchmark-target" \
+            --prompt-file "${GITHUB_WORKSPACE}/benchmark-target/benchmarks/14-wire-frame.md" \
+            --output-dir "${RUN_OUTPUT}" \
+            --arm "${{ matrix.arm }}" \
+            --flow auto \
+            --audit-level full \
+            --limit-policy continue \
+            --max-model-calls 60 \
+            --max-model-calls-per-turn 18 \
+            --max-chat-requests 36 \
+            --max-ai-credits 80
+      - name: Assert workspace stayed frozen
+        shell: bash
+        run: |
+          test -z "$(git -C benchmark-target status --porcelain=v1 --untracked-files=all)" || {
+            echo "Reviewer changed frozen workspace." >&2
+            git -C benchmark-target status --porcelain=v1 --untracked-files=all >&2
+            exit 1
+          }
+      - name: Upload reviewer evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reviewer-v3-${{ matrix.arm }}-${{ matrix.case.id }}
+          path: ${{ runner.temp }}/reviewer-v3-run
+          if-no-files-found: error
+          retention-days: 14
+
+  report:
+    if: always() && (github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[reviewer-v3-run]'))
+    needs: benchmark
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: reviewer-v3-*-v3-s14-*
+          path: ${{ runner.temp }}/reviewer-v3-results
+      - name: Build report
+        shell: bash
+        run: |
+          node src/headless/reviewer-v3-report.js \
+            "${{ runner.temp }}/reviewer-v3-results" \
+            "${{ runner.temp }}/reviewer-v3-report.json" \
+            "${{ runner.temp }}/reviewer-v3-report.md"
+          cat "${{ runner.temp }}/reviewer-v3-report.md" >> "${GITHUB_STEP_SUMMARY}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reviewer-v3-report-${{ github.run_number }}
+          path: |
+            ${{ runner.temp }}/reviewer-v3-report.json
+            ${{ runner.temp }}/reviewer-v3-report.md
+          retention-days: 30
