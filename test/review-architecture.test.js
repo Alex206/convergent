@@ -10,6 +10,7 @@ const {
   reviewerSpecs,
   aggregateReviewReports,
 } = require('../src/orchestrator/review-architecture');
+const { resolveLunaReviewerModel } = require('../src/copilot/review-architecture-session-factory');
 
 function finding(title, description = title) {
   return { severity: 'medium', title, file: 'src/example.js', description };
@@ -41,6 +42,19 @@ test('R1 is one Terra reviewer, R2 is three broad Lunas, and R3 has the fixed co
     ['state-dataflow', 'concurrency-resources'],
   ]);
   assert.ok(r3.every((spec) => /not a scope restriction/i.test(spec.prompt)));
+});
+
+test('R2/R3 reviewer model resolution is exact Luna and fails closed when Luna is unavailable', () => {
+  const luna = {
+    id: 'gpt-5.6-luna',
+    name: 'GPT-5.6 Luna',
+    supportedReasoningEfforts: ['low', 'medium'],
+  };
+  const terra = { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra' };
+  const selected = resolveLunaReviewerModel([terra, luna]);
+  assert.equal(selected.id, luna.id);
+  assert.match(selected.reason, /requires GPT-5\.6 Luna/i);
+  assert.throws(() => resolveLunaReviewerModel([terra]), /requires GPT-5\.6 Luna/i);
 });
 
 test('panel aggregation requires all reviewers to be non-blocked and unions actionable findings', () => {
