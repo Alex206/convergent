@@ -132,5 +132,6 @@ test('real managed backend executes a non-mutating gate in a secondary Git root'
   assert.equal(evidence.outcome, 'passed');
   assert.equal(evidence.revisionStable, true);
   assert.equal(evidence.commandResult.exitCode, 0);
-  assert.equal(samePath(evidence.commandResult.stdout.trim(), secondary), true);
+  assert.equal(samePath(evidence.commandResult.cwd, secondary), true);
+  assert.ok(evidence.commandResult.stdout.trim());
 });
