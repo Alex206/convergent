@@ -32,7 +32,11 @@ function matchesH22OrderRegression(text) {
   const explicitOrderInvariant = /(event[- ]order|order(?:ing)? invariance|order-dependent|order dependent)/.test(text)
     && /(?:assistant_usage|usage)/.test(text)
     && /(?:report|tool)/.test(text);
-  return mentionsAcceptedReport && mentionsUsage && (explicitlyOrdersReportBeforeUsage || explicitOrderInvariant);
+  const sameAlreadyCountedCall = /capped call|same (?:model )?call|already[- ]counted call|final usage (?:event|callback)|(?:assistant_usage|usage (?:event|callback)).{0,120}(?:for|of).{0,40}(?:the )?(?:same|capped|already[- ]counted) call/.test(text);
+  return mentionsAcceptedReport
+    && mentionsUsage
+    && sameAlreadyCountedCall
+    && (explicitlyOrdersReportBeforeUsage || explicitOrderInvariant);
 }
 
 function matchesDefect(defect, finding) {
