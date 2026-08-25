@@ -263,7 +263,7 @@ async function runReviewerOnlyHeadless(rawOptions, dependencies = {}) {
 
   const taskId = 'frozen-review-case';
   const reviewers = [];
-  if (armConfig.arm === 'terra-broad') {
+  if (armConfig.modelFamily === 'terra') {
     reviewers.push(await factory.createBenchmarkReviewer(
       taskId,
       'terra-broad',
@@ -271,8 +271,8 @@ async function runReviewerOnlyHeadless(rawOptions, dependencies = {}) {
       resolution.reviewer,
       broadReviewPrompt(),
     ));
-  } else if (armConfig.arm === 'luna-broad-3') {
-    for (let index = 0; index < 3; index += 1) {
+  } else if (!armConfig.specialization) {
+    for (let index = 0; index < armConfig.reviewerCount; index += 1) {
       const model = factory.workerModel(`${taskId}-broad-${index + 1}`, 'A', 'standard', 'medium');
       reviewers.push(await factory.createBenchmarkReviewer(
         taskId,
@@ -283,6 +283,9 @@ async function runReviewerOnlyHeadless(rawOptions, dependencies = {}) {
       ));
     }
   } else {
+    if (armConfig.reviewerCount !== SPECIALIZED_PARTITIONS.length) {
+      throw new Error(`Specialized reviewer count ${armConfig.reviewerCount} does not match ${SPECIALIZED_PARTITIONS.length} fixed partitions.`);
+    }
     for (let index = 0; index < SPECIALIZED_PARTITIONS.length; index += 1) {
       const partition = SPECIALIZED_PARTITIONS[index];
       const model = factory.workerModel(`${taskId}-specialized-${index + 1}`, 'A', 'standard', 'medium');
