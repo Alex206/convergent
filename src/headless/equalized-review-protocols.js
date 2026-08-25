@@ -14,6 +14,18 @@ const REVIEWER_ONLY_ARMS = Object.freeze({
     reviewerCount: 1,
     specialization: false,
   }),
+  'luna-broad-1': Object.freeze({
+    label: '1 Luna reviewer · complete broad review',
+    modelFamily: 'luna',
+    reviewerCount: 1,
+    specialization: false,
+  }),
+  'luna-broad-2': Object.freeze({
+    label: '2 Luna reviewers · complete broad review each',
+    modelFamily: 'luna',
+    reviewerCount: 2,
+    specialization: false,
+  }),
   'luna-broad-3': Object.freeze({
     label: '3 Luna reviewers · complete broad review each',
     modelFamily: 'luna',
