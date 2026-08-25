@@ -62,14 +62,14 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: Alex206/convergent-test-repo
-          ref: c7c74d8747ecb1fc5b218b458e4df69dcdbc8a61
+          ref: caa2dd165fe960914caa5be0935483c05b65a77d
           path: benchmark-targets/s16-defect
           token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
       - name: Checkout S16 clean
         uses: actions/checkout@v6
         with:
           repository: Alex206/convergent-test-repo
-          ref: e09397d7aba59a5e6900d6f5d6d2c98c6298bbee
+          ref: aa3e898b4144415f6e3ca10520943468ff09b9e0
           path: benchmark-targets/s16-clean
           token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
       - name: Checkout S17 defective
@@ -90,14 +90,14 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: Alex206/convergent-test-repo
-          ref: dadba51a2250bda60c4fe70243d192432a5f0e55
+          ref: 3650d739062c01a9672bee60bbda5d17e96d4621
           path: benchmark-targets/s18-defect
           token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
       - name: Checkout S18 clean
         uses: actions/checkout@v6
         with:
           repository: Alex206/convergent-test-repo
-          ref: 4a54e26e6f38b7e341810045ab597911fc307ddd
+          ref: ea7d8a95c64ef431e192840228c775946edca92d
           path: benchmark-targets/s18-clean
           token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
 
