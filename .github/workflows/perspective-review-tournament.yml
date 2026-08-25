@@ -45,6 +45,12 @@ on:
         default: '80'
         type: string
 
+  # The linked GitHub connector cannot issue workflow_dispatch. This gives the
+  # benchmark PR a deliberate one-shot trigger: mark it ready, then return it
+  # to draft immediately after GitHub queues the frozen screening matrix.
+  pull_request:
+    types: [ready_for_review]
+
 jobs:
   benchmark:
     runs-on: ubuntu-latest
@@ -55,9 +61,9 @@ jobs:
       fail-fast: false
       max-parallel: 1
       matrix:
-        arm: ${{ fromJSON(inputs.arms_json) }}
-        scenario: ${{ fromJSON(inputs.scenarios_json) }}
-        repeat: ${{ fromJSON(inputs.repeats_json) }}
+        arm: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.arms_json || '["broad-terra","generic-luna-panel-terra","perspective-luna-terra"]') }}
+        scenario: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.scenarios_json || '["benchmarks/03-dependency-ordering.md","benchmarks/07-one-shot-label-filter-bug.md","benchmarks/08-artifact-path-containment.md"]') }}
+        repeat: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.repeats_json || '[1]') }}
     env:
       COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
       COPILOT_PLUGIN_DIR_ONLY: 'true'
@@ -135,14 +141,14 @@ jobs:
             --prompt-file "${GITHUB_WORKSPACE}/benchmark-target/${{ matrix.scenario }}" \
             --output-dir "${RUN_OUTPUT}" \
             --arm "${{ matrix.arm }}" \
-            --flow "${{ inputs.flow }}" \
+            --flow "${{ github.event_name == 'workflow_dispatch' && inputs.flow || 'fast' }}" \
             --audit-level full \
             --limit-policy continue \
             --max-reviewer-cycles 4 \
-            --max-model-calls "${{ inputs.max_model_calls }}" \
-            --max-model-calls-per-turn "${{ inputs.max_model_calls_per_turn }}" \
-            --max-chat-requests "${{ inputs.max_chat_requests }}" \
-            --max-ai-credits "${{ inputs.max_ai_credits }}" \
+            --max-model-calls "${{ github.event_name == 'workflow_dispatch' && inputs.max_model_calls || '100' }}" \
+            --max-model-calls-per-turn "${{ github.event_name == 'workflow_dispatch' && inputs.max_model_calls_per_turn || '18' }}" \
+            --max-chat-requests "${{ github.event_name == 'workflow_dispatch' && inputs.max_chat_requests || '36' }}" \
+            --max-ai-credits "${{ github.event_name == 'workflow_dispatch' && inputs.max_ai_credits || '80' }}" \
             2>&1 | tee "${RUN_OUTPUT}/runner.log"
 
       - name: Independently validate target tests
