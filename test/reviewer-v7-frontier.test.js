@@ -28,8 +28,12 @@ test('V7 matchers identify the historical mechanisms without generic issue overm
   }), false);
   assert.equal(matchesDefect('accepted_report_order_invariance', {
     title: 'Turn budget can be order-dependent',
-    description: 'assistant_usage emitted after an accepted structured report is handled differently from usage emitted before the report tool completes.',
+    description: 'For the same capped call, assistant_usage emitted after an accepted structured report is handled differently from usage emitted before the report tool completes.',
   }), true);
+  assert.equal(matchesDefect('accepted_report_order_invariance', {
+    title: 'Accepted-report stop has a cancellation race that can admit another model call',
+    description: 'After an accepted terminal report, assistant_usage from a fresh continuation can arrive before asynchronous abort completes and start another inference call.',
+  }), false);
   assert.equal(matchesDefect('oracle_failure_propagates', {
     title: 'Failed acceptance oracle can leave CI green',
     description: 'continue-on-error swallows a non-zero independent benchmark validation result instead of failing the job.',
