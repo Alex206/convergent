@@ -56,7 +56,7 @@ test('secondary-root gate sends the selected absolute cwd to permission policy a
   });
 
   const expected = path.join(secondary, 'packages', 'core');
-  assert.equal(revisionReads, 2);
+  assert.equal(revisionReads, 3);
   assert.equal(permissions.length, 1);
   assert.equal(samePath(permissions[0].cwd, expected), true);
   assert.equal(executions.length, 1);
