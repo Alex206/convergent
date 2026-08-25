@@ -9,6 +9,11 @@ const CASES = Object.freeze({
   's09-mappingproxy': Object.freeze({ expectedDefect: true, defectId: 'general_mapping_mappingproxy' }),
   's10-baseexception': Object.freeze({ expectedDefect: true, defectId: 'baseexception_cleanup_once' }),
   's09-clean': Object.freeze({ expectedDefect: false, defectId: null }),
+  's10-clean': Object.freeze({ expectedDefect: false, defectId: null }),
+  'v2-s11-bool': Object.freeze({ expectedDefect: true, defectId: 'bool_is_int_contract' }),
+  'v2-s12-backslash': Object.freeze({ expectedDefect: true, defectId: 'portable_backslash_separator' }),
+  'v2-s13-incomplete-frame': Object.freeze({ expectedDefect: true, defectId: 'incomplete_frame_mutates_buffer' }),
+  'v2-s13-clean': Object.freeze({ expectedDefect: false, defectId: null }),
 });
 
 function walk(root) {
@@ -46,6 +51,18 @@ function matchesExpectedDefect(caseId, finding) {
   }
   if (caseId === 's10-baseexception') {
     return /(baseexception|keyboardinterrupt|systemexit|generator(exit)?|except\s+exception)/.test(text);
+  }
+  if (caseId === 'v2-s11-bool') {
+    return /bool|true|false/.test(text)
+      && /(int|integer|subclass|timeout|accept|reject|valueerror)/.test(text);
+  }
+  if (caseId === 'v2-s12-backslash') {
+    return /(backslash|\\\\|windows|separator)/.test(text)
+      && /(travers|parent|absolute|archive|portable|canonical|normalize)/.test(text);
+  }
+  if (caseId === 'v2-s13-incomplete-frame') {
+    return /(incomplete|partial|short|truncated)/.test(text)
+      && /(buffer|mutat|consume|delete|length byte|prefix|state|unchanged)/.test(text);
   }
   return false;
 }
