@@ -46,6 +46,16 @@ except Abort:
     pass
 checks["baseexception_cleanup"] = r.active("gpu0") is None
 
+r = LeaseRegistry()
+def replace_callback(lease):
+    r.release(lease)
+    return r.acquire("gpu0", "bob")
+replacement = r.run("gpu0", "alice", replace_callback)
+checks["baseline_replacement_lease_preserved"] = (
+    replacement.owner == "bob"
+    and r.active("gpu0") == replacement
+)
+
 print(json.dumps({"checks": checks}))
 `);
 }
