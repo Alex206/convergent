@@ -1,0 +1,235 @@
+name: Reviewer Hard Corpus V4
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - agent/perspective-review-protocol-benchmark
+
+jobs:
+  framework-validation:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[reviewer-v4-run]')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - run: npm ci
+      - run: npm test
+      - run: npm run check
+
+  case-validation:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[reviewer-v4-run]')
+    needs: framework-validation
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        case:
+          - id: v4-s15-lease-multidefect
+            ref: benchmark/review-v4-s15-lease-multidefect
+          - id: v4-s15-lease-clean
+            ref: benchmark/review-v4-s15-lease-clean
+          - id: v4-s16-authcache-multidefect
+            ref: benchmark/review-v4-s16-authcache-multidefect
+          - id: v4-s16-authcache-clean
+            ref: benchmark/review-v4-s16-authcache-clean
+          - id: v4-s17-headers-multidefect
+            ref: benchmark/review-v4-s17-headers-multidefect
+          - id: v4-s17-headers-clean
+            ref: benchmark/review-v4-s17-headers-clean
+          - id: v4-s18-retrytxn-multidefect
+            ref: benchmark/review-v4-s18-retrytxn-multidefect
+          - id: v4-s18-retrytxn-clean
+            ref: benchmark/review-v4-s18-retrytxn-clean
+    steps:
+      - name: Checkout Convergent
+        uses: actions/checkout@v6
+      - name: Checkout frozen review case
+        uses: actions/checkout@v6
+        with:
+          repository: Alex206/convergent-test-repo
+          ref: ${{ matrix.case.ref }}
+          path: benchmark-target
+          token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - run: npm ci
+      - name: Visible tests must pass
+        shell: bash
+        run: |
+          cd benchmark-target
+          python3 -B -m unittest discover -s tests -v
+      - name: Validate exact hard-corpus ground truth
+        shell: bash
+        run: |
+          node src/headless/reviewer-v4-case-validation.js \
+            '${{ matrix.case.id }}' \
+            '${{ github.workspace }}/benchmark-target' \
+            '${{ runner.temp }}/case-validation.json'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reviewer-v4-case-validation-${{ matrix.case.id }}
+          path: ${{ runner.temp }}/case-validation.json
+          retention-days: 14
+
+  benchmark:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[reviewer-v4-run]')
+    needs: case-validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        arm:
+          - luna-broad-3
+          - luna-specialized-3
+        case:
+          - id: v4-s15-lease-multidefect
+            ref: benchmark/review-v4-s15-lease-multidefect
+            prompt: benchmarks/15-lease-lifecycle.md
+          - id: v4-s15-lease-clean
+            ref: benchmark/review-v4-s15-lease-clean
+            prompt: benchmarks/15-lease-lifecycle.md
+          - id: v4-s16-authcache-multidefect
+            ref: benchmark/review-v4-s16-authcache-multidefect
+            prompt: benchmarks/16-authorization-cache.md
+          - id: v4-s16-authcache-clean
+            ref: benchmark/review-v4-s16-authcache-clean
+            prompt: benchmarks/16-authorization-cache.md
+          - id: v4-s17-headers-multidefect
+            ref: benchmark/review-v4-s17-headers-multidefect
+            prompt: benchmarks/17-header-normalization.md
+          - id: v4-s17-headers-clean
+            ref: benchmark/review-v4-s17-headers-clean
+            prompt: benchmarks/17-header-normalization.md
+          - id: v4-s18-retrytxn-multidefect
+            ref: benchmark/review-v4-s18-retrytxn-multidefect
+            prompt: benchmarks/18-retry-transaction.md
+          - id: v4-s18-retrytxn-clean
+            ref: benchmark/review-v4-s18-retrytxn-clean
+            prompt: benchmarks/18-retry-transaction.md
+    env:
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+      COPILOT_PLUGIN_DIR_ONLY: 'true'
+    steps:
+      - name: Require benchmark credentials
+        shell: bash
+        env:
+          BENCHMARK_REPO_TOKEN: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+        run: |
+          test -n "${COPILOT_GITHUB_TOKEN}" || { echo "COPILOT_GITHUB_TOKEN is required." >&2; exit 2; }
+          test -n "${BENCHMARK_REPO_TOKEN}" || { echo "BENCHMARK_REPO_TOKEN is required." >&2; exit 2; }
+      - name: Checkout Convergent
+        uses: actions/checkout@v6
+      - name: Checkout frozen review case
+        uses: actions/checkout@v6
+        with:
+          repository: Alex206/convergent-test-repo
+          ref: ${{ matrix.case.ref }}
+          path: benchmark-target
+          token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - run: npm ci
+      - name: Prepare metadata
+        shell: bash
+        env:
+          RUN_OUTPUT: ${{ runner.temp }}/reviewer-v4-run
+          CASE_ID: ${{ matrix.case.id }}
+          CASE_REF: ${{ matrix.case.ref }}
+          ARM: ${{ matrix.arm }}
+        run: |
+          rm -rf "${RUN_OUTPUT}"
+          mkdir -p "${RUN_OUTPUT}"
+          fixture_sha="$(git -C benchmark-target rev-parse HEAD)"
+          FIXTURE_SHA="${fixture_sha}" node - <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          fs.writeFileSync(path.join(process.env.RUN_OUTPUT, 'benchmark-meta.json'), `${JSON.stringify({
+            caseId: process.env.CASE_ID,
+            fixtureRef: process.env.CASE_REF,
+            fixtureSha: process.env.FIXTURE_SHA,
+            arm: process.env.ARM,
+            repeat: 1,
+          }, null, 2)}\n`);
+          NODE
+      - name: Run frozen reviewer-only architecture
+        shell: bash
+        env:
+          RUN_OUTPUT: ${{ runner.temp }}/reviewer-v4-run
+        run: |
+          export CONVERGENT_HEADLESS_ANSWERS_JSON='[]'
+          node src/headless/reviewer-only-cli.js \
+            --workspace "${GITHUB_WORKSPACE}/benchmark-target" \
+            --prompt-file "${GITHUB_WORKSPACE}/benchmark-target/${{ matrix.case.prompt }}" \
+            --output-dir "${RUN_OUTPUT}" \
+            --arm "${{ matrix.arm }}" \
+            --flow auto \
+            --audit-level full \
+            --limit-policy continue \
+            --max-model-calls 60 \
+            --max-model-calls-per-turn 18 \
+            --max-chat-requests 36 \
+            --max-ai-credits 80
+      - name: Assert workspace stayed frozen
+        shell: bash
+        run: |
+          test -z "$(git -C benchmark-target status --porcelain=v1 --untracked-files=all)" || {
+            echo "Reviewer changed frozen workspace." >&2
+            git -C benchmark-target status --porcelain=v1 --untracked-files=all >&2
+            exit 1
+          }
+      - name: Upload reviewer evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reviewer-v4-${{ matrix.arm }}-${{ matrix.case.id }}
+          path: ${{ runner.temp }}/reviewer-v4-run
+          if-no-files-found: error
+          retention-days: 14
+
+  report:
+    if: always() && (github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[reviewer-v4-run]'))
+    needs: benchmark
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: reviewer-v4-*-v4-s1*-*
+          path: ${{ runner.temp }}/reviewer-v4-results
+      - name: Build report
+        shell: bash
+        run: |
+          node src/headless/reviewer-v4-report.js \
+            "${{ runner.temp }}/reviewer-v4-results" \
+            "${{ runner.temp }}/reviewer-v4-report.json" \
+            "${{ runner.temp }}/reviewer-v4-report.md"
+          cat "${{ runner.temp }}/reviewer-v4-report.md" >> "${GITHUB_STEP_SUMMARY}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reviewer-v4-report-${{ github.run_number }}
+          path: |
+            ${{ runner.temp }}/reviewer-v4-report.json
+            ${{ runner.temp }}/reviewer-v4-report.md
+          retention-days: 30
