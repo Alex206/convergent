@@ -2,6 +2,8 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const {
   ISOLATED_GENERIC_CONTROLLER_TOOLS,
@@ -39,4 +41,13 @@ test('panel Terra prompts explicitly assign repository-level defect discovery to
 test('isolated benchmark engine/factory remain drop-in subclasses of perspective harness', () => {
   assert.equal(typeof IsolatedPerspectiveReviewSessionFactory, 'function');
   assert.equal(typeof IsolatedPerspectiveReviewEngine, 'function');
+});
+
+test('headless panel runner instantiates the isolated engine rather than the inspection-capable harness engine', () => {
+  const runner = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'headless', 'perspective-review-runner.js'),
+    'utf8',
+  );
+  assert.match(runner, /new IsolatedPerspectiveReviewEngine\(/);
+  assert.doesNotMatch(runner, /new PerspectiveReviewEngine\(/);
 });
