@@ -2,7 +2,7 @@
 
 const crypto = require('node:crypto');
 const path = require('node:path');
-const { ManagedCommandRuntime, DEFAULT_TIMEOUT_MS } = require('../runtime/local-command-backend');
+const { ManagedCommandRuntime, DEFAULT_TIMEOUT_MS, resolveWorkingDirectory } = require('../runtime/local-command-backend');
 const { workspaceRevision } = require('./revision');
 
 const GATE_ID_PATTERN = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/;
@@ -165,6 +165,23 @@ function validationGateEvidenceIsCurrent(evidence, currentRevision) {
     && evidence.afterRevision === currentRevision;
 }
 
+async function authorizeValidationGateCommand(gate, { permissionHandler, workspace, workspaceFolders = null } = {}) {
+  if (typeof permissionHandler !== 'function') {
+    throw new Error('Validation gate permission handler is unavailable; command was not started.');
+  }
+  const cwd = resolveWorkingDirectory(workspace, gate.cwd, workspaceFolders);
+  const permission = await permissionHandler({
+    kind: 'shell',
+    fullCommandText: gate.command,
+    cwd,
+    toolName: 'validation_gate',
+  });
+  if (!String(permission?.kind ?? '').startsWith('approve')) {
+    throw new Error('Validation gate permission denied; command was not started.');
+  }
+  return cwd;
+}
+
 async function runValidationGate(definition, options = {}) {
   const gate = normalizeValidationGate(definition);
   const platform = String(options.platform ?? process.platform);
@@ -186,6 +203,11 @@ async function runValidationGate(definition, options = {}) {
   let commandResult = null;
   let executionError = null;
   try {
+    await authorizeValidationGateCommand(gate, {
+      permissionHandler: options.permissionHandler,
+      workspace,
+      workspaceFolders,
+    });
     commandResult = await runtime.execute(`validation-gate:${gate.id}`, {
       command: gate.command,
       cwd: gate.cwd,
@@ -221,5 +243,6 @@ module.exports = {
   buildValidationGateEvidence,
   skippedValidationGateEvidence,
   validationGateEvidenceIsCurrent,
+  authorizeValidationGateCommand,
   runValidationGate,
 };
