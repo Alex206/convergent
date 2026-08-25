@@ -16,7 +16,6 @@ jobs:
     env:
       COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
       COPILOT_PLUGIN_DIR_ONLY: 'true'
-      RUN_ROOT: ${{ runner.temp }}/reviewer-v4-sequential
     steps:
       - name: Require benchmark credentials
         shell: bash
@@ -25,6 +24,10 @@ jobs:
         run: |
           test -n "${COPILOT_GITHUB_TOKEN}" || { echo "COPILOT_GITHUB_TOKEN is required." >&2; exit 2; }
           test -n "${BENCHMARK_REPO_TOKEN}" || { echo "BENCHMARK_REPO_TOKEN is required." >&2; exit 2; }
+
+      - name: Initialize run root
+        shell: bash
+        run: echo "RUN_ROOT=${RUNNER_TEMP}/reviewer-v4-sequential" >> "${GITHUB_ENV}"
 
       - name: Checkout Convergent
         uses: actions/checkout@v6
