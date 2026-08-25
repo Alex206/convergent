@@ -254,6 +254,15 @@ jobs:
             "${{ runner.temp }}/review-report.md"
           cat "${{ runner.temp }}/review-report.md" >> "${GITHUB_STEP_SUMMARY}"
 
+      - name: Build panel discovery report
+        shell: bash
+        run: |
+          node src/headless/perspective-review-report.js \
+            "${{ runner.temp }}/review-results" \
+            "${{ runner.temp }}/perspective-review-discovery.json" \
+            "${{ runner.temp }}/perspective-review-discovery.md"
+          cat "${{ runner.temp }}/perspective-review-discovery.md" >> "${GITHUB_STEP_SUMMARY}"
+
       - name: Upload tournament report
         uses: actions/upload-artifact@v4
         with:
@@ -261,6 +270,8 @@ jobs:
           path: |
             ${{ runner.temp }}/review-report.json
             ${{ runner.temp }}/review-report.md
+            ${{ runner.temp }}/perspective-review-discovery.json
+            ${{ runner.temp }}/perspective-review-discovery.md
             ${{ runner.temp }}/review-infrastructure-invalid.json
             ${{ runner.temp }}/review-infrastructure-invalid.md
           if-no-files-found: error
