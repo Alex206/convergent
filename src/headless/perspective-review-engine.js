@@ -38,11 +38,27 @@ const PANEL_MODES = Object.freeze({
 });
 
 const GENERIC_PANEL_SIZE = 3;
-const REVIEW_CONTROLLER_TOOLS = Object.freeze([
+const BASE_CONTROLLER_TOOLS = Object.freeze([
   ...STRUCTURED_REVIEWER_TOOLS.filter((name) => name !== 'custom:report_review'),
+  'custom:report_review',
+]);
+const GENERIC_REVIEW_CONTROLLER_TOOLS = BASE_CONTROLLER_TOOLS;
+const REVIEW_CONTROLLER_TOOLS = Object.freeze([
+  ...BASE_CONTROLLER_TOOLS.filter((name) => name !== 'custom:report_review'),
   'custom:report_review_plan',
   'custom:report_review',
 ]);
+
+const GENERIC_ADJUDICATOR_PROMPT = `
+You are Convergent's read-only Terra adjudicator for a control arm in which three independent Luna reviewers all perform the same ordinary broad review.
+
+Your only phase is ADJUDICATION. There is no perspective selection or review planning in this control arm.
+- Read the independent Luna reviewer reports as evidence, not votes. One well-supported defect can invalidate the change even when other reviewers are clean.
+- Resolve duplicates or contradictions and validate questionable/high-impact claims with only the targeted read-only inspection needed.
+- You may report a concrete defect that the Luna panel missed if it becomes evident while validating the panel, but do not perform protocol selection and do not invent specialized review roles.
+- Do not edit files.
+- Call report_review exactly once with the final unresolved actionable findings.
+`.trim();
 
 class PerspectiveReviewSessionFactory extends LeanStandardSessionFactory {
   async createPanelReviewer(taskId, reviewerId, label, systemPromptContent, route = 'standard', risk = 'medium') {
@@ -127,13 +143,14 @@ class PerspectiveReviewSessionFactory extends LeanStandardSessionFactory {
     );
   }
 
-  async createReviewController(taskId, route = 'standard', risk = 'medium') {
+  async createReviewController(taskId, route = 'standard', risk = 'medium', options = {}) {
+    const planningEnabled = options.planningEnabled !== false;
     const safeTaskId = safeSessionPart(taskId);
-    const planSink = { value: null };
+    const planSink = planningEnabled ? { value: null } : null;
     const reviewSink = { value: null };
-    const planTool = createReviewPlanTool(this.sdk.defineTool, planSink, {
-      expectedCount: MAX_SELECTED_PROTOCOLS,
-    });
+    const planTool = planningEnabled
+      ? createReviewPlanTool(this.sdk.defineTool, planSink, { expectedCount: MAX_SELECTED_PROTOCOLS })
+      : null;
     const reviewTool = createReviewTool(this.sdk.defineTool, reviewSink);
     const batchView = this.batchViewTool();
     const name = 'Terra review controller';
@@ -146,8 +163,13 @@ class PerspectiveReviewSessionFactory extends LeanStandardSessionFactory {
       this.reasoningMode,
     );
     const baselinePrompt = await this.taskBaselinePrompt(taskId);
+    const controllerPrompt = planningEnabled ? REVIEW_CONTROLLER_PROMPT : GENERIC_ADJUDICATOR_PROMPT;
+    const availableTools = planningEnabled ? REVIEW_CONTROLLER_TOOLS : GENERIC_REVIEW_CONTROLLER_TOOLS;
+    const tools = planningEnabled
+      ? [batchView, runCommand, planTool, reviewTool]
+      : [batchView, runCommand, reviewTool];
     const systemPrompt = [
-      REVIEW_CONTROLLER_PROMPT,
+      controllerPrompt,
       reviewerFlowInstructions(this.flowMode),
       workspaceScopePrompt(this.workspace, this.workspaceFolders),
       baselinePrompt,
@@ -159,8 +181,8 @@ class PerspectiveReviewSessionFactory extends LeanStandardSessionFactory {
       model: model.id,
       workingDirectory: this.workspace,
       streaming: true,
-      tools: [batchView, runCommand, planTool, reviewTool],
-      availableTools: REVIEW_CONTROLLER_TOOLS,
+      tools,
+      availableTools,
       systemMessage: { mode: 'append', content: systemPrompt },
       hooks: { onPreToolUse: (input) => this.preToolUse(readonlyHook, name, input) },
       onPermissionRequest: this.permissionHandler,
@@ -170,11 +192,12 @@ class PerspectiveReviewSessionFactory extends LeanStandardSessionFactory {
     guard = this.guard(session, name);
     const usageKey = `${safeTaskId}:review-controller`;
     attachEventLogging(session, name, this.ui, this.usage, model, usageKey, null);
-    this.ui.agentTools?.(name, REVIEW_CONTROLLER_TOOLS);
-    this.sessionCreated(name, session, model, effort, systemPrompt, REVIEW_CONTROLLER_TOOLS, {
+    this.ui.agentTools?.(name, availableTools);
+    this.sessionCreated(name, session, model, effort, systemPrompt, availableTools, {
       role: 'review-controller',
       taskId: safeTaskId,
       benchmarkOnly: true,
+      planningEnabled,
     });
 
     return {
@@ -186,6 +209,7 @@ class PerspectiveReviewSessionFactory extends LeanStandardSessionFactory {
       usageName: usageKey,
       model,
       reasoningEffort: effort,
+      planningEnabled,
     };
   }
 }
@@ -229,6 +253,9 @@ class PerspectiveReviewEngine extends BenchmarkTopologyEngine {
   }
 
   async runReviewPlan(controller, task, evidence, routing) {
+    if (!controller.planningEnabled || !controller.planSink) {
+      throw new Error('Review protocol planning is unavailable in the generic-panel control arm.');
+    }
     const before = await this.revisionProvider(this.workspace, this.workspaceFolders);
     const manifest = await this.currentTaskChangeManifest(this.activeTaskChangeContext);
     const startedAt = Date.now();
@@ -274,6 +301,7 @@ class PerspectiveReviewEngine extends BenchmarkTopologyEngine {
     const before = await this.revisionProvider(this.workspace, this.workspaceFolders);
     const manifest = await this.currentTaskChangeManifest(this.activeTaskChangeContext);
     const startedAt = Date.now();
+    reviewer.sink.value = null;
     const report = await requireReport(
       reviewer.session,
       reviewer.sink,
@@ -339,7 +367,9 @@ class PerspectiveReviewEngine extends BenchmarkTopologyEngine {
         'Independent Luna panel reports:',
         formatPanelReports(panelReports),
         '',
-        'Treat reports as evidence, not votes. Validate disputed/high-impact findings with only the targeted inspection needed. Do not redo a broad generic review. Call report_review exactly once with the final unresolved actionable findings.',
+        controller.planningEnabled
+          ? 'Treat reports as evidence, not votes. Validate disputed/high-impact findings with only the targeted inspection needed. Do not redo a broad generic review. Call report_review exactly once with the final unresolved actionable findings.'
+          : 'This is the generic-panel control arm. Treat the three ordinary broad Luna reports as evidence, not votes. Validate disputed/high-impact findings with only targeted inspection. Do not select or apply perspective protocols. Call report_review exactly once with the final unresolved actionable findings.',
       ].filter(Boolean).join('\n'),
       'report_review',
       this.agentTurnTimeoutMs,
@@ -392,7 +422,12 @@ class PerspectiveReviewEngine extends BenchmarkTopologyEngine {
     let reviewers = [];
     try {
       workerA = await factory.createWorker(taskSessionKey, 'A', routing.route, routing.risk);
-      controller = await factory.createReviewController(taskSessionKey, routing.route, routing.risk);
+      controller = await factory.createReviewController(
+        taskSessionKey,
+        routing.route,
+        routing.risk,
+        { planningEnabled: this.reviewMode === PANEL_MODES.perspective },
+      );
       this.sessions.push(workerA.session, controller.session);
 
       const initial = await this.runWorkerPass(workerA, task, 'IMPLEMENT', null, null);
@@ -475,6 +510,7 @@ class PerspectiveReviewEngine extends BenchmarkTopologyEngine {
 module.exports = {
   PANEL_MODES,
   GENERIC_PANEL_SIZE,
+  GENERIC_REVIEW_CONTROLLER_TOOLS,
   REVIEW_CONTROLLER_TOOLS,
   PerspectiveReviewSessionFactory,
   PerspectiveReviewEngine,
