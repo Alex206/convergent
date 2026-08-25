@@ -1,0 +1,261 @@
+name: Perspective Review Protocol Tournament
+
+on:
+  workflow_dispatch:
+    inputs:
+      arms_json:
+        description: JSON array of review arms
+        required: true
+        default: '["broad-terra","generic-luna-panel-terra","perspective-luna-terra"]'
+        type: string
+      scenarios_json:
+        description: JSON array of benchmark scenarios
+        required: true
+        default: '["benchmarks/03-dependency-ordering.md","benchmarks/07-one-shot-label-filter-bug.md","benchmarks/08-artifact-path-containment.md"]'
+        type: string
+      repeats_json:
+        description: JSON array of repeat numbers
+        required: true
+        default: '[1]'
+        type: string
+      flow:
+        description: Convergent execution flow
+        required: true
+        default: fast
+        type: choice
+        options: [fast, auto, thorough]
+      max_model_calls:
+        description: Hard total model-call fuse per run
+        required: true
+        default: '100'
+        type: string
+      max_model_calls_per_turn:
+        description: Hard model-call fuse per agent turn
+        required: true
+        default: '18'
+        type: string
+      max_chat_requests:
+        description: Hard Copilot chat-request quota delta per run
+        required: true
+        default: '36'
+        type: string
+      max_ai_credits:
+        description: Soft AI-credit boundary per run
+        required: true
+        default: '80'
+        type: string
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        arm: ${{ fromJSON(inputs.arms_json) }}
+        scenario: ${{ fromJSON(inputs.scenarios_json) }}
+        repeat: ${{ fromJSON(inputs.repeats_json) }}
+    env:
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+      COPILOT_PLUGIN_DIR_ONLY: 'true'
+      CONVERGENT_BENCHMARK_REVIEW_CONTRACT: acceptance-matrix-v1
+
+    steps:
+      - name: Require benchmark credentials
+        shell: bash
+        env:
+          BENCHMARK_REPO_TOKEN: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+        run: |
+          test -n "${COPILOT_GITHUB_TOKEN}" || { echo "COPILOT_GITHUB_TOKEN is required." >&2; exit 2; }
+          test -n "${BENCHMARK_REPO_TOKEN}" || { echo "BENCHMARK_REPO_TOKEN is required." >&2; exit 2; }
+
+      - name: Checkout Convergent
+        uses: actions/checkout@v6
+
+      - name: Checkout benchmark fixture
+        uses: actions/checkout@v6
+        with:
+          repository: Alex206/convergent-test-repo
+          ref: ${{ endsWith(matrix.scenario, '03-dependency-ordering.md') && 'benchmark/scenario03-review-contract' || endsWith(matrix.scenario, '07-one-shot-label-filter-bug.md') && 'benchmark/scenario07-one-shot-label-iterable' || endsWith(matrix.scenario, '08-artifact-path-containment.md') && 'benchmark/scenario08-path-containment' || 'main' }}
+          path: benchmark-target
+          token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Install Convergent dependencies
+        run: npm ci
+
+      - name: Validate benchmark implementation
+        run: |
+          npm test
+          npm run check
+
+      - name: Prepare benchmark metadata
+        shell: bash
+        env:
+          ARM: ${{ matrix.arm }}
+          SCENARIO: ${{ matrix.scenario }}
+          REPEAT: ${{ matrix.repeat }}
+          RUN_OUTPUT: ${{ runner.temp }}/review-run
+          FIXTURE_REF: ${{ endsWith(matrix.scenario, '03-dependency-ordering.md') && 'benchmark/scenario03-review-contract' || endsWith(matrix.scenario, '07-one-shot-label-filter-bug.md') && 'benchmark/scenario07-one-shot-label-iterable' || endsWith(matrix.scenario, '08-artifact-path-containment.md') && 'benchmark/scenario08-path-containment' || 'main' }}
+        run: |
+          rm -rf "${RUN_OUTPUT}"
+          mkdir -p "${RUN_OUTPUT}"
+          fixture_sha="$(git -C benchmark-target rev-parse HEAD)"
+          FIXTURE_SHA="${fixture_sha}" node - <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          fs.writeFileSync(path.join(process.env.RUN_OUTPUT, 'benchmark-meta.json'), `${JSON.stringify({
+            topology: process.env.ARM,
+            scenario: process.env.SCENARIO,
+            repeat: Number(process.env.REPEAT),
+            fixtureRef: process.env.FIXTURE_REF,
+            fixtureSha: process.env.FIXTURE_SHA,
+          }, null, 2)}\n`);
+          NODE
+
+      - name: Run review architecture
+        id: review
+        continue-on-error: true
+        timeout-minutes: 20
+        shell: bash
+        env:
+          RUN_OUTPUT: ${{ runner.temp }}/review-run
+        run: |
+          export CONVERGENT_HEADLESS_ANSWERS_JSON='[]'
+          set -o pipefail
+          node src/headless/perspective-review-cli.js \
+            --workspace "${GITHUB_WORKSPACE}/benchmark-target" \
+            --prompt-file "${GITHUB_WORKSPACE}/benchmark-target/${{ matrix.scenario }}" \
+            --output-dir "${RUN_OUTPUT}" \
+            --arm "${{ matrix.arm }}" \
+            --flow "${{ inputs.flow }}" \
+            --audit-level full \
+            --limit-policy continue \
+            --max-reviewer-cycles 4 \
+            --max-model-calls "${{ inputs.max_model_calls }}" \
+            --max-model-calls-per-turn "${{ inputs.max_model_calls_per_turn }}" \
+            --max-chat-requests "${{ inputs.max_chat_requests }}" \
+            --max-ai-credits "${{ inputs.max_ai_credits }}" \
+            2>&1 | tee "${RUN_OUTPUT}/runner.log"
+
+      - name: Independently validate target tests
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          RUN_OUTPUT: ${{ runner.temp }}/review-run
+        run: |
+          set +e
+          (
+            cd benchmark-target
+            python3 -B -m unittest discover -s tests -v
+          ) > "${RUN_OUTPUT}/target-validation.log" 2>&1
+          rc=$?
+          RC="${rc}" node - <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const rc = Number(process.env.RC);
+          fs.writeFileSync(path.join(process.env.RUN_OUTPUT, 'target-validation.json'), `${JSON.stringify({ ok: rc === 0, exitCode: rc }, null, 2)}\n`);
+          NODE
+          cat "${RUN_OUTPUT}/target-validation.log"
+          exit 0
+
+      - name: Run deterministic scenario oracle
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          RUN_OUTPUT: ${{ runner.temp }}/review-run
+          SCENARIO: ${{ matrix.scenario }}
+        run: |
+          case "${SCENARIO}" in
+            *03-dependency-ordering.md)
+              node src/headless/scenario03-acceptance.js "${GITHUB_WORKSPACE}/benchmark-target" "${RUN_OUTPUT}/scenario-acceptance.json"
+              ;;
+            *07-one-shot-label-filter-bug.md)
+              node src/headless/scenario07-acceptance.js "${GITHUB_WORKSPACE}/benchmark-target" "${RUN_OUTPUT}/scenario-acceptance.json"
+              ;;
+            *08-artifact-path-containment.md)
+              node src/headless/scenario08-acceptance.js "${GITHUB_WORKSPACE}/benchmark-target" "${RUN_OUTPUT}/scenario-acceptance.json"
+              ;;
+            *)
+              printf '%s\n' '{"ok":true,"dedicatedOracle":false}' > "${RUN_OUTPUT}/scenario-acceptance.json"
+              ;;
+          esac
+
+      - name: Capture final workspace
+        if: always()
+        shell: bash
+        env:
+          RUN_OUTPUT: ${{ runner.temp }}/review-run
+        run: |
+          git -C benchmark-target status --porcelain=v1 --untracked-files=all > "${RUN_OUTPUT}/final-status.txt" || true
+          git -C benchmark-target diff --binary --no-ext-diff > "${RUN_OUTPUT}/final-diff.patch" || true
+
+      - name: Upload run evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: review-${{ strategy.job-index }}-${{ matrix.arm }}-${{ matrix.scenario == 'benchmarks/03-dependency-ordering.md' && 's03' || matrix.scenario == 'benchmarks/07-one-shot-label-filter-bug.md' && 's07' || 's08' }}-r${{ matrix.repeat }}
+          path: ${{ runner.temp }}/review-run
+          if-no-files-found: error
+          retention-days: 14
+
+  report:
+    if: always()
+    needs: benchmark
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout Convergent
+        uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Download all review evidence
+        uses: actions/download-artifact@v5
+        with:
+          pattern: review-*
+          path: ${{ runner.temp }}/review-results
+
+      - name: Quarantine infrastructure-invalid runs
+        shell: bash
+        run: |
+          node src/headless/topology-validity.js \
+            "${{ runner.temp }}/review-results" \
+            "${{ runner.temp }}/review-infrastructure-invalid-runs" \
+            "${{ runner.temp }}/review-infrastructure-invalid.json" \
+            "${{ runner.temp }}/review-infrastructure-invalid.md"
+          cat "${{ runner.temp }}/review-infrastructure-invalid.md" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Build comparison report
+        shell: bash
+        run: |
+          node src/headless/topology-report.js \
+            "${{ runner.temp }}/review-results" \
+            "${{ runner.temp }}/review-report.json" \
+            "${{ runner.temp }}/review-report.md"
+          cat "${{ runner.temp }}/review-report.md" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload tournament report
+        uses: actions/upload-artifact@v4
+        with:
+          name: perspective-review-report-${{ github.run_number }}
+          path: |
+            ${{ runner.temp }}/review-report.json
+            ${{ runner.temp }}/review-report.md
+            ${{ runner.temp }}/review-infrastructure-invalid.json
+            ${{ runner.temp }}/review-infrastructure-invalid.md
+          if-no-files-found: error
+          retention-days: 30
