@@ -1,0 +1,147 @@
+name: Reviewer H15 Single-Luna Replication V7C
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - agent/perspective-review-protocol-benchmark
+
+jobs:
+  benchmark:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[reviewer-v7c-run]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+      COPILOT_PLUGIN_DIR_ONLY: 'true'
+    steps:
+      - name: Require benchmark credentials
+        shell: bash
+        run: |
+          test -n "${COPILOT_GITHUB_TOKEN}" || { echo "COPILOT_GITHUB_TOKEN is required." >&2; exit 2; }
+
+      - name: Initialize run root
+        shell: bash
+        run: echo "RUN_ROOT=${RUNNER_TEMP}/reviewer-v7c-h15" >> "${GITHUB_ENV}"
+
+      - name: Checkout benchmark harness
+        uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Validate benchmark framework
+        shell: bash
+        run: |
+          npm ci
+          npm test
+          npm run check
+
+      - name: Checkout H15 latent report-integrity defect
+        uses: actions/checkout@v6
+        with:
+          repository: Alex206/convergent
+          ref: 9f0fc0b051f3e329625b05e137a7445fa7c4bfa4
+          path: benchmark-targets/h15
+
+      - name: Install historical target dependencies
+        shell: bash
+        run: npm ci --prefix benchmark-targets/h15
+
+      - name: Validate exact H15 ground truth
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUN_ROOT}/validation"
+          node src/headless/reviewer-v7-case-validation.js \
+            v7-h15-latent-report-integrity \
+            "${GITHUB_WORKSPACE}/benchmark-targets/h15" \
+            "${RUN_ROOT}/validation/v7-h15-latent-report-integrity.json"
+
+      - name: Run six independent Luna reviewers sequentially
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p "${RUN_ROOT}/runs"
+          failures=0
+          case_id='v7-h15-latent-report-integrity'
+          target='benchmark-targets/h15'
+          arm='luna-broad-1'
+          prompt="$(cat "${GITHUB_WORKSPACE}/benchmarks/reviewer-v7-h15-integrity.md")"
+          fixture_sha="$(git -C "${target}" rev-parse HEAD)"
+          for repeat in 1 2 3 4 5 6; do
+            out="${RUN_ROOT}/runs/repeat-${repeat}/${arm}/${case_id}"
+            rm -rf "${out}"
+            mkdir -p "${out}"
+            RUN_OUTPUT="${out}" CASE_ID="${case_id}" ARM="${arm}" REPEAT="${repeat}" FIXTURE_SHA="${fixture_sha}" TARGET="${target}" node - <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          fs.writeFileSync(path.join(process.env.RUN_OUTPUT, 'benchmark-meta.json'), `${JSON.stringify({
+            caseId: process.env.CASE_ID,
+            fixtureRef: process.env.FIXTURE_SHA,
+            fixtureSha: process.env.FIXTURE_SHA,
+            arm: process.env.ARM,
+            repeat: Number(process.env.REPEAT),
+            target: process.env.TARGET,
+          }, null, 2)}\n`);
+          NODE
+            echo "== repeat ${repeat} · ${arm} · ${case_id} · ${fixture_sha} =="
+            export CONVERGENT_HEADLESS_ANSWERS_JSON='[]'
+            if node src/headless/reviewer-only-cli.js \
+              --workspace "${GITHUB_WORKSPACE}/${target}" \
+              --prompt "${prompt}" \
+              --output-dir "${out}" \
+              --arm "${arm}" \
+              --flow auto \
+              --audit-level full \
+              --limit-policy continue \
+              --max-model-calls 40 \
+              --max-model-calls-per-turn 32 \
+              --max-chat-requests 40 \
+              --max-ai-credits 50; then
+              rc=0
+            else
+              rc=$?
+            fi
+            if [ "${rc}" -ne 0 ]; then
+              echo "Cell failed: repeat ${repeat} (rc=${rc})" >&2
+              failures=$((failures + 1))
+            fi
+            dirty="$(git -C "${target}" status --porcelain=v1 --untracked-files=all)"
+            if [ -n "${dirty}" ]; then
+              echo "Reviewer changed frozen workspace: repeat ${repeat}" >&2
+              printf '%s\n' "${dirty}" >&2
+              failures=$((failures + 1))
+            fi
+          done
+          printf '%s\n' "${failures}" > "${RUN_ROOT}/cell-failures.txt"
+
+      - name: Build V7C report
+        if: always()
+        shell: bash
+        run: |
+          node src/headless/reviewer-v7-report.js \
+            "${RUN_ROOT}/runs" \
+            "${RUN_ROOT}/reviewer-v7c-report.json" \
+            "${RUN_ROOT}/reviewer-v7c-report.md"
+          cat "${RUN_ROOT}/reviewer-v7c-report.md" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload V7C evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reviewer-v7c-h15-${{ github.run_number }}
+          path: ${{ runner.temp }}/reviewer-v7c-h15
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Fail on incomplete reviewer cells
+        if: always()
+        shell: bash
+        run: |
+          failures="$(cat "${RUN_ROOT}/cell-failures.txt" 2>/dev/null || echo 999)"
+          test "${failures}" = "0" || { echo "${failures} reviewer cell(s) failed." >&2; exit 1; }
