@@ -44,12 +44,14 @@ function normalizeAmount(value, field) {
 }
 
 function createBudget(total = 0, unit = 'ai_credits') {
+  const normalizedTotal = normalizeAmount(total, 'budget total');
   return {
     unit: text(unit, 'budget unit'),
-    total: normalizeAmount(total, 'budget total'),
+    total: normalizedTotal,
     spent: 0,
     reserved: 0,
-    remaining: normalizeAmount(total, 'budget total'),
+    remaining: normalizedTotal,
+    available: normalizedTotal,
     ledger: [],
   };
 }
