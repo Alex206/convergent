@@ -1,5 +1,9 @@
 'use strict';
 
+// Reviewer read-only means Git-visible workspace state must stay unchanged, not
+// merely that the model avoids explicit edit tools. Build/test tools can have
+// incidental source-tree side effects (for example Cargo creating Cargo.lock),
+// so known validation modes with such effects are rejected before execution.
 function shellCommandText(input) {
   if (typeof input === 'string') return input.trim();
   const raw = input?.toolArgs ?? input?.tool_input ?? input?.arguments ?? {};
