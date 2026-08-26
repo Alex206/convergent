@@ -2,6 +2,7 @@
 
 const path = require('node:path');
 const { isSensitiveCredentialName } = require('./operator-credential-guard');
+const { reviewerValidationPolicy } = require('./read-only-validation');
 const { normalizeWorkspaceFolders, findWorkspaceFolder, rootForPath, qualifiedWorkspacePath } = require('../orchestrator/workspace-scope');
 
 const DEFAULT_TOOL_TIMEOUT_SECONDS = 300;
@@ -121,6 +122,15 @@ function createRunCommandTool(defineTool, {
     handler: async (args = {}) => {
       const command = String(args.command ?? '').trim();
       if (!command) return { accepted: false, error: 'run_command requires a non-empty command.' };
+      const validationPolicy = reviewerValidationPolicy(owner, command);
+      if (!validationPolicy.allowed) {
+        auditUi(ui, {
+          type: 'managed_command_readonly_validation_denied',
+          agent: owner,
+          reason: validationPolicy.reason,
+        });
+        return { accepted: false, error: validationPolicy.reason };
+      }
       let cwdInfo;
       try {
         cwdInfo = resolveRunCommandCwd(workspace, workspaceFolders, args.cwd, args.workspaceFolder);
