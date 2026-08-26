@@ -50,7 +50,7 @@ test('reviewer Cargo validation requires an immutable lockfile mode', () => {
   assert.equal(reviewerValidationPolicy('Worker A', 'cargo test --quiet').allowed, true);
 });
 
-test('reviewer validation rejects formatter modes that modify source', () => {
+test('validation policy recognizes formatter modes that modify source', () => {
   assert.equal(mutatingValidationCommand('cargo fmt'), true);
   assert.equal(mutatingValidationCommand('if ($dirty) { cargo fmt }'), true);
   assert.equal(mutatingValidationCommand('cargo fmt --check'), false);
@@ -106,5 +106,21 @@ test('builtin reviewer shell is guarded by the same immutable-validation policy'
     toolName: 'builtin:powershell',
     toolArgs: { command: 'if ($LASTEXITCODE -eq 0) { cargo test --locked --quiet }' },
   }, { agent: 'Strong reviewer' });
+  assert.equal(allowed.permissionDecision, 'allow');
+});
+
+test('worker shell validation cannot rewrite source with a formatter', () => {
+  const guard = new OperatorCredentialGuard({ environment: {} });
+  const denied = guard.hook({
+    toolName: 'run_command',
+    toolArgs: { command: 'cargo fmt' },
+  }, { agent: 'Worker A' });
+  assert.equal(denied.permissionDecision, 'deny');
+  assert.match(denied.permissionDecisionReason, /must not rewrite source files/i);
+
+  const allowed = guard.hook({
+    toolName: 'run_command',
+    toolArgs: { command: 'cargo fmt --check' },
+  }, { agent: 'Worker A' });
   assert.equal(allowed.permissionDecision, 'allow');
 });
