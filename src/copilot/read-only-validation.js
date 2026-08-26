@@ -21,20 +21,16 @@ function isReviewerOwner(owner) {
 
 function cargoValidationWithoutLock(command) {
   const text = String(command ?? '');
-  const cargoInvocation = /(?:^|[;&|]\s*)cargo\s+(?:\+[^\s]+\s+)?(?:test|check|clippy|build|bench|doc|metadata|run)\b/gi;
+  const cargoInvocation = /\bcargo\s+(?:\+[^\s]+\s+)?(?:test|check|clippy|build|bench|doc|metadata|run)\b[^;|\r\n]*/gi;
   for (const match of text.matchAll(cargoInvocation)) {
-    const start = match.index ?? 0;
-    const rest = text.slice(start);
-    const end = rest.search(/(?:;|&&|\|\||\r?\n)/);
-    const invocation = end >= 0 ? rest.slice(0, end) : rest;
-    if (!/\s--(?:locked|frozen)(?:\s|$)/i.test(invocation)) return true;
+    if (!/\s--(?:locked|frozen)(?:\s|$)/i.test(match[0])) return true;
   }
   return false;
 }
 
 function mutatingValidationCommand(command) {
   const text = String(command ?? '');
-  return /(?:^|[;&|]\s*)cargo\s+(?:\+[^\s]+\s+)?fmt\b(?![^;&|\r\n]*\s--check\b)|\b(?:prettier|biome)\b[^;&|\r\n]*\s--write\b|\beslint\b[^;&|\r\n]*\s--fix\b|\bclang-format\b[^;&|\r\n]*(?:\s-i\b|\s--in-place\b)|\bgofmt\b[^;&|\r\n]*\s-w\b|(?:^|[;&|]\s*)dotnet\s+format\b(?![^;&|\r\n]*\s--verify-no-changes\b)/i.test(text);
+  return /\bcargo\s+(?:\+[^\s]+\s+)?fmt\b(?![^;|\r\n]*\s--check\b)|\b(?:prettier|biome)\b[^;|\r\n]*\s--write\b|\beslint\b[^;|\r\n]*\s--fix\b|\bclang-format\b[^;|\r\n]*(?:\s-i\b|\s--in-place\b)|\bgofmt\b[^;|\r\n]*\s-w\b|\bdotnet\s+format\b(?![^;|\r\n]*\s--verify-no-changes\b)/i.test(text);
 }
 
 function reviewerValidationPolicy(owner, commandOrInput) {
