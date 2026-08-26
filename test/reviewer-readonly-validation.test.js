@@ -40,8 +40,9 @@ function runtimeStub() {
 test('reviewer Cargo validation requires an immutable lockfile mode', () => {
   assert.equal(cargoValidationWithoutLock('cargo test --quiet'), true);
   assert.equal(cargoValidationWithoutLock('cargo check --all-targets'), true);
+  assert.equal(cargoValidationWithoutLock('if ($ok) { cargo test --quiet }'), true);
   assert.equal(cargoValidationWithoutLock('cargo clippy --locked --all-targets'), false);
-  assert.equal(cargoValidationWithoutLock('cargo test --frozen --quiet'), false);
+  assert.equal(cargoValidationWithoutLock('if ($ok) { cargo test --frozen --quiet }'), false);
 
   const denied = reviewerValidationPolicy('Contract & integration reviewer', 'cargo test --quiet');
   assert.equal(denied.allowed, false);
@@ -51,6 +52,7 @@ test('reviewer Cargo validation requires an immutable lockfile mode', () => {
 
 test('reviewer validation rejects formatter modes that modify source', () => {
   assert.equal(mutatingValidationCommand('cargo fmt'), true);
+  assert.equal(mutatingValidationCommand('if ($dirty) { cargo fmt }'), true);
   assert.equal(mutatingValidationCommand('cargo fmt --check'), false);
   assert.equal(mutatingValidationCommand('prettier . --write'), true);
   assert.equal(mutatingValidationCommand('dotnet format'), true);
@@ -95,14 +97,14 @@ test('builtin reviewer shell is guarded by the same immutable-validation policy'
   const guard = new OperatorCredentialGuard({ environment: {} });
   const denied = guard.hook({
     toolName: 'builtin:powershell',
-    toolArgs: { command: 'cargo test --quiet' },
+    toolArgs: { command: 'if ($LASTEXITCODE -eq 0) { cargo test --quiet }' },
   }, { agent: 'Strong reviewer' });
   assert.equal(denied.permissionDecision, 'deny');
   assert.match(denied.permissionDecisionReason, /--locked|--frozen/i);
 
   const allowed = guard.hook({
     toolName: 'builtin:powershell',
-    toolArgs: { command: 'cargo test --locked --quiet' },
+    toolArgs: { command: 'if ($LASTEXITCODE -eq 0) { cargo test --locked --quiet }' },
   }, { agent: 'Strong reviewer' });
   assert.equal(allowed.permissionDecision, 'allow');
 });
