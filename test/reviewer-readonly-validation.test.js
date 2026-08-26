@@ -1,0 +1,91 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const {
+  cargoValidationWithoutLock,
+  mutatingValidationCommand,
+  reviewerValidationPolicy,
+} = require('../src/copilot/read-only-validation');
+const { createRunCommandTool } = require('../src/copilot/run-command-tool');
+
+function defineTool(name, config) {
+  return { name, ...config };
+}
+
+function runtimeStub() {
+  const calls = [];
+  return {
+    calls,
+    async execute(owner, request) {
+      calls.push({ owner, request });
+      return {
+        commandId: 'cmd-test',
+        pid: 123,
+        state: 'exited',
+        exitCode: 0,
+        signal: null,
+        elapsedMs: 1,
+        stdout: '',
+        stderr: '',
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        termination: { proven: true },
+      };
+    },
+  };
+}
+
+test('reviewer Cargo validation requires an immutable lockfile mode', () => {
+  assert.equal(cargoValidationWithoutLock('cargo test --quiet'), true);
+  assert.equal(cargoValidationWithoutLock('cargo check --all-targets'), true);
+  assert.equal(cargoValidationWithoutLock('cargo clippy --locked --all-targets'), false);
+  assert.equal(cargoValidationWithoutLock('cargo test --frozen --quiet'), false);
+
+  const denied = reviewerValidationPolicy('Contract & integration reviewer', 'cargo test --quiet');
+  assert.equal(denied.allowed, false);
+  assert.match(denied.reason, /--locked|--frozen/i);
+  assert.equal(reviewerValidationPolicy('Worker A', 'cargo test --quiet').allowed, true);
+});
+
+test('reviewer validation rejects formatter modes that modify source', () => {
+  assert.equal(mutatingValidationCommand('cargo fmt'), true);
+  assert.equal(mutatingValidationCommand('cargo fmt --check'), false);
+  assert.equal(mutatingValidationCommand('prettier . --write'), true);
+  assert.equal(mutatingValidationCommand('dotnet format'), true);
+  assert.equal(mutatingValidationCommand('dotnet format --verify-no-changes'), false);
+});
+
+test('managed reviewer command is denied before execution when Cargo could create Cargo.lock', async () => {
+  const runtime = runtimeStub();
+  let permissions = 0;
+  const tool = createRunCommandTool(defineTool, {
+    runtime,
+    workspace: process.cwd(),
+    owner: 'State & resources reviewer',
+    permissionHandler: async () => {
+      permissions += 1;
+      return { kind: 'approve' };
+    },
+  });
+
+  const result = await tool.handler({ command: 'cargo test --quiet' });
+  assert.equal(result.accepted, false);
+  assert.match(result.error, /Cargo validation must preserve Git-visible workspace state/i);
+  assert.equal(runtime.calls.length, 0);
+  assert.equal(permissions, 0);
+});
+
+test('managed reviewer command permits Cargo validation with --locked', async () => {
+  const runtime = runtimeStub();
+  const tool = createRunCommandTool(defineTool, {
+    runtime,
+    workspace: process.cwd(),
+    owner: 'Strong reviewer',
+    permissionHandler: async () => ({ kind: 'approve' }),
+  });
+
+  const result = await tool.handler({ command: 'cargo test --locked --quiet' });
+  assert.equal(result.exitCode, 0);
+  assert.equal(runtime.calls.length, 1);
+});
