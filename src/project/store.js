@@ -7,16 +7,14 @@ const { normalizeProjectEvent } = require('./events');
 const { applyProjectEvent, replayProjectEvents } = require('./state-machine');
 const { text } = require('./model');
 
-const EVENT_FILE = /^(\d{12})-([a-f0-9]{12})\.json$/;
+const EVENT_FILE = /^(\d{12})\.json$/;
 
 function projectKey(projectId) {
   return crypto.createHash('sha256').update(text(projectId, 'projectId')).digest('hex');
 }
 
-function eventFileName(revision, eventId) {
-  const sequence = String(revision).padStart(12, '0');
-  const idHash = crypto.createHash('sha256').update(eventId).digest('hex').slice(0, 12);
-  return `${sequence}-${idHash}.json`;
+function eventFileName(revision) {
+  return `${String(revision).padStart(12, '0')}.json`;
 }
 
 class FileProjectEventStore {
@@ -43,8 +41,7 @@ class FileProjectEventStore {
     let expectedRevision = 1;
     const events = [];
     for (const name of eventFiles) {
-      const match = EVENT_FILE.exec(name);
-      const revision = Number(match[1]);
+      const revision = Number(EVENT_FILE.exec(name)[1]);
       if (revision !== expectedRevision) {
         throw new Error(`Project '${id}' event log is not contiguous at revision ${expectedRevision}; found ${revision}.`);
       }
@@ -76,7 +73,7 @@ class FileProjectEventStore {
 
     const directory = this.projectDirectory(id);
     await fs.mkdir(directory, { recursive: true });
-    const finalPath = path.join(directory, eventFileName(next.revision, event.id));
+    const finalPath = path.join(directory, eventFileName(next.revision));
     const temporaryPath = `${finalPath}.tmp-${process.pid}-${crypto.randomUUID()}`;
     const handle = await fs.open(temporaryPath, 'wx');
     try {
@@ -87,13 +84,16 @@ class FileProjectEventStore {
     }
 
     try {
-      await fs.rename(temporaryPath, finalPath);
+      // Linking a fully synced temporary inode into the immutable sequence slot is
+      // atomic and fails if another writer already claimed this revision.
+      await fs.link(temporaryPath, finalPath);
     } catch (error) {
-      await fs.rm(temporaryPath, { force: true });
       if (error?.code === 'EEXIST') {
         throw new Error(`Concurrent project event append detected at revision ${next.revision}.`);
       }
       throw error;
+    } finally {
+      await fs.rm(temporaryPath, { force: true });
     }
     return next;
   }
