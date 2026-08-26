@@ -7,6 +7,7 @@ const {
   mutatingValidationCommand,
   reviewerValidationPolicy,
 } = require('../src/copilot/read-only-validation');
+const { OperatorCredentialGuard } = require('../src/copilot/operator-credential-guard');
 const { createRunCommandTool } = require('../src/copilot/run-command-tool');
 
 function defineTool(name, config) {
@@ -88,4 +89,20 @@ test('managed reviewer command permits Cargo validation with --locked', async ()
   const result = await tool.handler({ command: 'cargo test --locked --quiet' });
   assert.equal(result.exitCode, 0);
   assert.equal(runtime.calls.length, 1);
+});
+
+test('builtin reviewer shell is guarded by the same immutable-validation policy', () => {
+  const guard = new OperatorCredentialGuard({ environment: {} });
+  const denied = guard.hook({
+    toolName: 'builtin:powershell',
+    toolArgs: { command: 'cargo test --quiet' },
+  }, { agent: 'Strong reviewer' });
+  assert.equal(denied.permissionDecision, 'deny');
+  assert.match(denied.permissionDecisionReason, /--locked|--frozen/i);
+
+  const allowed = guard.hook({
+    toolName: 'builtin:powershell',
+    toolArgs: { command: 'cargo test --locked --quiet' },
+  }, { agent: 'Strong reviewer' });
+  assert.equal(allowed.permissionDecision, 'allow');
 });
