@@ -1,5 +1,7 @@
 'use strict';
 
+const { reviewerValidationPolicy } = require('./read-only-validation');
+
 function hookToolArguments(input) {
   const raw = input?.toolArgs ?? input?.tool_input ?? input?.arguments ?? {};
   if (raw && typeof raw === 'object') return raw;
@@ -70,6 +72,14 @@ class OperatorCredentialGuard {
   }
 
   hook(input, { agent = 'unknown' } = {}) {
+    const validation = reviewerValidationPolicy(agent, input);
+    if (!validation.allowed) {
+      return {
+        permissionDecision: 'deny',
+        permissionDecisionReason: validation.reason,
+      };
+    }
+
     const blocked = assignedEnvironmentNames(input)
       .filter(isSensitiveCredentialName)
       .filter((name) => !this.authorizedNames.has(name));
