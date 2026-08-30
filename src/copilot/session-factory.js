@@ -50,6 +50,7 @@ const WORKER_TOOLS = [
   'builtin:create',
   'custom:report_pass',
 ];
+const MAX_TOOL_TRACE = 100;
 
 const RECOVERY_COORDINATOR_PROMPT = `
 You are Convergent's strong recovery coordinator. You are read-only and handle one blocked worker/reviewer decision. Do not implement the task and do not edit files.
@@ -70,11 +71,25 @@ function shellText(input) {
   return [args.command, args.fullCommandText, args.script, args.input, JSON.stringify(args)].filter(Boolean).join(' ');
 }
 
+function readonlyFormatterMutation(text) {
+  const command = String(text ?? '');
+  if (/\bcargo\s+fmt\b/i.test(command) && !/--check\b/i.test(command)) return true;
+  if (/\brustfmt\b/i.test(command) && !/--check\b/i.test(command)) return true;
+  if (/\bgo\s+fmt\b/i.test(command)) return true;
+  if (/\bgofmt\b[^;&|]*\s-w\b/i.test(command)) return true;
+  if (/\bblack\b/i.test(command) && !/--check\b/i.test(command)) return true;
+  if (/\bruff\s+format\b/i.test(command) && !/--check\b/i.test(command)) return true;
+  if (/\bprettier\b/i.test(command) && /--write\b/i.test(command)) return true;
+  if (/\bdotnet\s+format\b/i.test(command) && !/--verify-no-changes\b/i.test(command)) return true;
+  return false;
+}
+
 function readonlyShellMutation(input) {
   const name = String(input?.toolName ?? '').toLowerCase();
   if (!/(bash|shell|powershell|terminal|cmd)/.test(name)) return false;
   const text = shellText(input);
-  return /\bgit\s+(?:add|commit|push|pull|checkout|switch|reset|clean|restore|merge|rebase|cherry-pick|apply|am|rm|mv|stash)\b|\b(?:Set-Content|Add-Content|Out-File|Remove-Item|Move-Item|Copy-Item|New-Item|Rename-Item)\b|(?:^|[;&|]\s*)\b(?:rm|mv|cp|mkdir|touch|truncate)\b|\bsed\s+-i\b|\bperl\s+-pi\b|\btee\b|(^|[^>])>\s*[^>&]|\bnpm\s+(?:install|update|uninstall)\b|\b(?:pip|uv\s+pip)\s+install\b/i.test(text);
+  return readonlyFormatterMutation(text)
+    || /\bgit\s+(?:add|commit|push|pull|checkout|switch|reset|clean|restore|merge|rebase|cherry-pick|apply|am|rm|mv|stash)\b|\b(?:Set-Content|Add-Content|Out-File|Remove-Item|Move-Item|Copy-Item|New-Item|Rename-Item)\b|(?:^|[;&|]\s*)\b(?:rm|mv|cp|mkdir|touch|truncate)\b|\bsed\s+-i\b|\bperl\s+-pi\b|\btee\b|(^|[^>])>\s*[^>&]|\bnpm\s+(?:install|update|uninstall)\b|\b(?:pip|uv\s+pip)\s+install\b/i.test(text);
 }
 
 function shellFileContentMutation(input) {
@@ -115,13 +130,47 @@ function attachOptional(session, eventName, handler, disposers) {
   } catch {}
 }
 
+function toolTraceSnapshot(session) {
+  const trace = session?.__convergentToolTrace;
+  if (!trace) return { completedCount: 0, completed: [] };
+  return {
+    completedCount: Number(trace.completedCount) || 0,
+    completed: Array.isArray(trace.completed) ? trace.completed.map((item) => ({ ...item })) : [],
+  };
+}
+
 function attachEventLogging(session, agentName, ui, usage, model, usageKey = agentName, reportFallback = null) {
   usage?.register(usageKey, session, model, agentName);
   const disposers = [];
+  const activeTools = new Map();
+  const trace = { completedCount: 0, completed: [] };
+  session.__convergentToolTrace = trace;
   attachOptional(session, 'assistant.intent', (event) => { ui.agentIntent(agentName, event.data.intent); audit(ui, { type: 'assistant_intent', agent: agentName, sessionId: session.sessionId, data: event.data }); }, disposers);
-  attachOptional(session, 'tool.execution_start', (event) => { ui.agentTool(agentName, event.data.toolName, describeToolCall(event.data)); audit(ui, { type: 'tool_start', agent: agentName, sessionId: session.sessionId, tool: event.data.toolName, data: event.data }); }, disposers);
+  attachOptional(session, 'tool.execution_start', (event) => {
+    const data = event.data ?? {};
+    const key = data.toolCallId ?? '__single__';
+    const item = { toolCallId: data.toolCallId, toolName: data.toolName, detail: describeToolCall(data), startedAt: Date.now() };
+    activeTools.set(key, item);
+    ui.agentTool(agentName, data.toolName, item.detail);
+    audit(ui, { type: 'tool_start', agent: agentName, sessionId: session.sessionId, tool: data.toolName, data });
+  }, disposers);
   attachOptional(session, 'tool.execution_partial_result', (event) => audit(ui, { type: 'tool_partial_result', agent: agentName, sessionId: session.sessionId, data: event.data }), disposers);
-  attachOptional(session, 'tool.execution_complete', (event) => audit(ui, { type: 'tool_complete', agent: agentName, sessionId: session.sessionId, tool: event.data.toolName, data: event.data }), disposers);
+  attachOptional(session, 'tool.execution_complete', (event) => {
+    const data = event.data ?? {};
+    const key = data.toolCallId ?? '__single__';
+    const started = activeTools.get(key);
+    activeTools.delete(key);
+    trace.completedCount += 1;
+    trace.completed.push({
+      toolCallId: data.toolCallId,
+      toolName: data.toolName ?? started?.toolName ?? 'unknown',
+      detail: started?.detail ?? describeToolCall(data),
+      success: data.success !== false,
+      durationMs: started?.startedAt ? Math.max(0, Date.now() - started.startedAt) : undefined,
+    });
+    if (trace.completed.length > MAX_TOOL_TRACE) trace.completed.splice(0, trace.completed.length - MAX_TOOL_TRACE);
+    audit(ui, { type: 'tool_complete', agent: agentName, sessionId: session.sessionId, tool: data.toolName, data });
+  }, disposers);
   attachOptional(session, 'assistant.message', (event) => {
     const content = event.data.content;
     ui.agentMessage(agentName, content);
@@ -256,4 +305,23 @@ class SessionFactory {
   }
 }
 
-module.exports = { SessionFactory, attachEventLogging, readonlyHook, workerHook, readonlyShellMutation, shellFileContentMutation, safeSessionPart, withReasoning, SHELL_BUILTINS, BATCH_VIEW_TOOL, COORDINATOR_TOOLS, RECOVERY_COORDINATOR_TOOLS, REVIEWER_TOOLS, WORKER_TOOLS, RECOVERY_COORDINATOR_PROMPT };
+module.exports = {
+  SessionFactory,
+  attachEventLogging,
+  toolTraceSnapshot,
+  readonlyHook,
+  workerHook,
+  readonlyShellMutation,
+  readonlyFormatterMutation,
+  shellFileContentMutation,
+  safeSessionPart,
+  withReasoning,
+  SHELL_BUILTINS,
+  BATCH_VIEW_TOOL,
+  COORDINATOR_TOOLS,
+  RECOVERY_COORDINATOR_TOOLS,
+  REVIEWER_TOOLS,
+  WORKER_TOOLS,
+  RECOVERY_COORDINATOR_PROMPT,
+  MAX_TOOL_TRACE,
+};
