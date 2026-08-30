@@ -40,6 +40,24 @@ function normalizeUsage(value = {}) {
   };
 }
 
+function addUsage(left = {}, right = {}) {
+  const a = normalizeUsage(left);
+  const b = normalizeUsage(right);
+  return {
+    inputTokens: a.inputTokens + b.inputTokens,
+    outputTokens: a.outputTokens + b.outputTokens,
+    reasoningTokens: a.reasoningTokens + b.reasoningTokens,
+    cacheReadTokens: a.cacheReadTokens + b.cacheReadTokens,
+    cacheWriteTokens: a.cacheWriteTokens + b.cacheWriteTokens,
+    calls: a.calls + b.calls,
+    turns: a.turns + b.turns,
+    totalNanoAiu: a.totalNanoAiu + b.totalNanoAiu,
+    aiCredits: a.aiCredits + b.aiCredits,
+    durationMs: a.durationMs + b.durationMs,
+    hasCreditData: a.hasCreditData || b.hasCreditData,
+  };
+}
+
 function normalizeTool(value = {}) {
   return {
     toolName: text(value.toolName, 120) || 'unknown',
@@ -78,11 +96,32 @@ function normalizeReviewDossier(value) {
   return { version: 1, cycles };
 }
 
+function uniqueStrings(values, limit) {
+  const seen = new Set();
+  const result = [];
+  for (const value of values) {
+    const normalized = text(value, 600);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(normalized);
+    if (result.length >= limit) break;
+  }
+  return result;
+}
+
 function appendReviewDossier(dossier, cycle) {
   const current = normalizeReviewDossier(dossier);
   const normalized = normalizeReviewCycle(cycle);
+  const previous = current.cycles.find((item) => item.cycle === normalized.cycle);
+  const merged = previous ? {
+    ...normalized,
+    checks: uniqueStrings([...(previous.checks ?? []), ...(normalized.checks ?? [])], MAX_REVIEW_DOSSIER_CHECKS),
+    tools: [...(previous.tools ?? []), ...(normalized.tools ?? [])].slice(-MAX_REVIEW_DOSSIER_TOOLS),
+    usage: addUsage(previous.usage, normalized.usage),
+    integrityIncident: normalized.integrityIncident ?? previous.integrityIncident ?? null,
+  } : normalized;
   const cycles = current.cycles.filter((item) => item.cycle !== normalized.cycle);
-  cycles.push(normalized);
+  cycles.push(merged);
   cycles.sort((a, b) => a.cycle - b.cycle);
   return { version: 1, cycles: cycles.slice(-MAX_REVIEW_DOSSIER_CYCLES) };
 }
@@ -103,7 +142,7 @@ function formatReviewDossier(value) {
     }
     if (cycle.checks.length) lines.push(`  - checks: ${cycle.checks.join(' | ')}`);
     if (cycle.tools.length) lines.push(`  - tools: ${cycle.tools.map((tool) => `${tool.toolName}${tool.detail ? `(${tool.detail})` : ''}`).join(' | ')}`);
-    if (cycle.integrityIncident) lines.push('  - reviewer workspace-integrity incident occurred; the mutated revision required independent revalidation before acceptance.');
+    if (cycle.integrityIncident) lines.push('  - reviewer workspace-integrity incident occurred; the changed revision was sent through independent worker revalidation before acceptance.');
   }
   return lines.join('\n');
 }
@@ -114,4 +153,5 @@ module.exports = {
   appendReviewDossier,
   formatReviewDossier,
   normalizeReviewCycle,
+  addUsage,
 };
