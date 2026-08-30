@@ -18,8 +18,8 @@ test('read-only roles deny mutating formatter commands and allow check forms', (
   assert.equal(readonlyFormatterMutation('cargo test'), false);
 });
 
-test('shell mutation policy applies formatter detection to reviewer shell tools', () => {
-  assert.equal(readonlyShellMutation({ toolName: 'builtin:bash', command: 'cargo fmt' }), true);
-  assert.equal(readonlyShellMutation({ toolName: 'builtin:bash', command: 'cargo fmt --all -- --check' }), false);
-  assert.equal(readonlyShellMutation({ toolName: 'builtin:powershell', command: 'cargo test' }), false);
+test('shell mutation policy applies formatter detection to live reviewer hook arguments', () => {
+  assert.equal(readonlyShellMutation({ toolName: 'builtin:bash', toolArgs: { command: 'cargo fmt' } }), true);
+  assert.equal(readonlyShellMutation({ toolName: 'builtin:bash', toolArgs: { command: 'cargo fmt --all -- --check' } }), false);
+  assert.equal(readonlyShellMutation({ toolName: 'builtin:powershell', toolArgs: { command: 'cargo test' } }), false);
 });
