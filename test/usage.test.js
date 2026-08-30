@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { UsageTracker, aiCreditsFromNanoAiu, USAGE_STATE_VERSION, taskIdFromAgent } = require('../src/orchestrator/usage');
+const { UsageTracker, aiCreditsFromNanoAiu, usageDelta, USAGE_STATE_VERSION, taskIdFromAgent } = require('../src/orchestrator/usage');
 
 test('nano-AIU conversion follows the SDK display convention', () => {
   assert.equal(aiCreditsFromNanoAiu(1_000_000_000), 1);
@@ -50,6 +50,7 @@ test('usage tracker aggregates tokens credits cache reasoning and context across
   assert.equal(summary.turns, 2);
   assert.equal(summary.hasCreditData, true);
   assert.equal(summary.agents.length, 2);
+  assert.equal(summary.agents[0].label, 'task1 · Worker A');
   assert.equal(summary.tasks.length, 1);
   assert.equal(summary.tasks[0].taskId, 'task1');
 });
@@ -79,10 +80,23 @@ test('usage state survives a resume and new sessions add to request lifetime tot
   assert.equal(summary.turns, 2);
   assert.equal(summary.agents.length, 1);
   assert.equal(summary.agents[0].sessionId, 'review-2');
+  assert.equal(summary.agents[0].label, '1-T1 · Strong reviewer');
   assert.equal(summary.run.inputTokens, 40);
   assert.equal(summary.run.outputTokens, 4);
   assert.equal(summary.run.aiCredits, 0.1);
   assert.equal(summary.tasks[0].inputTokens, 140);
+});
+
+test('usage delta isolates one review cycle from request-lifetime totals', () => {
+  const delta = usageDelta(
+    { inputTokens: 100, outputTokens: 10, reasoningTokens: 5, totalNanoAiu: 200_000_000, hasCreditData: true, elapsedMs: 1000 },
+    { inputTokens: 140, outputTokens: 14, reasoningTokens: 8, totalNanoAiu: 260_000_000, hasCreditData: true, elapsedMs: 1300 },
+  );
+  assert.equal(delta.inputTokens, 40);
+  assert.equal(delta.outputTokens, 4);
+  assert.equal(delta.reasoningTokens, 3);
+  assert.equal(delta.aiCredits, 0.06);
+  assert.equal(delta.elapsedMs, 300);
 });
 
 test('task id is derived from persistent task-local usage keys', () => {
