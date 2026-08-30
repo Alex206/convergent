@@ -1,5 +1,19 @@
 'use strict';
 
+const USAGE_STATE_VERSION = 1;
+const ADDITIVE_FIELDS = [
+  'calls',
+  'turns',
+  'inputTokens',
+  'outputTokens',
+  'reasoningTokens',
+  'cacheReadTokens',
+  'cacheWriteTokens',
+  'premiumRequestCost',
+  'totalNanoAiu',
+  'durationMs',
+];
+
 function numberOrZero(value) {
   const number = Number(value);
   return Number.isFinite(number) ? number : 0;
@@ -9,37 +23,99 @@ function aiCreditsFromNanoAiu(totalNanoAiu) {
   return numberOrZero(totalNanoAiu) / 1e9;
 }
 
+function emptyTotals() {
+  return Object.fromEntries(ADDITIVE_FIELDS.map((field) => [field, 0]));
+}
+
+function sanitizeAgent(entry = {}) {
+  return {
+    agent: String(entry.agent ?? ''),
+    label: String(entry.label ?? entry.agent ?? ''),
+    sessionId: entry.sessionId,
+    model: entry.model ?? 'auto',
+    modelId: entry.modelId ?? 'auto',
+    calls: numberOrZero(entry.calls),
+    turns: numberOrZero(entry.turns),
+    inputTokens: numberOrZero(entry.inputTokens),
+    outputTokens: numberOrZero(entry.outputTokens),
+    reasoningTokens: numberOrZero(entry.reasoningTokens),
+    cacheReadTokens: numberOrZero(entry.cacheReadTokens),
+    cacheWriteTokens: numberOrZero(entry.cacheWriteTokens),
+    premiumRequestCost: numberOrZero(entry.premiumRequestCost),
+    totalPremiumRequests: numberOrZero(entry.totalPremiumRequests),
+    totalNanoAiu: numberOrZero(entry.totalNanoAiu),
+    hasCreditData: Boolean(entry.hasCreditData),
+    contextTokens: entry.contextTokens === undefined ? undefined : numberOrZero(entry.contextTokens),
+    contextLimit: entry.contextLimit === undefined ? undefined : numberOrZero(entry.contextLimit),
+    contextMessages: entry.contextMessages === undefined ? undefined : numberOrZero(entry.contextMessages),
+    maxContextTokens: numberOrZero(entry.maxContextTokens),
+    maxContextMessages: numberOrZero(entry.maxContextMessages),
+    durationMs: numberOrZero(entry.durationMs),
+  };
+}
+
+function taskIdFromAgent(agent) {
+  const value = String(agent ?? '');
+  const separator = value.indexOf(':');
+  if (separator <= 0) return null;
+  return value.slice(0, separator);
+}
+
+function aggregateEntries(entries) {
+  const totals = emptyTotals();
+  let maxContextTokens = 0;
+  let maxContextMessages = 0;
+  let hasCreditData = false;
+  for (const entry of entries) {
+    for (const field of ADDITIVE_FIELDS) totals[field] += numberOrZero(entry[field]);
+    maxContextTokens = Math.max(maxContextTokens, numberOrZero(entry.maxContextTokens));
+    maxContextMessages = Math.max(maxContextMessages, numberOrZero(entry.maxContextMessages));
+    hasCreditData ||= Boolean(entry.hasCreditData);
+  }
+  return {
+    ...totals,
+    maxContextTokens,
+    maxContextMessages,
+    aiCredits: aiCreditsFromNanoAiu(totals.totalNanoAiu),
+    hasCreditData,
+  };
+}
+
+function subtractTotals(current, baseline, { hasCreditData = false } = {}) {
+  const result = {};
+  for (const field of ADDITIVE_FIELDS) {
+    result[field] = Math.max(0, numberOrZero(current?.[field]) - numberOrZero(baseline?.[field]));
+  }
+  return {
+    ...result,
+    maxContextTokens: numberOrZero(current?.maxContextTokens),
+    maxContextMessages: numberOrZero(current?.maxContextMessages),
+    aiCredits: aiCreditsFromNanoAiu(result.totalNanoAiu),
+    hasCreditData,
+  };
+}
+
 class UsageTracker {
   constructor(startedAt = Date.now()) {
     this.startedAt = startedAt;
+    this.runStartedAt = Date.now();
     this.agents = new Map();
     this.turns = 0;
+    this.runBaseline = emptyTotals();
+    this.runHasCreditData = false;
   }
 
   register(agent, session, model, label = agent) {
-    this.agents.set(agent, {
-      agent,
-      label,
-      sessionId: session?.sessionId,
-      model: model?.name ?? model?.id ?? 'auto',
-      modelId: model?.id ?? 'auto',
-      calls: 0,
-      turns: 0,
-      inputTokens: 0,
-      outputTokens: 0,
-      reasoningTokens: 0,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
-      premiumRequestCost: 0,
-      totalNanoAiu: 0,
-      hasCreditData: false,
-      contextTokens: undefined,
-      contextLimit: undefined,
-      contextMessages: undefined,
-      maxContextTokens: 0,
-      maxContextMessages: 0,
-      durationMs: 0,
-    });
+    const existing = this.agents.get(agent);
+    const entry = existing ?? sanitizeAgent({ agent, label });
+    entry.agent = agent;
+    entry.label = label;
+    entry.sessionId = session?.sessionId;
+    entry.model = model?.name ?? model?.id ?? entry.model ?? 'auto';
+    entry.modelId = model?.id ?? entry.modelId ?? 'auto';
+    entry._sessionNanoAiuBase = numberOrZero(entry.totalNanoAiu);
+    entry._lastSessionNanoAiu = 0;
+    this.agents.set(agent, entry);
   }
 
   recordAssistantUsage(agent, data = {}) {
@@ -58,8 +134,12 @@ class UsageTracker {
     const entry = this.agents.get(agent);
     if (!entry) return;
     if (data.totalNanoAiu !== undefined && data.totalNanoAiu !== null) {
-      entry.totalNanoAiu = numberOrZero(data.totalNanoAiu);
+      const reported = Math.max(0, numberOrZero(data.totalNanoAiu));
+      entry._sessionNanoAiuBase ??= numberOrZero(entry.totalNanoAiu);
+      entry.totalNanoAiu = entry._sessionNanoAiuBase + reported;
+      entry._lastSessionNanoAiu = reported;
       entry.hasCreditData = true;
+      this.runHasCreditData = true;
     }
     if (data.totalPremiumRequests !== undefined && data.totalPremiumRequests !== null) {
       entry.totalPremiumRequests = numberOrZero(data.totalPremiumRequests);
@@ -91,8 +171,12 @@ class UsageTracker {
     try {
       const metrics = await getMetrics.call(session.rpc.usage);
       if (metrics?.totalNanoAiu !== undefined && metrics?.totalNanoAiu !== null) {
-        entry.totalNanoAiu = numberOrZero(metrics.totalNanoAiu);
+        const reported = Math.max(0, numberOrZero(metrics.totalNanoAiu));
+        entry._sessionNanoAiuBase ??= numberOrZero(entry.totalNanoAiu);
+        entry.totalNanoAiu = entry._sessionNanoAiuBase + reported;
+        entry._lastSessionNanoAiu = reported;
         entry.hasCreditData = true;
+        this.runHasCreditData = true;
       }
       if (metrics?.totalPremiumRequestCost !== undefined && metrics?.totalPremiumRequestCost !== null) {
         entry.premiumRequestCost = numberOrZero(metrics.totalPremiumRequestCost);
@@ -102,30 +186,72 @@ class UsageTracker {
     }
   }
 
+  exportState() {
+    return {
+      version: USAGE_STATE_VERSION,
+      startedAt: this.startedAt,
+      turns: this.turns,
+      agents: [...this.agents.values()].map(sanitizeAgent),
+    };
+  }
+
+  restore(state) {
+    if (!state || state.version !== USAGE_STATE_VERSION || !Array.isArray(state.agents)) return false;
+    const startedAt = Number(state.startedAt);
+    if (Number.isFinite(startedAt) && startedAt > 0) this.startedAt = startedAt;
+    this.turns = Math.max(0, numberOrZero(state.turns));
+    this.agents = new Map();
+    for (const raw of state.agents) {
+      const entry = sanitizeAgent(raw);
+      if (!entry.agent) continue;
+      entry._sessionNanoAiuBase = entry.totalNanoAiu;
+      entry._lastSessionNanoAiu = 0;
+      this.agents.set(entry.agent, entry);
+    }
+    const totals = aggregateEntries([...this.agents.values()]);
+    this.runBaseline = Object.fromEntries(ADDITIVE_FIELDS.map((field) => [field, numberOrZero(totals[field])]));
+    this.runStartedAt = Date.now();
+    this.runHasCreditData = false;
+    return true;
+  }
+
   summary(now = Date.now()) {
     const agents = [...this.agents.values()].map((entry) => ({
-      ...entry,
+      ...sanitizeAgent(entry),
       aiCredits: aiCreditsFromNanoAiu(entry.totalNanoAiu),
     }));
-    const totalNanoAiu = agents.reduce((sum, entry) => sum + numberOrZero(entry.totalNanoAiu), 0);
+    const totals = aggregateEntries(agents);
+    const taskGroups = new Map();
+    for (const entry of agents) {
+      const taskId = taskIdFromAgent(entry.agent);
+      if (!taskId) continue;
+      const group = taskGroups.get(taskId) ?? [];
+      group.push(entry);
+      taskGroups.set(taskId, group);
+    }
+    const tasks = [...taskGroups.entries()].map(([taskId, entries]) => ({
+      taskId,
+      ...aggregateEntries(entries),
+      agents: entries,
+    }));
+    const run = subtractTotals(totals, this.runBaseline, { hasCreditData: this.runHasCreditData });
+    run.elapsedMs = Math.max(0, now - this.runStartedAt);
+
     return {
       elapsedMs: Math.max(0, now - this.startedAt),
-      turns: this.turns,
-      calls: agents.reduce((sum, entry) => sum + entry.calls, 0),
-      inputTokens: agents.reduce((sum, entry) => sum + entry.inputTokens, 0),
-      outputTokens: agents.reduce((sum, entry) => sum + entry.outputTokens, 0),
-      reasoningTokens: agents.reduce((sum, entry) => sum + entry.reasoningTokens, 0),
-      cacheReadTokens: agents.reduce((sum, entry) => sum + entry.cacheReadTokens, 0),
-      cacheWriteTokens: agents.reduce((sum, entry) => sum + entry.cacheWriteTokens, 0),
-      premiumRequestCost: agents.reduce((sum, entry) => sum + entry.premiumRequestCost, 0),
-      maxContextTokens: agents.reduce((max, entry) => Math.max(max, numberOrZero(entry.maxContextTokens)), 0),
-      maxContextMessages: agents.reduce((max, entry) => Math.max(max, numberOrZero(entry.maxContextMessages)), 0),
-      totalNanoAiu,
-      aiCredits: aiCreditsFromNanoAiu(totalNanoAiu),
-      hasCreditData: agents.some((entry) => entry.hasCreditData),
+      runElapsedMs: run.elapsedMs,
+      ...totals,
+      turns: totals.turns,
       agents,
+      tasks,
+      run,
     };
   }
 }
 
-module.exports = { UsageTracker, aiCreditsFromNanoAiu };
+module.exports = {
+  UsageTracker,
+  aiCreditsFromNanoAiu,
+  USAGE_STATE_VERSION,
+  taskIdFromAgent,
+};
