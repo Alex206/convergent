@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { UsageTracker, aiCreditsFromNanoAiu } = require('../src/orchestrator/usage');
+const { UsageTracker, aiCreditsFromNanoAiu, USAGE_STATE_VERSION, taskIdFromAgent } = require('../src/orchestrator/usage');
 
 test('nano-AIU conversion follows the SDK display convention', () => {
   assert.equal(aiCreditsFromNanoAiu(1_000_000_000), 1);
@@ -50,4 +50,43 @@ test('usage tracker aggregates tokens credits cache reasoning and context across
   assert.equal(summary.turns, 2);
   assert.equal(summary.hasCreditData, true);
   assert.equal(summary.agents.length, 2);
+  assert.equal(summary.tasks.length, 1);
+  assert.equal(summary.tasks[0].taskId, 'task1');
+});
+
+test('usage state survives a resume and new sessions add to request lifetime totals', () => {
+  const first = new UsageTracker(1000);
+  first.register('1-T1:reviewer', { sessionId: 'review-1' }, { id: 'terra', name: 'Terra' }, 'Strong reviewer');
+  first.recordAssistantUsage('1-T1:reviewer', { inputTokens: 100, outputTokens: 10, reasoningTokens: 5 });
+  first.recordCheckpoint('1-T1:reviewer', { totalNanoAiu: 250_000_000 });
+  first.recordTurn('1-T1:reviewer', 500);
+
+  const state = first.exportState();
+  assert.equal(state.version, USAGE_STATE_VERSION);
+
+  const resumed = new UsageTracker(9000);
+  assert.equal(resumed.restore(state), true);
+  resumed.register('1-T1:reviewer', { sessionId: 'review-2' }, { id: 'terra', name: 'Terra' }, 'Strong reviewer');
+  resumed.recordAssistantUsage('1-T1:reviewer', { inputTokens: 40, outputTokens: 4, reasoningTokens: 2 });
+  resumed.recordCheckpoint('1-T1:reviewer', { totalNanoAiu: 100_000_000 });
+  resumed.recordTurn('1-T1:reviewer', 200);
+
+  const summary = resumed.summary(9500);
+  assert.equal(summary.inputTokens, 140);
+  assert.equal(summary.outputTokens, 14);
+  assert.equal(summary.reasoningTokens, 7);
+  assert.equal(summary.aiCredits, 0.35);
+  assert.equal(summary.turns, 2);
+  assert.equal(summary.agents.length, 1);
+  assert.equal(summary.agents[0].sessionId, 'review-2');
+  assert.equal(summary.run.inputTokens, 40);
+  assert.equal(summary.run.outputTokens, 4);
+  assert.equal(summary.run.aiCredits, 0.1);
+  assert.equal(summary.tasks[0].inputTokens, 140);
+});
+
+test('task id is derived from persistent task-local usage keys', () => {
+  assert.equal(taskIdFromAgent('2-T7:worker-a'), '2-T7');
+  assert.equal(taskIdFromAgent('2-T7:reviewer'), '2-T7');
+  assert.equal(taskIdFromAgent('coordinator'), null);
 });
