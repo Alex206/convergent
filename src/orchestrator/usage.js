@@ -95,6 +95,14 @@ function subtractTotals(current, baseline, { hasCreditData = false } = {}) {
   };
 }
 
+function usageDelta(before = {}, after = {}) {
+  const delta = subtractTotals(after, before, {
+    hasCreditData: Boolean(after.hasCreditData) && numberOrZero(after.totalNanoAiu) >= numberOrZero(before.totalNanoAiu),
+  });
+  delta.elapsedMs = Math.max(0, numberOrZero(after.elapsedMs) - numberOrZero(before.elapsedMs));
+  return delta;
+}
+
 class UsageTracker {
   constructor(startedAt = Date.now()) {
     this.startedAt = startedAt;
@@ -114,7 +122,9 @@ class UsageTracker {
     entry.model = model?.name ?? model?.id ?? entry.model ?? 'auto';
     entry.modelId = model?.id ?? entry.modelId ?? 'auto';
     entry._sessionNanoAiuBase = numberOrZero(entry.totalNanoAiu);
+    entry._sessionPremiumCostBase = numberOrZero(entry.premiumRequestCost);
     entry._lastSessionNanoAiu = 0;
+    entry._lastSessionPremiumCost = 0;
     this.agents.set(agent, entry);
   }
 
@@ -179,7 +189,10 @@ class UsageTracker {
         this.runHasCreditData = true;
       }
       if (metrics?.totalPremiumRequestCost !== undefined && metrics?.totalPremiumRequestCost !== null) {
-        entry.premiumRequestCost = numberOrZero(metrics.totalPremiumRequestCost);
+        const reported = Math.max(0, numberOrZero(metrics.totalPremiumRequestCost));
+        entry._sessionPremiumCostBase ??= numberOrZero(entry.premiumRequestCost);
+        entry.premiumRequestCost = entry._sessionPremiumCostBase + reported;
+        entry._lastSessionPremiumCost = reported;
       }
     } catch {
       // Usage RPC is experimental. Live events remain the fallback.
@@ -205,7 +218,9 @@ class UsageTracker {
       const entry = sanitizeAgent(raw);
       if (!entry.agent) continue;
       entry._sessionNanoAiuBase = entry.totalNanoAiu;
+      entry._sessionPremiumCostBase = entry.premiumRequestCost;
       entry._lastSessionNanoAiu = 0;
+      entry._lastSessionPremiumCost = 0;
       this.agents.set(entry.agent, entry);
     }
     const totals = aggregateEntries([...this.agents.values()]);
@@ -252,6 +267,7 @@ class UsageTracker {
 module.exports = {
   UsageTracker,
   aiCreditsFromNanoAiu,
+  usageDelta,
   USAGE_STATE_VERSION,
   taskIdFromAgent,
 };
