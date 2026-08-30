@@ -231,10 +231,15 @@ class UsageTracker {
   }
 
   summary(now = Date.now()) {
-    const agents = [...this.agents.values()].map((entry) => ({
-      ...sanitizeAgent(entry),
-      aiCredits: aiCreditsFromNanoAiu(entry.totalNanoAiu),
-    }));
+    const agents = [...this.agents.values()].map((entry) => {
+      const normalized = sanitizeAgent(entry);
+      const taskId = taskIdFromAgent(normalized.agent);
+      return {
+        ...normalized,
+        label: taskId ? `${taskId} · ${normalized.label}` : normalized.label,
+        aiCredits: aiCreditsFromNanoAiu(normalized.totalNanoAiu),
+      };
+    });
     const totals = aggregateEntries(agents);
     const taskGroups = new Map();
     for (const entry of agents) {
