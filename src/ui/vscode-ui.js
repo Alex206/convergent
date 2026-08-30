@@ -71,13 +71,35 @@ function aggregateAgentUsage(summary) {
   return [...groups.values()];
 }
 
-function detailedUsageMarkdown(summary) {
+function taskUsageMarkdown(summary) {
+  const tasks = Array.isArray(summary?.tasks) ? summary.tasks : [];
+  if (!tasks.length) return [];
   const lines = [
-    `**Usage:** ${compactUsage(summary)}`,
+    '**Per-task totals**',
     '',
+    '| Task | AI credits | In / out | Reasoning | LLM calls | Turns |',
+    '| --- | ---: | ---: | ---: | ---: | ---: |',
+  ];
+  for (const task of tasks) {
+    const credits = task.hasCreditData ? `≈${task.aiCredits.toFixed(task.aiCredits < 0.01 ? 5 : 3)}` : 'pending';
+    lines.push(`| ${task.taskId} | ${credits} | ${formatTokenCount(task.inputTokens)} / ${formatTokenCount(task.outputTokens)} | ${formatTokenCount(task.reasoningTokens)} | ${task.calls ?? 0} | ${task.turns ?? 0} |`);
+  }
+  return [...lines, ''];
+}
+
+function detailedUsageMarkdown(summary) {
+  const requestLabel = summary?.run ? 'Request lifetime' : 'Usage';
+  const lines = [
+    `**${requestLabel}:** ${compactUsage(summary)}`,
+  ];
+  if (summary?.run) {
+    lines.push(`**Current execution:** ${compactUsage(summary.run)}`);
+  }
+  lines.push('', ...taskUsageMarkdown(summary));
+  lines.push(
     '| Agent | Model | AI credits | In / out | Cache read / write | Reasoning | LLM calls | Peak context | Turns | Active time |',
     '| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |',
-  ];
+  );
   for (const entry of aggregateAgentUsage(summary)) {
     const credits = entry.hasCreditData ? `≈${entry.aiCredits.toFixed(entry.aiCredits < 0.01 ? 5 : 3)}` : 'pending';
     const context = entry.maxContextTokens
@@ -274,8 +296,22 @@ class VscodeWorkflowUi {
         this.stream.markdown('\n');
       }
     }
+    if (meta.cycleUsage) {
+      const cycleSummary = { ...meta.cycleUsage, elapsedMs: meta.durationMs ?? meta.cycleUsage.elapsedMs };
+      const toolCount = Array.isArray(meta.tools) ? meta.tools.length : 0;
+      this.stream.markdown(`  ↳ R${cycle} usage: ${compactUsage(cycleSummary)}${toolCount ? ` · ${toolCount} tool call(s)` : ''}\n`);
+      this.log(`Strong reviewer R${cycle} usage: ${compactUsage(cycleSummary)}; tools=${toolCount}`);
+    }
     this.log(`Strong reviewer cycle ${cycle}: ${review.verdict}, duration=${meta.durationMs ?? 0}ms; ${review.summary}`);
-    this.audit({ type: 'strong_review_result', cycle, review, durationMs: meta.durationMs, usage: meta.usage });
+    this.audit({
+      type: 'strong_review_result',
+      cycle,
+      review,
+      durationMs: meta.durationMs,
+      usage: meta.usage,
+      cycleUsage: meta.cycleUsage,
+      tools: meta.tools,
+    });
     if (meta.usage) this.usageProgress(meta.usage);
   }
 
