@@ -1,5 +1,7 @@
 'use strict';
 
+const { mutatingValidationCommand, reviewerValidationPolicy, shellCommandText } = require('./read-only-validation');
+
 function hookToolArguments(input) {
   const raw = input?.toolArgs ?? input?.tool_input ?? input?.arguments ?? {};
   if (raw && typeof raw === 'object') return raw;
@@ -20,7 +22,7 @@ function shellText(input) {
 
 function isShellTool(input) {
   const name = String(input?.toolName ?? input?.tool_name ?? '').toLowerCase();
-  return /(bash|shell|powershell|terminal|cmd)/.test(name);
+  return /(bash|shell|powershell|terminal|cmd|run[_-]?command)/.test(name);
 }
 
 function isSensitiveCredentialName(name) {
@@ -70,6 +72,21 @@ class OperatorCredentialGuard {
   }
 
   hook(input, { agent = 'unknown' } = {}) {
+    if (isShellTool(input) && mutatingValidationCommand(shellCommandText(input))) {
+      return {
+        permissionDecision: 'deny',
+        permissionDecisionReason: 'Convergent validation commands must not rewrite source files. Use cargo fmt --check, dotnet format --verify-no-changes, or the equivalent non-writing validation mode. Make intended source changes through the normal edit/apply-patch tools.',
+      };
+    }
+
+    const validation = reviewerValidationPolicy(agent, input);
+    if (!validation.allowed) {
+      return {
+        permissionDecision: 'deny',
+        permissionDecisionReason: validation.reason,
+      };
+    }
+
     const blocked = assignedEnvironmentNames(input)
       .filter(isSensitiveCredentialName)
       .filter((name) => !this.authorizedNames.has(name));
