@@ -1,10 +1,25 @@
 'use strict';
 
 const PERSISTENT_COMPACTION_TURN_INTERVAL = 2;
+const REVIEWER_COMPACTION_TURN_INTERVAL = 1;
+
+function isReviewerAgent(agentName) {
+  const name = String(agentName ?? '').trim();
+  return name === 'Strong reviewer' || /reviewer(?:\s+\d+)?$/i.test(name);
+}
 
 function isPersistentTaskAgent(agentName) {
   const name = String(agentName ?? '');
-  return /^Worker [AB]$/.test(name) || name === 'Strong reviewer';
+  return /^Worker [AB]$/.test(name) || isReviewerAgent(name);
+}
+
+function compactionTurnInterval(agentName, requestedInterval = null) {
+  if (requestedInterval !== null && requestedInterval !== undefined) {
+    return Math.max(1, Math.trunc(Number(requestedInterval) || PERSISTENT_COMPACTION_TURN_INTERVAL));
+  }
+  return isReviewerAgent(agentName)
+    ? REVIEWER_COMPACTION_TURN_INTERVAL
+    : PERSISTENT_COMPACTION_TURN_INTERVAL;
 }
 
 function numberOrZero(value) {
@@ -48,11 +63,11 @@ async function compactSessionHistory(session, agentName, ui) {
 }
 
 function wrapSendAndWaitWithCompaction(session, agentName, ui, sendAndWait, {
-  interval = PERSISTENT_COMPACTION_TURN_INTERVAL,
+  interval = null,
   onPrompt = null,
 } = {}) {
   if (typeof sendAndWait !== 'function') throw new Error('wrapSendAndWaitWithCompaction requires sendAndWait.');
-  const boundedInterval = Math.max(1, Math.trunc(Number(interval) || PERSISTENT_COMPACTION_TURN_INTERVAL));
+  const boundedInterval = compactionTurnInterval(agentName, interval);
   let completedSinceCompaction = 0;
 
   return async (options, timeoutMs) => {
@@ -74,7 +89,10 @@ function wrapSendAndWaitWithCompaction(session, agentName, ui, sendAndWait, {
 
 module.exports = {
   PERSISTENT_COMPACTION_TURN_INTERVAL,
+  REVIEWER_COMPACTION_TURN_INTERVAL,
+  isReviewerAgent,
   isPersistentTaskAgent,
+  compactionTurnInterval,
   compactSessionHistory,
   wrapSendAndWaitWithCompaction,
 };

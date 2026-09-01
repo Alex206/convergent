@@ -5,7 +5,11 @@ const assert = require('node:assert/strict');
 const { ReviewArchitectureEngine, isReviewerWorkspaceMutationError } = require('../src/orchestrator/review-architecture-engine');
 const { normalizeReviewArchitecture, reviewerSpecs } = require('../src/orchestrator/review-architecture');
 const { createCompositeReviewer } = require('../src/copilot/review-architecture-session-factory');
-const { appendReviewDossier, formatReviewDossier } = require('../src/orchestrator/review-dossier');
+const {
+  MAX_REVIEW_PROMPT_CYCLES,
+  appendReviewDossier,
+  formatReviewDossier,
+} = require('../src/orchestrator/review-dossier');
 
 function fakeUi() {
   return {
@@ -137,4 +141,32 @@ test('review dossier merges retries of the same cycle without preserving hidden 
   assert.deepEqual(dossier.cycles[0].checks, ['test A', 'test B']);
   assert.equal(dossier.cycles[0].usage.inputTokens, 150);
   assert.match(formatReviewDossier(dossier), /structured review history, not hidden reasoning/i);
+});
+
+test('model-facing review dossier is bounded to recent convergence context while full history remains durable', () => {
+  let dossier = null;
+  for (let cycle = 1; cycle <= 5; cycle += 1) {
+    dossier = appendReviewDossier(dossier, {
+      cycle,
+      revision: `R${cycle}`,
+      report: {
+        verdict: 'findings',
+        summary: `summary-${cycle}`,
+        findings: [{ severity: 'medium', title: `finding-${cycle}`, description: `description-${cycle}` }],
+        checks: [`check-${cycle}`],
+      },
+      tools: [{ toolName: 'batch_view', detail: `tool-detail-${cycle}`, success: true }],
+      usage: { inputTokens: cycle * 100000, outputTokens: 1000 },
+    });
+  }
+
+  assert.equal(dossier.cycles.length, 5, 'checkpoint keeps the complete bounded durable history');
+  assert.equal(MAX_REVIEW_PROMPT_CYCLES, 2);
+  const prompt = formatReviewDossier(dossier);
+  assert.doesNotMatch(prompt, /summary-1|summary-2|summary-3/);
+  assert.match(prompt, /summary-4/);
+  assert.match(prompt, /summary-5/);
+  assert.match(prompt, /3 older review cycle\(s\) are intentionally omitted/i);
+  assert.match(prompt, /historical context, not automatically active defects/i);
+  assert.doesNotMatch(prompt, /tool-detail|100000 input|AI credits/i, 'tool traces and historical usage stay in the durable dossier, not every model prompt');
 });

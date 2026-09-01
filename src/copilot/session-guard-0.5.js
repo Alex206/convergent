@@ -21,6 +21,12 @@ function toolSnapshot(tool, now = Date.now()) {
   };
 }
 
+function boundedGuidance(value, max = 1200) {
+  const text = String(value ?? '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
 class ConcurrentSessionGuard extends base.SessionGuard {
   ensureActiveTools() {
     if (!(this.activeTools instanceof Map)) this.activeTools = new Map();
@@ -202,6 +208,58 @@ class ConcurrentSessionGuard extends base.SessionGuard {
     this.ui?.agentManagedCommandProgress?.(this.agentName, detail);
   }
 
+  async terminateCurrentManagedCommand(expectedToolCallId = null, operatorGuidance = '') {
+    const tools = this.ensureActiveTools();
+    const expected = String(expectedToolCallId ?? '').trim();
+    const tool = expected ? tools.get(expected) : this.selectCurrentTool();
+    if (!tool || !/(^|:)run[_-]?command$/i.test(String(tool.name ?? ''))) {
+      return { terminated: false, reason: 'managed-command-not-active' };
+    }
+    if (expected && tool.id !== expected) {
+      return { terminated: false, reason: 'stale-tool-control' };
+    }
+
+    const now = Date.now();
+    const quietMs = now - tool.lastProgressAt;
+    const elapsedMs = now - tool.startedAt;
+    const guidance = boundedGuidance(operatorGuidance);
+    const diagnostic = this.snapshot();
+    this.stalls.push({
+      at: new Date(now).toISOString(),
+      kind: 'tool',
+      tool: tool.name,
+      toolCallId: tool.id,
+      quietMs,
+      elapsedMs,
+      operatorRequested: true,
+    });
+
+    const termination = await this.forceAbortAfterStall('operator-managed-command');
+    const finalDiagnostic = {
+      ...diagnostic,
+      managedCommandTermination: termination,
+      operatorRequestedTermination: true,
+      operatorGuidance: guidance || null,
+    };
+    this.ui?.agentToolStalled?.(this.agentName, tool.name, elapsedMs, finalDiagnostic);
+
+    const message = guidance
+      ? `${this.agentName} managed command ${tool.name} was terminated by the operator so the workflow can continue with this steering: ${guidance}`
+      : `${this.agentName} managed command ${tool.name} was terminated by the operator during the extended wait.`;
+    const error = new Error(message);
+    error.code = 'CONVERGENT_TOOL_STALL';
+    error.convergentDiagnostic = finalDiagnostic;
+    for (const reject of [...this.activeRejectors]) reject(error);
+    this.activeRejectors.clear();
+
+    return {
+      terminated: true,
+      toolCallId: tool.id,
+      commandId: tool.managedCommandId ?? termination?.commandId ?? null,
+      termination,
+    };
+  }
+
   snapshot() {
     const snapshot = base.SessionGuard.prototype.snapshot.call(this);
     const now = Date.now();
@@ -231,4 +289,5 @@ module.exports = {
   guardSession,
   toolSnapshot,
   normalizedDetail,
+  boundedGuidance,
 };

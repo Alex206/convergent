@@ -11,6 +11,7 @@ const { pauseWorkflow } = require('./control');
 const OPERATOR_DIALOGUE_CODE = 'CONVERGENT_OPERATOR_DIALOGUE';
 const MAX_DIALOGUE_HISTORY_ITEMS = 12;
 const MAX_DIALOGUE_TEXT_CHARS = 1800;
+const EXACT_PROPOSAL_CONFIRMATION = 'Continue with this interpretation';
 
 class OperatorDialogueRequestedError extends Error {
   constructor(question, request = {}) {
@@ -95,6 +96,14 @@ function bindConfirmationToProposal(report, proposal) {
     guidance: boundedDialogueText(proposal.guidance, 5000),
     confirmedProposal: true,
   };
+}
+
+function deterministicProposalConfirmation(dialogue, userMessage) {
+  if (dialogue?.phase !== 'confirm') return null;
+  if (boundedDialogueText(userMessage, 3000) !== EXACT_PROPOSAL_CONFIRMATION) return null;
+  const proposal = dialogue?.proposal && typeof dialogue.proposal === 'object' ? dialogue.proposal : null;
+  const bound = bindConfirmationToProposal({ action: proposal?.action }, proposal);
+  return bound?.confirmedProposal ? { ...bound, deterministicConfirmation: true } : null;
 }
 
 class StableChatRecoveryEngine extends RecoveryConvergentEngine {
@@ -200,6 +209,18 @@ class StableChatRecoveryEngine extends RecoveryConvergentEngine {
   }
 
   async continueOperatorDialogue(task, dialogue, userMessage, chatHistory = []) {
+    const deterministic = deterministicProposalConfirmation(dialogue, userMessage);
+    if (deterministic) {
+      this.ui?.log?.(`Operator confirmed the exact displayed ${deterministic.action} proposal via the generated Chat action; skipping redundant recovery-model confirmation.`);
+      this.ui?.audit?.({
+        type: 'operator_proposal_confirmed_deterministically',
+        taskId: task.id,
+        kind: String(dialogue?.kind ?? 'worker-A'),
+        action: deterministic.action,
+      });
+      return deterministic;
+    }
+
     const kind = String(dialogue?.kind ?? 'worker-A');
     const allowPeer = Boolean(dialogue?.allowPeer);
     const phase = dialogue?.phase === 'confirm' ? 'confirm' : 'discuss';
@@ -271,6 +292,7 @@ class StableChatRecoveryEngine extends RecoveryConvergentEngine {
 
 module.exports = {
   OPERATOR_DIALOGUE_CODE,
+  EXACT_PROPOSAL_CONFIRMATION,
   OperatorDialogueRequestedError,
   isOperatorDialogueRequestedError,
   createDeferredOperatorInputHandler,
@@ -278,5 +300,6 @@ module.exports = {
   boundedDialogueHistory,
   formatDialogueHistory,
   bindConfirmationToProposal,
+  deterministicProposalConfirmation,
   StableChatRecoveryEngine,
 };
