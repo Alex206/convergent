@@ -35,7 +35,7 @@ test('R1 is one Terra reviewer, R2 is three broad Lunas, and R3 has the fixed co
   const r2 = reviewerSpecs('luna-broad');
   assert.equal(r2.length, 3);
   assert.ok(r2.every((spec) => spec.modelFamily === 'luna'));
-  assert.ok(r2.every((spec) => spec.focus.includes('all')));
+  assert.ok(r2.every((spec) => spec.focus.includes('all'));
 
   const r3 = reviewerSpecs('luna-specialized');
   assert.equal(r3.length, 3);
@@ -129,7 +129,7 @@ test('composite reviewer reuses the same three persistent members across panel c
 
 test('package exposes the review architecture setting and selector command with R3 default', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
-  assert.equal(pkg.version, '0.5.3');
+  assert.equal(pkg.version, '0.5.4');
   assert.equal(pkg.main, './src/extension-0.5.js');
   const setting = pkg.contributes.configuration.properties['convergent.reviewArchitecture'];
   assert.deepEqual(setting.enum, ['terra-single', 'luna-broad', 'luna-specialized']);
