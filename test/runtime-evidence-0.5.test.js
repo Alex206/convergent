@@ -12,6 +12,7 @@ const {
 const { SessionGuard } = require('../src/copilot/session-guard-0.5');
 const { createRunCommandTool } = require('../src/copilot/run-command-tool-0.5');
 const { formatTaskChangeManifest, reviewEvidencePacketId } = require('../src/orchestrator/task-change-manifest-0.5');
+const workspaceScope05 = require('../src/orchestrator/workspace-scope-0.5');
 
 function fakeSession() {
   const handlers = new Map();
@@ -42,6 +43,7 @@ test('repository context parses enterprise HTTPS and SSH remotes', () => {
   });
   assert.equal(parseGitRemoteUrl('git@git.hub.vwgroup.com:eps-pmt/cicd_workflows.git').host, 'git.hub.vwgroup.com');
   assert.equal(parseGitRemoteUrl('git@git.hub.vwgroup.com:eps-pmt/cicd_workflows.git').slug, 'eps-pmt/cicd_workflows');
+  assert.equal(typeof workspaceScope05.workspaceScopePrompt, 'function');
 });
 
 test('GitHub host binding only affects gh commands without an explicit host', () => {
@@ -82,6 +84,40 @@ test('0.5 session guard correlates concurrent tool completion by toolCallId', ()
   assert.equal(snapshot.activeTools.length, 0);
   assert.equal(snapshot.tools.find((tool) => tool.name === 'run_command').failures, 1);
   assert.equal(snapshot.tools.find((tool) => tool.name === 'batch_view').failures, 0);
+});
+
+test('0.5 guard keeps a pending watchdog decision selected while another tool progresses', () => {
+  const session = fakeSession();
+  const guard = new SessionGuard(session, 'Worker A', {}, { heartbeatMs: 60_000 });
+  session.emit('tool.execution_start', { toolCallId: 'tool-a', toolName: 'powershell', arguments: { command: 'slow-a' } });
+  session.emit('tool.execution_start', { toolCallId: 'tool-b', toolName: 'batch_view', arguments: { paths: ['README.md'] } });
+
+  const toolA = guard.activeTools.get('tool-a');
+  toolA.decisionPending = true;
+  guard.selectCurrentTool();
+  assert.equal(guard.currentTool.id, 'tool-a');
+
+  session.emit('tool.execution_progress', { toolCallId: 'tool-b' });
+  assert.equal(guard.currentTool.id, 'tool-a', 'progress from another call must not steal an in-flight watchdog decision');
+});
+
+test('0.5 guard maps concurrent managed commands by command text before command id', () => {
+  const session = fakeSession();
+  const guard = new SessionGuard(session, 'Worker A', {}, { heartbeatMs: 60_000 });
+  session.emit('tool.execution_start', { toolCallId: 'run-a', toolName: 'run_command', arguments: { command: 'gh auth status' } });
+  session.emit('tool.execution_start', { toolCallId: 'run-b', toolName: 'run_command', arguments: { command: 'npm test' } });
+
+  // Deliberately deliver the runtime starts in the opposite order from SDK
+  // tool starts. Text matching must keep each runtime command id on its own SDK
+  // call instead of using timing/order as identity.
+  guard.managedCommandProgress({ phase: 'started', commandId: 'cmd-a', displayCommand: 'gh auth status' });
+  guard.managedCommandProgress({ phase: 'started', commandId: 'cmd-b', displayCommand: 'npm test' });
+  guard.managedCommandProgress({ phase: 'output', commandId: 'cmd-a', bytes: 10 });
+
+  assert.equal(guard.activeTools.get('run-a').managedCommandId, 'cmd-a');
+  assert.equal(guard.activeTools.get('run-b').managedCommandId, 'cmd-b');
+  assert.equal(guard.managedCommandTools.get('cmd-a').id, 'run-a');
+  assert.equal(guard.managedCommandTools.get('cmd-b').id, 'run-b');
 });
 
 test('0.5 run_command seeds GH_HOST from selected repository context after permission approval', async () => {
