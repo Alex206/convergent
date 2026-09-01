@@ -22,6 +22,10 @@ function aiCredits(totalNanoAiu) {
   return number(totalNanoAiu) / 1e9;
 }
 
+function object(value) {
+  return value && typeof value === 'object' ? value : {};
+}
+
 function taskIdFromAgent(agent) {
   const value = String(agent ?? '');
   const separator = value.indexOf(':');
@@ -29,6 +33,7 @@ function taskIdFromAgent(agent) {
 }
 
 function normalizeAgent(value = {}) {
+  value = object(value);
   const entry = {
     agent: String(value.agent ?? ''),
     label: String(value.label ?? value.agent ?? ''),
@@ -90,6 +95,7 @@ function aggregateEntries(entries) {
 }
 
 function normalizeUsageSnapshot(value = {}) {
+  value = object(value);
   const agents = Array.isArray(value.agents) ? value.agents.map(normalizeAgent).filter((item) => item.agent) : [];
   const aggregate = agents.length ? aggregateEntries(agents) : (() => {
     const root = {
@@ -157,11 +163,13 @@ function mergeUsageSnapshots(baseValue, currentValue) {
     ...totals,
     agents,
     tasks,
-    run: { ...current, tasks: undefined, run: undefined },
+    run: { ...current },
   };
 }
 
 function usageDelta(before = {}, after = {}) {
+  before = object(before);
+  after = object(after);
   const result = {};
   for (const field of ADDITIVE_FIELDS) {
     result[field] = Math.max(0, number(after[field]) - number(before[field]));
