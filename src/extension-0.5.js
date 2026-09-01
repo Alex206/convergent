@@ -7,6 +7,22 @@ const {
   normalizeReviewArchitecture,
 } = require('./orchestrator/review-architecture');
 
+function installOverlay(baseRequest, overlayRequest) {
+  const basePath = require.resolve(baseRequest);
+  require(basePath);
+  const overlay = require(overlayRequest);
+  require.cache[basePath].exports = overlay;
+}
+
+// Install the 0.5 runtime overlays before loading any engine/session factory.
+// This keeps the validated base implementation intact while correcting
+// concurrent tool correlation, providing deterministic GitHub-host context,
+// and turning task-change evidence into one shared reviewer packet.
+installOverlay('./orchestrator/workspace-scope', './orchestrator/workspace-scope-0.5');
+installOverlay('./orchestrator/task-change-manifest', './orchestrator/task-change-manifest-0.5');
+installOverlay('./copilot/session-guard', './copilot/session-guard-0.5');
+installOverlay('./copilot/run-command-tool', './copilot/run-command-tool-0.5');
+
 // Install the 0.5 engine before loading the existing extension entrypoint. This
 // keeps the validated 0.4 frontend/recovery implementation intact while swapping
 // only the engine class consumed by extension.js.

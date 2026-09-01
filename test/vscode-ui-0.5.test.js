@@ -99,6 +99,17 @@ test('0.5 review result visibly reports per-cycle usage and reviewer tool count'
   });
   const text = markdown.join('');
   assert.match(text, /Cycle 2 usage/);
+  assert.match(text, /current-execution delta/);
   assert.match(text, /2 reviewer tool call/);
   assert.equal(events.at(-1).type, 'strong_review_cycle_usage');
+  assert.equal(events.at(-1).scope, 'current_execution_delta');
+});
+
+test('0.5 suppresses generic run_command tool success because managed exit state is authoritative', () => {
+  const { ui, logs } = fixture();
+  ui.agentToolComplete('Worker A', 'run_command', 1200, true);
+  assert.deepEqual(logs, []);
+
+  ui.agentToolComplete('Worker A', 'batch_view', 1200, true);
+  assert.match(logs.join('\n'), /batch_view.*success/);
 });
