@@ -2,7 +2,7 @@
   "name": "convergent",
   "displayName": "Convergent",
   "description": "Adaptive multi-agent implementation and adversarial review workflows powered by GitHub Copilot.",
-  "version": "0.5.4",
+  "version": "0.5.5",
   "publisher": "alex206",
   "license": "MIT",
   "engines": {
@@ -201,21 +201,21 @@
           "default": 8,
           "minimum": 2,
           "maximum": 30,
-          "description": "Soft peer-convergence pass limit per tranche when Worker B is active (high-risk/full and trivial escalation behavior). In fast flow the first peer tranche is capped at 3; normal standard work does not activate Worker B merely to consume this limit."
+          "description": "Soft peer-convergence pass limit per tranche when Worker B is active (high-risk/full and trivial escalation behavior). In fast flow the first peer tranche is capped at 3; normal standard work does not activate Worker B merely to consume this limit. Override one run with --worker-passes N before the request text."
         },
         "convergent.maxReviewerCycles": {
           "type": "number",
           "default": 3,
           "minimum": 1,
           "maximum": 20,
-          "description": "Soft review/remediation cycle limit per tranche before asking whether to continue. For R2/R3 one cycle means one complete three-reviewer panel pass on the same revision; all three reviewers re-check after remediation."
+          "description": "Soft review/remediation cycle limit per tranche before asking whether to continue. For R2/R3 one cycle means one complete three-reviewer panel pass on the same revision; all three reviewers re-check after remediation. Override one run with --review-cycles N before the request text."
         },
         "convergent.maxAiCredits": {
           "type": "number",
           "default": 0,
           "minimum": 0,
           "maximum": 100000,
-          "description": "Optional soft AI-credit budget for one run. 0 disables the budget. When reported Copilot usage reaches the budget at a safe workflow boundary, Convergent asks whether to add another budget tranche, continue without a budget, or pause and resume later. Credit reporting can lag live token usage."
+          "description": "Default soft AI-credit budget for one run. 0 disables the budget. Override one request with --credits N before the request text. When reported Copilot usage reaches the current ceiling at a safe workflow boundary, Convergent asks for the new total AI-credit limit; enter unlimited to remove the cap or cancel to pause. Credit reporting can lag live token usage."
         },
         "convergent.taskCommits": {
           "type": "string",
@@ -289,7 +289,7 @@
           "default": 120,
           "minimum": 30,
           "maximum": 1800,
-          "description": "Seconds a running Copilot tool may produce no progress before Convergent shows the tool/command details and asks whether to continue waiting or abort the current agent turn."
+          "description": "Seconds a running Copilot tool may produce no progress before Convergent shows the tool/command details and asks whether to stop it or continue waiting. The tool keeps running while the decision is open; if it completes first, Convergent retires the stale decision and continues the same agent turn."
         },
         "convergent.toolStallGraceSeconds": {
           "type": "number",
@@ -340,7 +340,7 @@
     "test": "node --test",
     "benchmark": "node src/headless/cli.js",
     "benchmark:models": "node src/headless/model-preflight.js",
-    "check": "node --check src/extension.js && node --check src/extension-0.5.js && node --check src/orchestrator/engine.js && node --check src/orchestrator/review-architecture.js && node --check src/orchestrator/review-architecture-engine.js && node --check src/orchestrator/reviewer-integrity.js && node --check src/orchestrator/review-dossier.js && node --check src/orchestrator/usage-ledger.js && node --check src/orchestrator/repository-context.js && node --check src/orchestrator/workspace-scope-0.5.js && node --check src/orchestrator/task-change-manifest-0.5.js && node --check src/orchestrator/model-resolver.js && node --check src/orchestrator/resumable-engine.js && node --check src/orchestrator/resume.js && node --check src/orchestrator/control.js && node --check src/orchestrator/task-commit.js && node --check src/orchestrator/request-preflight.js && node --check src/orchestrator/routing.js && node --check src/orchestrator/flow.js && node --check src/orchestrator/audit.js && node --check src/orchestrator/workspace-baseline.js && node --check src/orchestrator/task-change-manifest.js && node --check src/orchestrator/usage.js && node --check src/orchestrator/architecture-advisor.js && node --check src/orchestrator/deterministic-planning.js && node --check src/orchestrator/report-blocker.js && node --check src/orchestrator/runtime-stall.js && node --check src/orchestrator/stable-chat-recovery.js && node --check src/orchestrator/report-integrity.js && node --check src/ui/vscode-ui.js && node --check src/ui/vscode-ui-0.5.js && node --check src/ui/live-chat-control.js && node --check src/copilot/tools.js && node --check src/copilot/operator-credential-guard.js && node --check src/copilot/batch-search-tool.js && node --check src/copilot/batch-view-tool.js && node --check src/copilot/session-factory.js && node --check src/copilot/session-compaction.js && node --check src/copilot/review-architecture-session-factory.js && node --check src/copilot/session-guard.js && node --check src/copilot/session-guard-0.5.js && node --check src/copilot/run-command-tool.js && node --check src/copilot/run-command-tool-0.5.js && node --check src/copilot/workspace-edit-tool.js && node --check src/runtime/local-command-backend.js && node --check src/copilot/runtime.js && node --check src/headless/ui.js && node --check src/headless/model-policy.js && node --check src/headless/model-preflight.js && node --check src/headless/runner.js && node --check src/headless/cli.js && node --check src/headless/efficiency-summary.js && node --check src/headless/scenario03-acceptance.js && node --check scripts/package-vsix.js && node --check src/headless/scenario04-acceptance.js && node --check src/headless/scenario05-acceptance.js",
+    "check": "node --check src/extension.js && node --check src/extension-0.5.js && node --check src/orchestrator/engine.js && node --check src/orchestrator/review-architecture.js && node --check src/orchestrator/review-architecture-engine.js && node --check src/orchestrator/reviewer-integrity.js && node --check src/orchestrator/review-dossier.js && node --check src/orchestrator/usage-ledger.js && node --check src/orchestrator/repository-context.js && node --check src/orchestrator/workspace-scope-0.5.js && node --check src/orchestrator/task-change-manifest-0.5.js && node --check src/orchestrator/model-resolver.js && node --check src/orchestrator/resumable-engine.js && node --check src/orchestrator/resume.js && node --check src/orchestrator/control.js && node --check src/orchestrator/task-commit.js && node --check src/orchestrator/request-preflight.js && node --check src/orchestrator/run-options.js && node --check src/orchestrator/routing.js && node --check src/orchestrator/flow.js && node --check src/orchestrator/audit.js && node --check src/orchestrator/workspace-baseline.js && node --check src/orchestrator/task-change-manifest.js && node --check src/orchestrator/usage.js && node --check src/orchestrator/architecture-advisor.js && node --check src/orchestrator/deterministic-planning.js && node --check src/orchestrator/report-blocker.js && node --check src/orchestrator/runtime-stall.js && node --check src/orchestrator/stable-chat-recovery.js && node --check src/orchestrator/report-integrity.js && node --check src/ui/vscode-ui.js && node --check src/ui/vscode-ui-0.5.js && node --check src/ui/live-chat-control.js && node --check src/copilot/tools.js && node --check src/copilot/operator-credential-guard.js && node --check src/copilot/batch-search-tool.js && node --check src/copilot/batch-view-tool.js && node --check src/copilot/session-factory.js && node --check src/copilot/session-compaction.js && node --check src/copilot/review-architecture-session-factory.js && node --check src/copilot/session-guard.js && node --check src/copilot/session-guard-0.5.js && node --check src/copilot/run-command-tool.js && node --check src/copilot/run-command-tool-0.5.js && node --check src/copilot/workspace-edit-tool.js && node --check src/runtime/local-command-backend.js && node --check src/copilot/runtime.js && node --check src/headless/ui.js && node --check src/headless/model-policy.js && node --check src/headless/model-preflight.js && node --check src/headless/runner.js && node --check src/headless/cli.js && node --check src/headless/efficiency-summary.js && node --check src/headless/scenario03-acceptance.js && node --check scripts/package-vsix.js && node --check src/headless/scenario04-acceptance.js && node --check src/headless/scenario05-acceptance.js",
     "package": "node scripts/package-vsix.js",
     "package:list": "vsce ls --tree"
   },
