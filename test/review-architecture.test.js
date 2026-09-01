@@ -35,7 +35,7 @@ test('R1 is one Terra reviewer, R2 is three broad Lunas, and R3 has the fixed co
   const r2 = reviewerSpecs('luna-broad');
   assert.equal(r2.length, 3);
   assert.ok(r2.every((spec) => spec.modelFamily === 'luna'));
-  assert.ok(r2.every((spec) => spec.focus.includes('all'));
+  assert.ok(r2.every((spec) => spec.focus.includes('all')));
 
   const r3 = reviewerSpecs('luna-specialized');
   assert.equal(r3.length, 3);
