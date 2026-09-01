@@ -8,8 +8,8 @@ const {
 } = require('./orchestrator/review-architecture');
 const {
   CancellationBridge,
+  ResponseStreamBridge,
   workflowInProgress,
-  rebindGuardStreams,
   sendSteeringInstruction,
 } = require('./ui/live-chat-control');
 
@@ -90,10 +90,11 @@ function safeResumeState() {
 
 function activeWorkflowEvidence() {
   const guards = extension.activeGuards();
+  const state = safeResumeState();
   return {
     guards,
-    state: safeResumeState(),
-    active: workflowInProgress(guards, safeResumeState()),
+    state,
+    active: workflowInProgress(guards, state),
   };
 }
 
@@ -137,8 +138,8 @@ function renderManagedSteeringControl(stream, result) {
 
 async function steerLiveParticipant(bridge, request, stream, token) {
   bridge.adopt(token);
+  bridge.responseStream?.adopt(stream);
   let guards = extension.activeGuards();
-  rebindGuardStreams(guards, stream);
 
   const command = String(request?.command ?? '').toLowerCase();
   const instruction = String(request?.prompt ?? '').trim();
@@ -146,7 +147,6 @@ async function steerLiveParticipant(bridge, request, stream, token) {
     stream.markdown('**The Convergent workflow is already running.** This Chat response has adopted the live workflow instead of cancelling and restarting it.\n');
   } else if (instruction) {
     if (!guards.length) guards = await waitForSteeringGuards(bridge);
-    rebindGuardStreams(guards, stream);
     const guard = await chooseSteeringGuard(guards);
     if (!guard) {
       stream.markdown('**Convergent kept the current workflow alive, but there is no active agent turn to steer at this instant.** The request was not started as a second workflow.\n');
@@ -183,9 +183,10 @@ function wrapConvergentParticipant(handler) {
     }
 
     const bridge = new CancellationBridge();
+    bridge.responseStream = new ResponseStreamBridge(stream);
     bridge.adopt(token);
     liveParticipantBridge = bridge;
-    const completion = Promise.resolve(handler(request, chatContext, stream, bridge.token));
+    const completion = Promise.resolve(handler(request, chatContext, bridge.responseStream.proxy, bridge.token));
     bridge.setCompletion(completion);
     try {
       return await completion;
