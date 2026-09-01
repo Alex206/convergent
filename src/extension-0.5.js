@@ -9,6 +9,8 @@ const {
 const {
   parseRunOptions,
   hasRunLimitOverrides,
+  checkpointRunLimits,
+  restoreRunLimits,
 } = require('./orchestrator/run-options');
 const {
   CancellationBridge,
@@ -34,48 +36,6 @@ installOverlay('./copilot/session-guard', './copilot/session-guard-0.5');
 installOverlay('./copilot/run-command-tool', './copilot/run-command-tool-0.5');
 
 let activeRequestRunLimits = null;
-
-function finiteOr(value, fallback) {
-  const number = Number(value);
-  return Number.isFinite(number) ? number : fallback;
-}
-
-function checkpointRunLimits(engine, fallback = {}) {
-  if (!engine) return { ...fallback };
-  return {
-    maxWorkerPasses: Math.max(2, Math.floor(finiteOr(engine.maxWorkerPasses, fallback.maxWorkerPasses ?? 8))),
-    maxReviewerCycles: Math.max(1, Math.floor(finiteOr(engine.maxReviewerCycles, fallback.maxReviewerCycles ?? 3))),
-    maxAiCredits: Math.max(0, finiteOr(engine.maxAiCredits, fallback.maxAiCredits ?? 0)),
-    aiCreditIncrement: Math.max(0, finiteOr(engine.aiCreditIncrement, fallback.aiCreditIncrement ?? engine.maxAiCredits ?? 0)),
-    aiCreditCeiling: Number.isFinite(engine.aiCreditCeiling) ? Math.max(0, Number(engine.aiCreditCeiling)) : null,
-    aiCreditsUnlimited: !Number.isFinite(engine.aiCreditCeiling),
-  };
-}
-
-function restoreRunLimits(engine, saved) {
-  if (!engine || !saved || typeof saved !== 'object') return;
-  if (Number.isFinite(Number(saved.maxWorkerPasses))) {
-    engine.maxWorkerPasses = Math.max(2, Math.floor(Number(saved.maxWorkerPasses)));
-  }
-  if (Number.isFinite(Number(saved.maxReviewerCycles))) {
-    engine.maxReviewerCycles = Math.max(1, Math.floor(Number(saved.maxReviewerCycles)));
-  }
-  if (Number.isFinite(Number(saved.maxAiCredits))) {
-    engine.maxAiCredits = Math.max(0, Number(saved.maxAiCredits));
-  }
-  if (Number.isFinite(Number(saved.aiCreditIncrement))) {
-    engine.aiCreditIncrement = Math.max(0, Number(saved.aiCreditIncrement));
-  } else {
-    engine.aiCreditIncrement = engine.maxAiCredits;
-  }
-  if (saved.aiCreditsUnlimited) {
-    engine.aiCreditCeiling = Number.POSITIVE_INFINITY;
-  } else if (Number.isFinite(Number(saved.aiCreditCeiling))) {
-    engine.aiCreditCeiling = Math.max(0, Number(saved.aiCreditCeiling));
-  } else {
-    engine.aiCreditCeiling = engine.maxAiCredits > 0 ? engine.maxAiCredits : Number.POSITIVE_INFINITY;
-  }
-}
 
 // Install the 0.5 engine before loading the existing extension entrypoint. This
 // keeps the validated frontend/recovery implementation intact while swapping
