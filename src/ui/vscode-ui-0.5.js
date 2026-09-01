@@ -6,7 +6,7 @@ function taskUsageLines(summary) {
   const tasks = Array.isArray(summary?.tasks) ? summary.tasks : [];
   if (!tasks.length) return [];
   const lines = [
-    '**Per-task totals**',
+    '**Per-task request-lifetime totals**',
     '',
     '| Task | AI credits | In / out | Reasoning | LLM calls | Turns |',
     '| --- | ---: | ---: | ---: | ---: | ---: |',
@@ -26,8 +26,8 @@ function detailedUsageMarkdown(summary) {
   const agentTable = legacy.indexOf('| Agent |');
   const detailTail = agentTable >= 0 ? legacy.slice(agentTable) : legacy;
   return [
-    `**Request lifetime:** ${base.compactUsage(summary)}`,
-    `**Current execution:** ${base.compactUsage(summary.run)}`,
+    `**Request lifetime total:** ${base.compactUsage(summary)}`,
+    `**Current execution total:** ${base.compactUsage(summary.run)}`,
     '',
     ...taskUsageLines(summary),
     detailTail,
@@ -43,11 +43,12 @@ class VscodeWorkflowUi extends base.VscodeWorkflowUi {
       elapsedMs: meta.durationMs ?? meta.cycleUsage.elapsedMs,
     };
     const toolCount = Array.isArray(meta.tools) ? meta.tools.length : 0;
-    this.stream.markdown(`  ↳ Cycle ${cycle} usage: ${base.compactUsage(cycleSummary)}${toolCount ? ` · ${toolCount} reviewer tool call(s)` : ''}\n`);
-    this.log(`Strong review cycle ${cycle} usage: ${base.compactUsage(cycleSummary)}; reviewerTools=${toolCount}`);
+    this.stream.markdown(`  ↳ Review cycle ${cycle} current-execution delta: ${base.compactUsage(cycleSummary)}${toolCount ? ` · ${toolCount} reviewer tool call(s)` : ''}\n`);
+    this.log(`Review cycle ${cycle} usage [current-execution delta]: ${base.compactUsage(cycleSummary)}; reviewerTools=${toolCount}`);
     this.audit({
       type: 'strong_review_cycle_usage',
       cycle,
+      scope: 'current_execution_delta',
       cycleUsage: meta.cycleUsage,
       tools: meta.tools ?? [],
     });
@@ -58,7 +59,7 @@ class VscodeWorkflowUi extends base.VscodeWorkflowUi {
       '',
       '### Run summary',
       '',
-      `**${base.compactUsage(summary)}**`,
+      `**Request lifetime total: ${base.compactUsage(summary)}**`,
       '',
       `Tasks: ${stats.tasks ?? 0} · lightweight: ${stats.trivial ?? 0} · full review: ${stats.full ?? 0} · read-only: ${stats.readOnly ?? 0} · escalations: ${stats.escalations ?? 0}`,
       '',
@@ -66,7 +67,7 @@ class VscodeWorkflowUi extends base.VscodeWorkflowUi {
       '',
     ];
     this.stream.markdown(lines.join('\n'));
-    this.log(`Run summary: ${base.compactUsage(summary)}; ${JSON.stringify(stats)}`);
+    this.log(`Run summary [request lifetime]: ${base.compactUsage(summary)}; ${JSON.stringify(stats)}`);
   }
 }
 
