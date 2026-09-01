@@ -126,6 +126,22 @@ class ReviewArchitectureEngine extends StableChatRecoveryEngine {
     const previous = this.activeReviewDossier;
     this.activeReviewDossier = normalizeReviewDossier(taskResumeState?.reviewDossier);
     try {
+      // A reviewer-integrity checkpoint is written before semantic adjudication
+      // and worker revalidation. If execution stops at that boundary, an
+      // unchanged /resume must not silently reinterpret it as ordinary review
+      // findings and proceed. A changed workspace is already handled by the
+      // resumable engine's fingerprint fallback before this method is reached.
+      if (taskResumeState?.stage === 'strong_review_findings' && taskResumeState?.integrityIncident) {
+        pauseWorkflow(
+          `Task ${task.id} is paused at a reviewer-integrity boundary. The saved workspace still matches the reviewer-modified fingerprint, so Convergent will not continue from ordinary remediation semantics. Change/resolve the workspace prerequisite or start the task from a changed state before continuing.`,
+          {
+            kind: 'reviewer_integrity_resume_guard',
+            task: task.id,
+            reviewCycle: taskResumeState.reviewCycle,
+            integrityIncident: taskResumeState.integrityIncident,
+          },
+        );
+      }
       return await super.runTask(factory, task, taskSessionKey, routing, taskResumeState);
     } finally {
       this.activeReviewDossier = previous;
@@ -307,6 +323,101 @@ class ReviewArchitectureEngine extends StableChatRecoveryEngine {
     });
   }
 
+  async processReviewerMutation({
+    task,
+    workerA,
+    workerB,
+    reviewer,
+    routing,
+    reviewCycle,
+    reviewCeiling,
+    mutationCount,
+    evidence,
+    mutationError,
+    beforeUsage,
+    beforeTrace,
+  }) {
+    mutationCount += 1;
+    const incident = mutationError.incident;
+    const afterUsage = this.getUsageSummary();
+    const cycleUsage = usageDelta(beforeUsage, afterUsage);
+    const cycleTools = toolTraceDelta(beforeTrace, reviewerTraceSnapshot(reviewer));
+    const invalidReport = mutationError.reviewerReport ?? {
+      verdict: 'blocked',
+      findings: [],
+      checks: [],
+      summary: 'Review pass invalidated because the read-only review gate did not observe one stable workspace fingerprint.',
+    };
+
+    this.activeReviewDossier = appendReviewDossier(this.activeReviewDossier, {
+      cycle: reviewCycle,
+      revision: incident.afterRevision,
+      report: invalidReport,
+      tools: cycleTools,
+      usage: cycleUsage,
+      integrityIncident: incident,
+    });
+    this.ui?.log?.(`Reviewer workspace-integrity incident in cycle ${reviewCycle}: ${incident.reviewerLabel || 'review gate'} changed/observed ${incident.beforeRevision} -> ${incident.afterRevision}.`);
+    this.ui?.audit?.({
+      type: 'reviewer_integrity_incident',
+      taskId: task.id,
+      reviewCycle,
+      incident,
+      usage: cycleUsage,
+      tools: cycleTools,
+    });
+
+    const finding = reviewerMutationFinding(incident);
+    await this.saveTaskCheckpoint({
+      stage: 'strong_review_findings',
+      reviewCycle,
+      findings: [finding],
+      evidence,
+      routing,
+      integrityIncident: incident,
+    });
+
+    if (mutationCount > MAX_REVIEWER_MUTATION_INCIDENTS) {
+      pauseWorkflow(
+        `Paused after ${mutationCount} reviewer workspace-integrity incidents on task ${task.id}. Repeated read-only violations require operator inspection.`,
+        { kind: 'reviewer_integrity_retry_limit', task: task.id, reviewCycle, incident },
+      );
+    }
+
+    const decision = await this.classifyReviewerMutation(task, incident, routing);
+    if (decision.action !== 'retry') {
+      pauseWorkflow(
+        `Paused because the review gate changed the workspace in cycle ${reviewCycle} and the recovery coordinator did not authorize independent worker revalidation.`,
+        { kind: 'reviewer_integrity', task: task.id, reviewCycle, incident, decision },
+      );
+    }
+
+    if (reviewCycle >= reviewCeiling) {
+      const additional = await this.requestLimitExtension('reviewer_cycles', reviewCycle, reviewCeiling);
+      reviewCeiling = reviewCycle + additional;
+      this.ui.phase('Review limit extended', `Continuing for up to ${additional} additional cycle(s), including reviewer-integrity revalidation.`);
+    }
+
+    const resolved = await this.revalidateReviewerMutation(
+      task,
+      workerA,
+      workerB,
+      routing,
+      incident,
+      decision,
+    );
+    evidence = resolved.evidence;
+    await this.replaceReviewerAfterIntegrity(reviewer, task, mutationCount, routing);
+    await this.saveTaskCheckpoint({
+      stage: 'strong_review_pending',
+      nextReviewCycle: reviewCycle + 1,
+      evidence,
+      routing,
+    });
+    await this.checkAiCreditBudget(`before strong-review cycle ${reviewCycle + 1} after reviewer-integrity revalidation for ${task.id}`);
+    return { evidence, reviewCeiling, mutationCount };
+  }
+
   async runStrongReview(
     task,
     workerA,
@@ -321,7 +432,8 @@ class ReviewArchitectureEngine extends StableChatRecoveryEngine {
     let evidence = [...initialEvidence];
     let reviewCycle = Math.max(1, Number(startReviewCycle) || 1);
     let reviewCeiling = reviewCycle + Math.max(1, Number(this.maxReviewerCycles) || 3) - 1;
-    let mutationCount = 0;
+    let mutationCount = normalizeReviewDossier(this.activeReviewDossier).cycles
+      .filter((cycle) => Boolean(cycle.integrityIncident)).length;
     const peerConvergence = usesPeerConvergence(routing);
 
     try {
@@ -383,131 +495,75 @@ class ReviewArchitectureEngine extends StableChatRecoveryEngine {
           restoreGuards();
         }
 
+        let durationMs = Date.now() - startedAt;
+        let usage = null;
+        let cycleUsage = null;
+        let cycleTools = null;
+
+        if (!mutationError) {
+          const reviewIntegrity = reconcileDeterministicIntegrity(review, {
+            changed: false,
+            role: 'Strong reviewer',
+            credentialViolations: this.operatorCredentialGuard?.consumeViolations('Strong reviewer') ?? [],
+            validationEvidence: evidence,
+          });
+          review = reviewIntegrity.report;
+          if (reviewIntegrity.correction) {
+            this.ui?.log?.(`Strong reviewer verdict reconciled by Convergent: ${reviewIntegrity.correction}`);
+          }
+
+          const afterReview = await this.revisionProvider(this.workspace, this.workspaceFolders);
+          const afterState = await this.captureReviewerIntegrityState();
+          usage = await this.finishTurn(reviewer, startedAt);
+          durationMs = Date.now() - startedAt;
+          cycleUsage = usageDelta(beforeUsage, usage);
+          const afterTrace = reviewerTraceSnapshot(reviewer);
+          cycleTools = toolTraceDelta(beforeTrace, afterTrace);
+
+          if (beforeReview !== afterReview) {
+            const incident = createReviewerMutationIncident({
+              taskId: task.id,
+              reviewCycle,
+              reviewerId: 'review-gate-boundary',
+              reviewerLabel: `${this.reviewArchitecture.benchmarkId} review gate boundary`,
+              beforeRevision: beforeReview,
+              afterRevision: afterReview,
+              beforeState,
+              afterState,
+              beforeTrace,
+              afterTrace,
+              reviewerReport: review,
+            });
+            if (reviewer?.sink) reviewer.sink.value = null;
+            mutationError = new ReviewerWorkspaceMutationError(incident, review);
+          }
+        }
+
         if (mutationError) {
-          mutationCount += 1;
-          const incident = mutationError.incident;
-          const afterUsage = this.getUsageSummary();
-          const cycleUsage = usageDelta(beforeUsage, afterUsage);
-          const cycleTools = toolTraceDelta(beforeTrace, reviewerTraceSnapshot(reviewer));
-          const invalidReport = mutationError.reviewerReport ?? {
-            verdict: 'blocked',
-            findings: [],
-            checks: [],
-            summary: 'Review pass invalidated because the read-only review gate changed the workspace.',
-          };
-
-          this.activeReviewDossier = appendReviewDossier(this.activeReviewDossier, {
-            cycle: reviewCycle,
-            revision: incident.afterRevision,
-            report: invalidReport,
-            tools: cycleTools,
-            usage: cycleUsage,
-            integrityIncident: incident,
-          });
-          this.ui?.log?.(`Reviewer workspace-integrity incident in cycle ${reviewCycle}: ${incident.reviewerLabel || 'reviewer'} changed ${incident.beforeRevision} -> ${incident.afterRevision}.`);
-          this.ui?.audit?.({
-            type: 'reviewer_integrity_incident',
-            taskId: task.id,
-            reviewCycle,
-            incident,
-            usage: cycleUsage,
-            tools: cycleTools,
-          });
-
-          const finding = reviewerMutationFinding(incident);
-          await this.saveTaskCheckpoint({
-            stage: 'strong_review_findings',
-            reviewCycle,
-            findings: [finding],
-            evidence,
-            routing,
-            integrityIncident: incident,
-          });
-
-          if (mutationCount > MAX_REVIEWER_MUTATION_INCIDENTS) {
-            pauseWorkflow(
-              `Paused after ${mutationCount} reviewer workspace-integrity incidents on task ${task.id}. Repeated read-only violations require operator inspection.`,
-              { kind: 'reviewer_integrity_retry_limit', task: task.id, reviewCycle, incident },
-            );
-          }
-
-          const decision = await this.classifyReviewerMutation(task, incident, routing);
-          if (decision.action !== 'retry') {
-            pauseWorkflow(
-              `Paused because the review gate changed the workspace in cycle ${reviewCycle} and the recovery coordinator did not authorize independent worker revalidation.`,
-              { kind: 'reviewer_integrity', task: task.id, reviewCycle, incident, decision },
-            );
-          }
-
-          if (reviewCycle >= reviewCeiling) {
-            const additional = await this.requestLimitExtension('reviewer_cycles', reviewCycle, reviewCeiling);
-            reviewCeiling = reviewCycle + additional;
-            this.ui.phase('Review limit extended', `Continuing for up to ${additional} additional cycle(s), including reviewer-integrity revalidation.`);
-          }
-
-          const resolved = await this.revalidateReviewerMutation(
+          const processed = await this.processReviewerMutation({
             task,
             workerA,
             workerB,
+            reviewer,
             routing,
-            incident,
-            decision,
-          );
-          evidence = resolved.evidence;
-          await this.replaceReviewerAfterIntegrity(reviewer, task, mutationCount, routing);
-          await this.saveTaskCheckpoint({
-            stage: 'strong_review_pending',
-            nextReviewCycle: reviewCycle + 1,
+            reviewCycle,
+            reviewCeiling,
+            mutationCount,
             evidence,
-            routing,
+            mutationError,
+            beforeUsage,
+            beforeTrace,
           });
-          await this.checkAiCreditBudget(`before strong-review cycle ${reviewCycle + 1} after reviewer-integrity revalidation for ${task.id}`);
+          evidence = processed.evidence;
+          reviewCeiling = processed.reviewCeiling;
+          mutationCount = processed.mutationCount;
           reviewCycle += 1;
           continue;
         }
 
-        const reviewIntegrity = reconcileDeterministicIntegrity(review, {
-          changed: false,
-          role: 'Strong reviewer',
-          credentialViolations: this.operatorCredentialGuard?.consumeViolations('Strong reviewer') ?? [],
-          validationEvidence: evidence,
-        });
-        review = reviewIntegrity.report;
-        if (reviewIntegrity.correction) {
-          this.ui?.log?.(`Strong reviewer verdict reconciled by Convergent: ${reviewIntegrity.correction}`);
-        }
-
-        const afterReview = await this.revisionProvider(this.workspace, this.workspaceFolders);
-        const afterState = await this.captureReviewerIntegrityState();
-        const usage = await this.finishTurn(reviewer, startedAt);
-        const durationMs = Date.now() - startedAt;
-        const cycleUsage = usageDelta(beforeUsage, usage);
-        const afterTrace = reviewerTraceSnapshot(reviewer);
-        const cycleTools = toolTraceDelta(beforeTrace, afterTrace);
-
-        if (beforeReview !== afterReview) {
-          const incident = createReviewerMutationIncident({
-            taskId: task.id,
-            reviewCycle,
-            reviewerId: 'review-gate-boundary',
-            reviewerLabel: `${this.reviewArchitecture.benchmarkId} review gate boundary`,
-            beforeRevision: beforeReview,
-            afterRevision: afterReview,
-            beforeState,
-            afterState,
-            beforeTrace,
-            afterTrace,
-            reviewerReport: review,
-          });
-          // Treat a boundary race exactly like a reviewer mutation. No CLEAN from
-          // a review that did not observe one stable fingerprint can be accepted.
-          if (reviewer?.sink) reviewer.sink.value = null;
-          throw new ReviewerWorkspaceMutationError(incident, review);
-        }
-
         this.activeReviewDossier = appendReviewDossier(this.activeReviewDossier, {
           cycle: reviewCycle,
-          revision: afterReview,
+          revision: await this.revisionProvider(this.workspace, this.workspaceFolders),
           report: review,
           tools: cycleTools,
           usage: cycleUsage,
