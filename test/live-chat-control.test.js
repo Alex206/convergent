@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   CancellationBridge,
+  ResponseStreamBridge,
   workflowInProgress,
   rebindGuardStreams,
   sendSteeringInstruction,
@@ -78,6 +79,27 @@ test('chat supersession cancellation is not forwarded when the next request adop
   await delay(40);
   assert.equal(forwarded, 1, 'cancellation of the adopted request is forwarded after the grace window');
   bridge.markSettled();
+});
+
+test('response stream bridge redirects the original long-running handler to the adopted follow-up response', () => {
+  const first = [];
+  const second = [];
+  const streamBridge = new ResponseStreamBridge({
+    markdown: (value) => first.push(`markdown:${value}`),
+    progress: (value) => first.push(`progress:${value}`),
+  });
+
+  streamBridge.proxy.markdown('before steering');
+  assert.deepEqual(first, ['markdown:before steering']);
+
+  streamBridge.adopt({
+    markdown: (value) => second.push(`markdown:${value}`),
+    progress: (value) => second.push(`progress:${value}`),
+  });
+  streamBridge.proxy.progress('after steering');
+  streamBridge.proxy.markdown('finished');
+  assert.deepEqual(first, ['markdown:before steering']);
+  assert.deepEqual(second, ['progress:after steering', 'markdown:finished']);
 });
 
 test('live workflow evidence and stream rebinding keep follow-up chat on the active run', () => {
