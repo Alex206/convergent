@@ -2,6 +2,10 @@
 
 const base = require('./session-guard');
 
+function normalizedDetail(value) {
+  return String(value ?? '').replace(/\s+/g, ' ').trim();
+}
+
 function toolSnapshot(tool, now = Date.now()) {
   return {
     name: tool.name,
@@ -71,9 +75,20 @@ class ConcurrentSessionGuard extends base.SessionGuard {
       return this.managedCommandTools.get(commandId);
     }
 
-    const candidates = [...this.activeTools.values()]
-      .filter((tool) => /run[_-]?command$/i.test(tool.name) && !tool.managedCommandId)
-      .sort((a, b) => b.startedAt - a.startedAt);
+    let candidates = [...this.activeTools.values()]
+      .filter((tool) => /run[_-]?command$/i.test(tool.name) && !tool.managedCommandId);
+
+    // SDK tool events expose the original command text while the managed
+    // runtime exposes it as displayCommand. Match those first so two concurrent
+    // run_command calls cannot swap command IDs merely because their runtime
+    // start callbacks arrive in a different order.
+    const displayCommand = normalizedDetail(detail.displayCommand);
+    if (displayCommand) {
+      const exact = candidates.filter((tool) => normalizedDetail(tool.detail) === displayCommand);
+      if (exact.length === 1) candidates = exact;
+    }
+
+    candidates.sort((a, b) => b.startedAt - a.startedAt);
     const tool = candidates[0] ?? null;
     if (tool && commandId) {
       tool.managedCommandId = commandId;
@@ -172,7 +187,7 @@ class ConcurrentSessionGuard extends base.SessionGuard {
     const tool = this.managedToolForProgress(detail);
     if (tool) {
       if (detail.phase === 'started' && detail.displayCommand) {
-        tool.detail = String(detail.displayCommand).replace(/\s+/g, ' ').trim();
+        tool.detail = normalizedDetail(detail.displayCommand);
       }
       tool.lastProgressAt = now;
       tool.steeringSentAt = 0;
@@ -215,4 +230,5 @@ module.exports = {
   SessionGuard: ConcurrentSessionGuard,
   guardSession,
   toolSnapshot,
+  normalizedDetail,
 };
