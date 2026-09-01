@@ -35,6 +35,18 @@ function detailedUsageMarkdown(summary) {
 }
 
 class VscodeWorkflowUi extends base.VscodeWorkflowUi {
+  agentToolComplete(agent, tool, durationMs, success) {
+    // Copilot's tool.execution_complete success bit describes whether the tool
+    // handler itself returned normally. For run_command that is deliberately
+    // independent from the child process exit code: a managed command may
+    // return an exact exitCode=1 result through a successful tool invocation.
+    // The managed lifecycle already renders/logs the authoritative state/exit,
+    // so suppress this redundant generic line instead of printing a misleading
+    // "run_command ... success" beside "managed command exit 1".
+    if (/(^|:)run[_-]?command$/i.test(String(tool ?? ''))) return;
+    return super.agentToolComplete(agent, tool, durationMs, success);
+  }
+
   reviewResult(review, cycle, meta = {}) {
     super.reviewResult(review, cycle, meta);
     if (!meta.cycleUsage) return;
