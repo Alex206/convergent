@@ -7,6 +7,8 @@ const os = require('node:os');
 const path = require('node:path');
 const { LocalCommandBackend, ManagedCommandRuntime, processExists } = require('../src/runtime/local-command-backend');
 
+const SUCCESS_COMMAND_TIMEOUT_MS = process.platform === 'win32' ? 15_000 : 5_000;
+
 function quote(value) {
   const text = String(value);
   if (process.platform === 'win32') return `"${text.replace(/"/g, '""')}"`;
@@ -38,7 +40,7 @@ test('managed command returns exact exit state and bounded stdout/stderr', async
   fs.writeFileSync(script, "process.stdout.write('hello\\n'); process.stderr.write('warn\\n'); process.exit(7);\n");
   const backend = new LocalCommandBackend({ workspace });
 
-  const result = await backend.run({ command: nodeCommand(script), timeoutMs: 5_000 });
+  const result = await backend.run({ command: nodeCommand(script), timeoutMs: SUCCESS_COMMAND_TIMEOUT_MS });
 
   assert.equal(result.state, 'completed');
   assert.equal(result.exitCode, 7);
@@ -64,7 +66,7 @@ test('managed command bounds captured output while preserving the tail', async (
   fs.writeFileSync(script, "process.stdout.write('A'.repeat(5000) + 'TAIL');\n");
   const backend = new LocalCommandBackend({ workspace, maxCaptureBytes: 1024 });
 
-  const result = await backend.run({ command: nodeCommand(script), timeoutMs: 5_000 });
+  const result = await backend.run({ command: nodeCommand(script), timeoutMs: SUCCESS_COMMAND_TIMEOUT_MS });
 
   assert.equal(result.state, 'completed');
   assert.equal(result.exitCode, 0);
