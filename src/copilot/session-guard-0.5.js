@@ -7,6 +7,7 @@ function toolSnapshot(tool, now = Date.now()) {
     name: tool.name,
     detail: tool.detail,
     toolCallId: tool.id,
+    managedCommandId: tool.managedCommandId ?? null,
     elapsedMs: now - tool.startedAt,
     quietMs: now - tool.lastProgressAt,
     steeringSent: Boolean(tool.steeringSentAt),
@@ -19,6 +20,7 @@ function toolSnapshot(tool, now = Date.now()) {
 class ConcurrentSessionGuard extends base.SessionGuard {
   ensureActiveTools() {
     if (!(this.activeTools instanceof Map)) this.activeTools = new Map();
+    if (!(this.managedCommandTools instanceof Map)) this.managedCommandTools = new Map();
     if (!Number.isInteger(this.anonymousToolSequence)) this.anonymousToolSequence = 0;
     return this.activeTools;
   }
@@ -29,8 +31,21 @@ class ConcurrentSessionGuard extends base.SessionGuard {
       this.currentTool = null;
       return null;
     }
+
+    // Once the base watchdog has an operator decision or steering action in
+    // flight for one call, keep that exact call selected until it progresses or
+    // completes. Otherwise a concurrent tool could steal currentTool and make
+    // the base watchdog abandon its pending decision callback.
+    const pendingDecision = tools.filter((tool) => tool.decisionPending);
+    const alreadySteered = tools.filter((tool) => tool.steeringSentAt);
     const nonInteractive = tools.filter((tool) => !tool.interactiveWait);
-    const candidates = nonInteractive.length ? nonInteractive : tools;
+    const candidates = pendingDecision.length
+      ? pendingDecision
+      : alreadySteered.length
+        ? alreadySteered
+        : nonInteractive.length
+          ? nonInteractive
+          : tools;
     candidates.sort((a, b) => a.lastProgressAt - b.lastProgressAt || a.startedAt - b.startedAt);
     this.currentTool = candidates[0];
     return this.currentTool;
@@ -47,6 +62,29 @@ class ConcurrentSessionGuard extends base.SessionGuard {
     }
     if (tools.size === 1) return tools.values().next().value;
     return null;
+  }
+
+  managedToolForProgress(detail = {}) {
+    this.ensureActiveTools();
+    const commandId = String(detail.commandId ?? '').trim();
+    if (commandId && this.managedCommandTools.has(commandId)) {
+      return this.managedCommandTools.get(commandId);
+    }
+
+    const candidates = [...this.activeTools.values()]
+      .filter((tool) => /run[_-]?command$/i.test(tool.name) && !tool.managedCommandId)
+      .sort((a, b) => b.startedAt - a.startedAt);
+    const tool = candidates[0] ?? null;
+    if (tool && commandId) {
+      tool.managedCommandId = commandId;
+      this.managedCommandTools.set(commandId, tool);
+    }
+    return tool;
+  }
+
+  releaseManagedTool(tool) {
+    if (!tool?.managedCommandId) return;
+    this.managedCommandTools.delete(tool.managedCommandId);
   }
 
   attachEvents() {
@@ -74,6 +112,7 @@ class ConcurrentSessionGuard extends base.SessionGuard {
         ignoreUntil: 0,
         decisionPending: false,
         interactiveWait: base.isInteractiveUserTool(data.toolName),
+        managedCommandId: null,
       };
       this.activeTools.set(id, tool);
       this.selectCurrentTool();
@@ -107,6 +146,7 @@ class ConcurrentSessionGuard extends base.SessionGuard {
         if (data.success === false) stats.failures += 1;
         this.toolStats.set(tool.name, stats);
         this.ui?.agentToolComplete?.(this.agentName, tool.name, durationMs, data.success !== false);
+        this.releaseManagedTool(tool);
         this.activeTools.delete(tool.id);
         this.selectCurrentTool();
       }
@@ -129,13 +169,11 @@ class ConcurrentSessionGuard extends base.SessionGuard {
 
   managedCommandProgress(detail = {}) {
     const now = Date.now();
-    const active = [...this.ensureActiveTools().values()];
-    const managed = active.filter((tool) => /run[_-]?command$/i.test(tool.name));
-    const tool = /run[_-]?command$/i.test(this.currentTool?.name ?? '')
-      ? this.currentTool
-      : managed.sort((a, b) => b.startedAt - a.startedAt)[0] ?? null;
+    const tool = this.managedToolForProgress(detail);
     if (tool) {
-      if (detail.phase === 'started' && detail.displayCommand) tool.detail = String(detail.displayCommand).replace(/\s+/g, ' ').trim();
+      if (detail.phase === 'started' && detail.displayCommand) {
+        tool.detail = String(detail.displayCommand).replace(/\s+/g, ' ').trim();
+      }
       tool.lastProgressAt = now;
       tool.steeringSentAt = 0;
       tool.ignoreUntil = 0;
@@ -162,6 +200,7 @@ class ConcurrentSessionGuard extends base.SessionGuard {
 
   dispose() {
     this.ensureActiveTools().clear();
+    this.managedCommandTools.clear();
     this.currentTool = null;
     return base.SessionGuard.prototype.dispose.call(this);
   }
