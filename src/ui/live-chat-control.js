@@ -110,6 +110,34 @@ class CancellationBridge {
   }
 }
 
+class ResponseStreamBridge {
+  constructor(stream = null) {
+    this.target = stream;
+    const bridge = this;
+    this.proxy = new Proxy({}, {
+      get(_target, property) {
+        if (property === '__convergentStreamBridge') return bridge;
+        const value = bridge.target?.[property];
+        return typeof value === 'function' ? value.bind(bridge.target) : value;
+      },
+      set(_target, property, value) {
+        if (!bridge.target) return false;
+        bridge.target[property] = value;
+        return true;
+      },
+      has(_target, property) {
+        return Boolean(bridge.target && property in bridge.target);
+      },
+    });
+  }
+
+  adopt(stream) {
+    if (!stream) return false;
+    this.target = stream;
+    return true;
+  }
+}
+
 function workflowInProgress(guards = [], resumeState = null) {
   if (Array.isArray(guards) && guards.length) return true;
   const status = String(resumeState?.status ?? '').toLowerCase();
@@ -148,6 +176,7 @@ async function sendSteeringInstruction(guard, instruction) {
 module.exports = {
   DEFAULT_CHAT_SUPERSESSION_GRACE_MS,
   CancellationBridge,
+  ResponseStreamBridge,
   workflowInProgress,
   rebindGuardStreams,
   sendSteeringInstruction,
