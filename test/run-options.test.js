@@ -2,7 +2,12 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { parseRunOptions, hasRunLimitOverrides } = require('../src/orchestrator/run-options');
+const {
+  parseRunOptions,
+  hasRunLimitOverrides,
+  checkpointRunLimits,
+  restoreRunLimits,
+} = require('../src/orchestrator/run-options');
 
 test('per-request AI-credit limit is stripped from the task request', () => {
   const parsed = parseRunOptions('--credits 75.5 Implement the parser fix');
@@ -32,4 +37,69 @@ test('invalid per-request limits fail deterministically', () => {
   assert.throws(() => parseRunOptions('--review-cycles 0 Fix it'), /1 to 20/);
   assert.throws(() => parseRunOptions('--worker-passes 3.5 Fix it'), /integer/);
   assert.throws(() => parseRunOptions('--credits nope Fix it'), /0 to 100000/);
+});
+
+test('checkpoint captures the current effective review and AI-credit ceilings', () => {
+  const saved = checkpointRunLimits({
+    maxWorkerPasses: 9,
+    maxReviewerCycles: 4,
+    maxAiCredits: 100,
+    aiCreditIncrement: 100,
+    aiCreditCeiling: 225,
+  });
+
+  assert.deepEqual(saved, {
+    maxWorkerPasses: 9,
+    maxReviewerCycles: 4,
+    maxAiCredits: 100,
+    aiCreditIncrement: 100,
+    aiCreditCeiling: 225,
+    aiCreditsUnlimited: false,
+  });
+});
+
+test('resume restores exact per-request limits including an increased credit ceiling', () => {
+  const engine = {
+    maxWorkerPasses: 8,
+    maxReviewerCycles: 3,
+    maxAiCredits: 0,
+    aiCreditIncrement: 0,
+    aiCreditCeiling: Number.POSITIVE_INFINITY,
+  };
+
+  restoreRunLimits(engine, {
+    maxWorkerPasses: 10,
+    maxReviewerCycles: 5,
+    maxAiCredits: 100,
+    aiCreditIncrement: 100,
+    aiCreditCeiling: 250,
+    aiCreditsUnlimited: false,
+  });
+
+  assert.equal(engine.maxWorkerPasses, 10);
+  assert.equal(engine.maxReviewerCycles, 5);
+  assert.equal(engine.maxAiCredits, 100);
+  assert.equal(engine.aiCreditIncrement, 100);
+  assert.equal(engine.aiCreditCeiling, 250);
+});
+
+test('resume preserves an unlimited credit decision', () => {
+  const engine = {
+    maxWorkerPasses: 8,
+    maxReviewerCycles: 3,
+    maxAiCredits: 100,
+    aiCreditIncrement: 100,
+    aiCreditCeiling: 100,
+  };
+
+  restoreRunLimits(engine, {
+    maxWorkerPasses: 8,
+    maxReviewerCycles: 3,
+    maxAiCredits: 100,
+    aiCreditIncrement: 100,
+    aiCreditCeiling: null,
+    aiCreditsUnlimited: true,
+  });
+
+  assert.equal(engine.aiCreditCeiling, Number.POSITIVE_INFINITY);
 });
