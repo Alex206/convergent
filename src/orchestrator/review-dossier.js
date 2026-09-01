@@ -4,6 +4,9 @@ const MAX_REVIEW_DOSSIER_CYCLES = 12;
 const MAX_REVIEW_DOSSIER_FINDINGS = 12;
 const MAX_REVIEW_DOSSIER_CHECKS = 20;
 const MAX_REVIEW_DOSSIER_TOOLS = 24;
+const MAX_REVIEW_PROMPT_CYCLES = 2;
+const MAX_REVIEW_PROMPT_FINDINGS = 8;
+const MAX_REVIEW_PROMPT_CHECKS = 8;
 
 function text(value, max = 1000) {
   const normalized = String(value ?? '').trim();
@@ -129,19 +132,28 @@ function appendReviewDossier(dossier, cycle) {
 function formatReviewDossier(value) {
   const dossier = normalizeReviewDossier(value);
   if (!dossier.cycles.length) return '';
+  const cycles = dossier.cycles.slice(-MAX_REVIEW_PROMPT_CYCLES);
+  const latestCycle = cycles.at(-1)?.cycle;
+  const omitted = Math.max(0, dossier.cycles.length - cycles.length);
   const lines = [
-    'DURABLE REVIEW DOSSIER FROM EARLIER CYCLES/EXECUTIONS:',
-    'This is compact structured review history, not hidden reasoning. Reuse it to avoid rediscovering settled context, while verifying claims against the current revision where necessary.',
-  ];
-  for (const cycle of dossier.cycles) {
-    const usage = cycle.usage;
-    const credits = usage.hasCreditData ? `; ≈${usage.aiCredits.toFixed(3)} AI credits` : '';
-    lines.push(`- R${cycle.cycle} @ ${cycle.revision || 'unknown'}: ${cycle.verdict || 'unknown'}; ${cycle.summary || '(no summary)'}; ${usage.inputTokens} in / ${usage.outputTokens} out / ${usage.reasoningTokens} reasoning${credits}`);
-    for (const finding of cycle.findings) {
+    'BOUNDED DURABLE REVIEW CONVERGENCE HANDOFF:',
+    'This is compact structured review history, not hidden reasoning. The full dossier remains durable in the checkpoint/audit; only the most recent cycles are injected into the model prompt to keep persistent reviewer context bounded.',
+    'Treat the newest prior cycle as the primary delta-review contract. Older findings are historical context, not automatically active defects: reopen them only when the current revision provides concrete regression evidence.',
+    'Preserve behavior that the latest review explicitly says is already resolved while checking the current remediation for new regressions.',
+    omitted ? `${omitted} older review cycle(s) are intentionally omitted from this prompt.` : '',
+  ].filter(Boolean);
+
+  for (const cycle of cycles) {
+    lines.push(`- R${cycle.cycle} @ ${cycle.revision || 'unknown'}: ${cycle.verdict || 'unknown'}; ${cycle.summary || '(no summary)'}`);
+    for (const finding of cycle.findings.slice(0, MAX_REVIEW_PROMPT_FINDINGS)) {
       lines.push(`  - finding [${finding.severity}] ${finding.title}${finding.file ? ` (${finding.file})` : ''}: ${finding.description}`);
     }
-    if (cycle.checks.length) lines.push(`  - checks: ${cycle.checks.join(' | ')}`);
-    if (cycle.tools.length) lines.push(`  - tools: ${cycle.tools.map((tool) => `${tool.toolName}${tool.detail ? `(${tool.detail})` : ''}`).join(' | ')}`);
+    if (cycle.findings.length > MAX_REVIEW_PROMPT_FINDINGS) {
+      lines.push(`  - … ${cycle.findings.length - MAX_REVIEW_PROMPT_FINDINGS} additional finding(s) remain in the durable dossier.`);
+    }
+    if (cycle.cycle === latestCycle && cycle.checks.length) {
+      lines.push(`  - latest checks: ${cycle.checks.slice(0, MAX_REVIEW_PROMPT_CHECKS).join(' | ')}`);
+    }
     if (cycle.integrityIncident) lines.push('  - reviewer workspace-integrity incident occurred; the changed revision was sent through independent worker revalidation before acceptance.');
   }
   return lines.join('\n');
@@ -149,6 +161,7 @@ function formatReviewDossier(value) {
 
 module.exports = {
   MAX_REVIEW_DOSSIER_CYCLES,
+  MAX_REVIEW_PROMPT_CYCLES,
   normalizeReviewDossier,
   appendReviewDossier,
   formatReviewDossier,
