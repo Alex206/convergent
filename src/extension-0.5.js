@@ -7,6 +7,10 @@ const {
   normalizeReviewArchitecture,
 } = require('./orchestrator/review-architecture');
 const {
+  parseRunOptions,
+  hasRunLimitOverrides,
+} = require('./orchestrator/run-options');
+const {
   CancellationBridge,
   ResponseStreamBridge,
   workflowInProgress,
@@ -29,15 +33,101 @@ installOverlay('./orchestrator/task-change-manifest', './orchestrator/task-chang
 installOverlay('./copilot/session-guard', './copilot/session-guard-0.5');
 installOverlay('./copilot/run-command-tool', './copilot/run-command-tool-0.5');
 
+let activeRequestRunLimits = null;
+
+function finiteOr(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function checkpointRunLimits(engine, fallback = {}) {
+  if (!engine) return { ...fallback };
+  return {
+    maxWorkerPasses: Math.max(2, Math.floor(finiteOr(engine.maxWorkerPasses, fallback.maxWorkerPasses ?? 8))),
+    maxReviewerCycles: Math.max(1, Math.floor(finiteOr(engine.maxReviewerCycles, fallback.maxReviewerCycles ?? 3))),
+    maxAiCredits: Math.max(0, finiteOr(engine.maxAiCredits, fallback.maxAiCredits ?? 0)),
+    aiCreditIncrement: Math.max(0, finiteOr(engine.aiCreditIncrement, fallback.aiCreditIncrement ?? engine.maxAiCredits ?? 0)),
+    aiCreditCeiling: Number.isFinite(engine.aiCreditCeiling) ? Math.max(0, Number(engine.aiCreditCeiling)) : null,
+    aiCreditsUnlimited: !Number.isFinite(engine.aiCreditCeiling),
+  };
+}
+
+function restoreRunLimits(engine, saved) {
+  if (!engine || !saved || typeof saved !== 'object') return;
+  if (Number.isFinite(Number(saved.maxWorkerPasses))) {
+    engine.maxWorkerPasses = Math.max(2, Math.floor(Number(saved.maxWorkerPasses)));
+  }
+  if (Number.isFinite(Number(saved.maxReviewerCycles))) {
+    engine.maxReviewerCycles = Math.max(1, Math.floor(Number(saved.maxReviewerCycles)));
+  }
+  if (Number.isFinite(Number(saved.maxAiCredits))) {
+    engine.maxAiCredits = Math.max(0, Number(saved.maxAiCredits));
+  }
+  if (Number.isFinite(Number(saved.aiCreditIncrement))) {
+    engine.aiCreditIncrement = Math.max(0, Number(saved.aiCreditIncrement));
+  } else {
+    engine.aiCreditIncrement = engine.maxAiCredits;
+  }
+  if (saved.aiCreditsUnlimited) {
+    engine.aiCreditCeiling = Number.POSITIVE_INFINITY;
+  } else if (Number.isFinite(Number(saved.aiCreditCeiling))) {
+    engine.aiCreditCeiling = Math.max(0, Number(saved.aiCreditCeiling));
+  } else {
+    engine.aiCreditCeiling = engine.maxAiCredits > 0 ? engine.maxAiCredits : Number.POSITIVE_INFINITY;
+  }
+}
+
 // Install the 0.5 engine before loading the existing extension entrypoint. This
-// keeps the validated 0.4 frontend/recovery implementation intact while swapping
-// only the engine class consumed by extension.js.
+// keeps the validated frontend/recovery implementation intact while swapping
+// only the engine class consumed by extension.js. The thin subclass adds
+// per-request run limits and checkpoints their current state so /resume retains
+// the same review and AI-credit boundaries.
 const stablePath = require.resolve('./orchestrator/stable-chat-recovery');
 const stableExports = require(stablePath);
 const { ReviewArchitectureEngine } = require('./orchestrator/review-architecture-engine');
+
+class RunLimitReviewArchitectureEngine extends ReviewArchitectureEngine {
+  constructor(options = {}) {
+    const overrides = activeRequestRunLimits ?? {};
+    const effective = {
+      maxWorkerPasses: overrides.maxWorkerPasses ?? options.maxWorkerPasses,
+      maxReviewerCycles: overrides.maxReviewerCycles ?? options.maxReviewerCycles,
+      maxAiCredits: overrides.maxAiCredits ?? options.maxAiCredits,
+    };
+    let instance = null;
+    const originalOnCheckpoint = options.onCheckpoint;
+    const checkpointFallback = {
+      maxWorkerPasses: effective.maxWorkerPasses,
+      maxReviewerCycles: effective.maxReviewerCycles,
+      maxAiCredits: effective.maxAiCredits,
+      aiCreditIncrement: effective.maxAiCredits,
+    };
+    super({
+      ...options,
+      ...effective,
+      onCheckpoint: typeof originalOnCheckpoint === 'function'
+        ? (state) => originalOnCheckpoint({
+            ...state,
+            runLimits: checkpointRunLimits(instance, checkpointFallback),
+          })
+        : originalOnCheckpoint,
+    });
+    instance = this;
+  }
+
+  currentRunLimits() {
+    return checkpointRunLimits(this);
+  }
+
+  async run(userRequest, resumeState = null) {
+    restoreRunLimits(this, resumeState?.runLimits);
+    return super.run(userRequest, resumeState);
+  }
+}
+
 require.cache[stablePath].exports = {
   ...stableExports,
-  StableChatRecoveryEngine: ReviewArchitectureEngine,
+  StableChatRecoveryEngine: RunLimitReviewArchitectureEngine,
 };
 
 // Likewise, layer the 0.5 request/resume/task/review-cycle usage presentation on
@@ -172,6 +262,28 @@ async function steerLiveParticipant(bridge, request, stream, token) {
   return result;
 }
 
+function parseParticipantRunOptions(request) {
+  const prompt = String(request?.prompt ?? '');
+  const prefix = /^(\/(?:fast|auto|thorough)\b\s*)/i.exec(prompt);
+  const optionSource = prefix ? prompt.slice(prefix[0].length) : prompt;
+  const parsed = parseRunOptions(optionSource);
+  const sanitizedPrompt = prefix
+    ? `${prefix[1]}${parsed.request}`.trim()
+    : parsed.request;
+  return {
+    request: sanitizedPrompt === prompt ? request : { ...request, prompt: sanitizedPrompt },
+    limits: parsed.limits,
+  };
+}
+
+function runLimitSummary(limits) {
+  const parts = [];
+  if (limits.maxAiCredits !== undefined) parts.push(`AI credits ${limits.maxAiCredits === 0 ? 'unlimited' : limits.maxAiCredits}`);
+  if (limits.maxReviewerCycles !== undefined) parts.push(`review cycles ${limits.maxReviewerCycles}`);
+  if (limits.maxWorkerPasses !== undefined) parts.push(`worker passes ${limits.maxWorkerPasses}`);
+  return parts.join(' · ');
+}
+
 function wrapConvergentParticipant(handler) {
   return async (request, chatContext, stream, token) => {
     const current = liveParticipantBridge;
@@ -182,17 +294,26 @@ function wrapConvergentParticipant(handler) {
       }
     }
 
+    const parsed = parseParticipantRunOptions(request);
+    const hasOverrides = hasRunLimitOverrides(parsed.limits);
+    const previousRunLimits = activeRequestRunLimits;
+    activeRequestRunLimits = hasOverrides ? parsed.limits : null;
+    if (hasOverrides) {
+      stream.progress(`Per-request limits: ${runLimitSummary(parsed.limits)}`);
+    }
+
     const bridge = new CancellationBridge();
     bridge.responseStream = new ResponseStreamBridge(stream);
     bridge.adopt(token);
     liveParticipantBridge = bridge;
-    const completion = Promise.resolve(handler(request, chatContext, bridge.responseStream.proxy, bridge.token));
+    const completion = Promise.resolve(handler(parsed.request, chatContext, bridge.responseStream.proxy, bridge.token));
     bridge.setCompletion(completion);
     try {
       return await completion;
     } finally {
       bridge.markSettled();
       if (liveParticipantBridge === bridge) liveParticipantBridge = null;
+      activeRequestRunLimits = previousRunLimits;
     }
   };
 }
@@ -267,4 +388,9 @@ module.exports = {
   steerLiveParticipant,
   terminateManagedCommand,
   installLiveParticipantOverlay,
+  RunLimitReviewArchitectureEngine,
+  checkpointRunLimits,
+  restoreRunLimits,
+  parseParticipantRunOptions,
+  runLimitSummary,
 };
