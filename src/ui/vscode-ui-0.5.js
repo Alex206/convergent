@@ -6,7 +6,7 @@ function taskUsageLines(summary) {
   const tasks = Array.isArray(summary?.tasks) ? summary.tasks : [];
   if (!tasks.length) return [];
   const lines = [
-    '**Per-task request-lifetime totals**',
+    '**Per-task totals (request lifetime)**',
     '',
     '| Task | AI credits | In / out | Reasoning | LLM calls | Turns |',
     '| --- | ---: | ---: | ---: | ---: | ---: |',
@@ -43,7 +43,7 @@ class VscodeWorkflowUi extends base.VscodeWorkflowUi {
       elapsedMs: meta.durationMs ?? meta.cycleUsage.elapsedMs,
     };
     const toolCount = Array.isArray(meta.tools) ? meta.tools.length : 0;
-    this.stream.markdown(`  ↳ Review cycle ${cycle} current-execution delta: ${base.compactUsage(cycleSummary)}${toolCount ? ` · ${toolCount} reviewer tool call(s)` : ''}\n`);
+    this.stream.markdown(`  ↳ Cycle ${cycle} usage [current-execution delta]: ${base.compactUsage(cycleSummary)}${toolCount ? ` · ${toolCount} reviewer tool call(s)` : ''}\n`);
     this.log(`Review cycle ${cycle} usage [current-execution delta]: ${base.compactUsage(cycleSummary)}; reviewerTools=${toolCount}`);
     this.audit({
       type: 'strong_review_cycle_usage',
