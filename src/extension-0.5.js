@@ -18,6 +18,14 @@ require.cache[stablePath].exports = {
   StableChatRecoveryEngine: ReviewArchitectureEngine,
 };
 
+// Likewise, layer the 0.5 request/resume/task/review-cycle usage presentation on
+// top of the validated base UI without duplicating the rest of the VS Code
+// frontend implementation.
+const vscodeUiPath = require.resolve('./ui/vscode-ui');
+require(vscodeUiPath);
+const vscodeUi05 = require('./ui/vscode-ui-0.5');
+require.cache[vscodeUiPath].exports = vscodeUi05;
+
 globalThis.__convergentReviewArchitectureProvider = () => vscode.workspace
   .getConfiguration('convergent')
   .get('reviewArchitecture', DEFAULT_REVIEW_ARCHITECTURE);
