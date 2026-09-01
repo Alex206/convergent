@@ -5,17 +5,29 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const { VscodeWorkflowUi, detailedUsageMarkdown } = require('../src/ui/vscode-ui-0.5');
 
-function fixture() {
+function fixture({ showInputBox = async () => undefined } = {}) {
   const markdown = [];
   const logs = [];
   const events = [];
+  const buttons = [];
   const ui = new VscodeWorkflowUi(
-    { Uri: { file: (fsPath) => ({ fsPath }) }, window: {} },
-    { markdown: (value) => markdown.push(String(value)), progress() {}, anchor() {} },
+    {
+      Uri: { file: (fsPath) => ({ fsPath }) },
+      window: {
+        showInputBox,
+        showWarningMessage: async () => undefined,
+      },
+    },
+    {
+      markdown: (value) => markdown.push(String(value)),
+      progress() {},
+      anchor() {},
+      button: (value) => buttons.push(value),
+    },
     { appendLine: (value) => logs.push(String(value)) },
     { workspace: path.resolve('/repo'), eventSink: (event) => events.push(event) },
   );
-  return { ui, markdown, logs, events };
+  return { ui, markdown, logs, events, buttons };
 }
 
 function summary() {
@@ -112,4 +124,68 @@ test('0.5 suppresses generic run_command tool success because managed exit state
 
   ui.agentToolComplete('Worker A', 'batch_view', 1200, true);
   assert.match(logs.join('\n'), /batch_view.*success/);
+});
+
+test('stalled tool keeps running while stop decision is open and completion retires that decision', async () => {
+  const { ui, buttons, logs, events } = fixture();
+  const pending = ui.agentToolStallDecision('Worker A', {
+    currentTool: {
+      name: 'run_command',
+      detail: 'npm test',
+      toolCallId: 'tool-17',
+      quietMs: 120_000,
+      elapsedMs: 130_000,
+    },
+  });
+
+  assert.equal(ui.pendingChatDecisions.size, 1);
+  assert.deepEqual(buttons.map((button) => button.title), [
+    'Continue 5 min',
+    'Continue 15 min',
+    'Terminate command & recover',
+  ]);
+
+  ui.agentToolComplete('Worker A', 'run_command', 131_000, true);
+  assert.equal(ui.pendingChatDecisions.size, 0);
+  assert.deepEqual(await pending, { action: 'completed' });
+  assert.ok(logs.some((line) => /retired decision/.test(line)));
+  assert.equal(events.at(-1).type, 'tool_stall_decision_retired');
+});
+
+test('AI-credit budget asks for a new total ceiling and returns the exact delta needed by the engine', async () => {
+  let inputOptions;
+  const { ui, markdown } = fixture({
+    showInputBox: async (options) => {
+      inputOptions = options;
+      return '200';
+    },
+  });
+
+  const decision = await ui.limitDecision('ai_credits', {
+    current: 125,
+    limit: 100,
+    increment: 100,
+  });
+
+  assert.match(markdown.join(''), /AI-credit budget reached/);
+  assert.match(inputOptions.prompt, /new total AI-credit limit/i);
+  assert.deepEqual(decision, {
+    action: 'continue',
+    additional: 75,
+    newLimit: 200,
+  });
+});
+
+test('AI-credit budget input supports unlimited and cancel-to-pause', async () => {
+  const unlimited = fixture({ showInputBox: async () => 'unlimited' });
+  assert.deepEqual(
+    await unlimited.ui.limitDecision('ai_credits', { current: 10, limit: 10, increment: 10 }),
+    { action: 'unlimited' },
+  );
+
+  const paused = fixture({ showInputBox: async () => undefined });
+  assert.deepEqual(
+    await paused.ui.limitDecision('ai_credits', { current: 10, limit: 10, increment: 10 }),
+    { action: 'pause' },
+  );
 });
