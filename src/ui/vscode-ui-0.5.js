@@ -34,6 +34,11 @@ function detailedUsageMarkdown(summary) {
   ].join('\n');
 }
 
+function suggestedCreditCeiling(current, limit, increment) {
+  const step = Math.max(1, Number(increment) || Number(limit) || 100);
+  return Math.max(Number(limit) || 0, Number(current) || 0) + step;
+}
+
 class VscodeWorkflowUi extends base.VscodeWorkflowUi {
   stallControlMap() {
     if (!(this.__convergentStallControls instanceof Map)) this.__convergentStallControls = new Map();
@@ -57,13 +62,26 @@ class VscodeWorkflowUi extends base.VscodeWorkflowUi {
 
   async agentToolStallDecision(agent, snapshot) {
     const tool = snapshot?.currentTool;
+    let control = null;
     if (tool?.toolCallId) {
-      this.stallControlMap().set(agent, {
+      control = {
         toolCallId: String(tool.toolCallId),
         tool: String(tool.name ?? ''),
-      });
+        decisionId: null,
+        completedWhilePending: false,
+      };
+      this.stallControlMap().set(agent, control);
     }
-    const decision = await super.agentToolStallDecision(agent, snapshot);
+
+    const before = new Set(this.pendingChatDecisions?.keys?.() ?? []);
+    const pendingDecision = super.agentToolStallDecision(agent, snapshot);
+    if (control && this.pendingChatDecisions instanceof Map) {
+      const created = [...this.pendingChatDecisions.keys()].find((id) => !before.has(id));
+      if (created) control.decisionId = created;
+    }
+
+    const decision = await pendingDecision;
+    if (control?.completedWhilePending) return { action: 'completed' };
     if (decision?.action !== 'continue') this.stallControlMap().delete(agent);
     return decision;
   }
@@ -80,7 +98,27 @@ class VscodeWorkflowUi extends base.VscodeWorkflowUi {
     this.log(`${agent}: live managed-command termination control retained during the ${base.formatDuration(waitMs)} wait extension; toolCallId=${control.toolCallId}.`);
   }
 
+  retirePendingStallDecision(agent) {
+    const control = this.stallControlMap().get(agent);
+    if (!control?.decisionId || !(this.pendingChatDecisions instanceof Map)) return false;
+    const pending = this.pendingChatDecisions.get(control.decisionId);
+    if (!pending) return false;
+    control.completedWhilePending = true;
+    this.pendingChatDecisions.delete(control.decisionId);
+    pending.resolve(undefined);
+    this.log(`${agent}: stalled tool completed while the stop decision was still open; retired decision ${control.decisionId} and continued the existing agent turn.`);
+    this.audit({
+      type: 'tool_stall_decision_retired',
+      agent,
+      tool: control.tool,
+      toolCallId: control.toolCallId,
+      reason: 'tool_completed',
+    });
+    return true;
+  }
+
   agentToolComplete(agent, tool, durationMs, success) {
+    this.retirePendingStallDecision(agent);
     // Copilot's tool.execution_complete success bit describes whether the tool
     // handler itself returned normally. For run_command that is deliberately
     // independent from the child process exit code: a managed command may
@@ -92,12 +130,52 @@ class VscodeWorkflowUi extends base.VscodeWorkflowUi {
       this.stallControlMap().delete(agent);
       return;
     }
+    this.stallControlMap().delete(agent);
     return super.agentToolComplete(agent, tool, durationMs, success);
   }
 
   agentToolStalled(agent, tool, elapsedMs, diagnostic) {
     this.stallControlMap().delete(agent);
     return super.agentToolStalled(agent, tool, elapsedMs, diagnostic);
+  }
+
+  async limitDecision(kind, details = {}) {
+    if (kind !== 'ai_credits') return super.limitDecision(kind, details);
+
+    const current = Math.max(0, Number(details.current) || 0);
+    const limit = Math.max(0, Number(details.limit) || 0);
+    const suggested = suggestedCreditCeiling(current, limit, details.increment);
+    const message = `Convergent reached the AI-credit soft limit of ${limit.toFixed(3)} at a safe workflow boundary; reported usage is ≈${current.toFixed(3)} credits. The workflow is waiting for a new total limit.`;
+    this.stream.markdown(`\n⚠ **AI-credit budget reached.** ${message}\n`);
+
+    const value = await this.vscode.window.showInputBox({
+      title: 'Convergent AI-credit budget reached',
+      prompt: `Enter the new total AI-credit limit. It must be greater than the current reported usage (${current.toFixed(3)}). Enter "unlimited" to remove the limit, or cancel to pause and resume later.`,
+      value: Number.isInteger(suggested) ? String(suggested) : suggested.toFixed(3),
+      ignoreFocusOut: true,
+      validateInput(input) {
+        const text = String(input ?? '').trim();
+        if (/^unlimited$/i.test(text)) return undefined;
+        const next = Number(text);
+        if (!Number.isFinite(next)) return 'Enter a numeric total AI-credit limit or "unlimited".';
+        if (next <= current) return `The new total must be greater than ${current.toFixed(3)} credits.`;
+        if (next > 100000) return 'The maximum supported AI-credit limit is 100000.';
+        return undefined;
+      },
+    });
+
+    this.log(`AI-credit limit input: ${value === undefined ? 'cancelled' : value}; usage=${current}; previousCeiling=${limit}`);
+    this.audit({ type: 'limit_decision', kind, current, limit, choice: value ?? 'pause' });
+    if (value === undefined) return { action: 'pause' };
+    if (/^unlimited$/i.test(String(value).trim())) return { action: 'unlimited' };
+
+    const nextLimit = Number(value);
+    if (!Number.isFinite(nextLimit) || nextLimit <= current || nextLimit > 100000) return { action: 'pause' };
+    return {
+      action: 'continue',
+      additional: nextLimit - current,
+      newLimit: nextLimit,
+    };
   }
 
   reviewResult(review, cycle, meta = {}) {
@@ -141,4 +219,5 @@ module.exports = {
   VscodeWorkflowUi,
   detailedUsageMarkdown,
   taskUsageLines,
+  suggestedCreditCeiling,
 };
